@@ -464,15 +464,21 @@ Agent Channel 不因平台 Sync 自动变化。
 
 ---
 
-## 17. Fork 初始化待填
+## 17. Fork 初始化记录
 
-1. 官方 upstream URL；
-2. 初始 tag / commit；
-3. Branch / Merge 策略；
-4. UPSTREAM_BASE 文件格式；
-5. Patch Registry 路径；
-6. CI Workflow；
-7. CODEOWNERS；
-8. Release Notes 来源；
-9. Security Advisory 订阅；
-10. 第一次同步演练日期。
+已由 PR-001 固定：
+
+1. 官方 upstream：`https://github.com/bytedance/deer-flow.git`；
+2. 初始基线：tag `v2.0.0`，commit `7e7f0410797693cf882594555ba414e0361d4c6f`；
+3. 目标仓库：`https://github.com/MementoMoriCheng/DeerNexus.git`；
+4. 开发策略：`main` 只通过 PR 合入；上游同步使用独立 `upstream-sync/*` 分支；
+5. `UPSTREAM_BASE`：根目录 UTF-8 `key=value` 机器可读文件，记录来源、tag、commit、同步日期、逻辑 PR、本地基线和导入模式；
+6. 初始导入模式：`pinned_tree_snapshot`。由于 DeerNexus 先建立 docs-first 根提交，PR-001 导入固定上游树并保留 DeerNexus README 与架构文档；后续同步以 `UPSTREAM_BASE` 的前后 commit 生成上游差异，不依赖“最近 main”；
+7. Release Notes 来源：上游 GitHub Release 与 `CHANGELOG.md` / `CHANGELOG_zh.md`。
+
+后续 PR 补齐：
+
+1. PR-002：DeerNexus CI Workflow、harness boundary、Secret scan 与 CODEOWNERS；
+2. Patch Registry 路径及首个模板；
+3. Security Advisory 订阅责任人和通知渠道；
+4. 第一次上游同步演练日期与 `docs/engineering/upstream-history.md`。
