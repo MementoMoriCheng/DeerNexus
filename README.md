@@ -1,10 +1,10 @@
-# 鹿枢 DeerNexus
+# DeerNexus
 
-**DeerNexus**（鹿枢）是基于 [DeerFlow](https://github.com/bytedance/deer-flow) 渐进演进的 **Enterprise Agent OS**。
+**DeerNexus** 是基于 [DeerFlow](https://github.com/bytedance/deer-flow) 渐进演进的 **Enterprise Agent OS**。
 
 它把 DeerFlow 成熟的超级 Agent 运行内核，扩展为企业可治理、可审计、可发布、可计量的 Agent 操作系统：统一编排 Agent、模型、工具、技能、知识与企业系统，并提供组织级身份、策略与运营控制面。
 
-> **命名**：鹿（延续 DeerFlow 血缘）+ 枢（统一编排与治理中枢）+ Nexus（连接中心）。
+> **命名**：Deer（延续 DeerFlow 血缘）+ Nexus（连接中心）。
 
 ## 与 DeerFlow 的关系
 
@@ -91,7 +91,7 @@ DeerNexus
 
 ## 仓库状态
 
-当前目录为 **文档先行（docs-first）** 的 DeerNexus 项目根。代码仓库将基于 DeerFlow fork 初始化后迁入/对齐此处文档约定；在此之前，以本仓库中的架构与路线为准，指导设计和任务拆分。
+当前仓库已从文档先行阶段进入 Fork 实施阶段。初始代码基线固定为 DeerFlow `v2.0.0`（commit `7e7f0410797693cf882594555ba414e0361d4c6f`），精确来源见根目录 [`UPSTREAM_BASE`](UPSTREAM_BASE)；后续企业改造按本仓库架构、路线与 PR 拆分指南渐进实施。
 
 ## 术语速查
 

@@ -1,0 +1,8 @@
+schema_version=1
+upstream_repository=https://github.com/bytedance/deer-flow.git
+upstream_tag=v2.0.0
+upstream_commit=7e7f0410797693cf882594555ba414e0361d4c6f
+synced_at=2026-07-15
+sync_pr=PR-001
+deernexus_base_commit=b3d5f5986962476dc1ee535eae8e88665fa9e68e
+import_mode=pinned_tree_snapshot
