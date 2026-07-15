@@ -1,10 +1,10 @@
 # DeerNexus
 
-**DeerNexus**是基于 [DeerFlow](https://github.com/bytedance/deer-flow) 渐进演进的 **Enterprise Agent OS**。
+**DeerNexus** 是基于 [DeerFlow](https://github.com/bytedance/deer-flow) 渐进演进的 **Enterprise Agent OS**。
 
 它把 DeerFlow 成熟的超级 Agent 运行内核，扩展为企业可治理、可审计、可发布、可计量的 Agent 操作系统：统一编排 Agent、模型、工具、技能、知识与企业系统，并提供组织级身份、策略与运营控制面。
 
-> **命名**：（延续 DeerFlow 血缘）+ （统一编排与治理中枢）+ Nexus（连接中心）。
+> **命名**：Deer（延续 DeerFlow 血缘）+ Nexus（连接中心）。
 
 ## 与 DeerFlow 的关系
 
