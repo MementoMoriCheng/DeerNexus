@@ -71,4 +71,4 @@ jobs:
       - name: Build frontend
         run: |
           cd frontend
-          BETTER_AUTH_SECRET=local-dev-secret pnpm build
+          SKIP_ENV_VALIDATION=1 pnpm build
