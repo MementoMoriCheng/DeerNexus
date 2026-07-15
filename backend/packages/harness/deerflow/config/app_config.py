@@ -20,6 +20,7 @@ from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_
 from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
 from deerflow.config.model_config import ModelConfig
+from deerflow.config.production_config import ProductionConfig
 from deerflow.config.reload_boundary import format_field_description
 from deerflow.config.run_events_config import RunEventsConfig
 from deerflow.config.runtime_paths import existing_project_file
@@ -143,6 +144,10 @@ class AppConfig(BaseModel):
             "run_events",
             field_doc="Run-event store backend (memory for dev, db for production queries, jsonl for lightweight single-node persistence).",
         ),
+    )
+    production: ProductionConfig = Field(
+        default_factory=ProductionConfig,
+        description="Production deployment declarations consumed by the preflight doctor.",
     )
     checkpointer: CheckpointerConfig | None = Field(
         default=None,

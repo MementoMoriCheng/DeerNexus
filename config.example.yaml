@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 14
+config_version: 15
 
 # ============================================================================
 # Logging
@@ -1201,6 +1201,53 @@ run_events:
   backend: memory
   max_trace_content: 10240
   track_token_usage: true
+
+# ============================================================================
+# DeerNexus Production Preflight Declarations
+# ============================================================================
+# These fields declare deployment intent for `make doctor-production`.
+# They do not activate production dependencies or replace live probes.
+# Keep `enabled: false` for local development. A production deployment must
+# explicitly provide OIDC/Redis/Backup/Security declarations and use the
+# PostgreSQL and isolated Sandbox settings documented above.
+production:
+  enabled: false
+  environment: development
+  deployment:
+    profile: S
+    gateway_profile: null
+    gateway_replicas: 1
+    worker_replicas: 0
+    ha_waiver_id: null
+    profile_h_evidence: null
+    profile_w_evidence: null
+    profile_w_rollback_evidence: null
+    profile_w_soak_hours: 0
+  oidc: null
+  # Production example:
+  # oidc:
+  #   issuer: $OIDC_ISSUER
+  #   audience: $OIDC_AUDIENCE
+  #   jwks_uri: $OIDC_JWKS_URI
+  redis:
+    url: null
+    # url: $REDIS_URL
+  backup:
+    enabled: false
+    declared_rpo_hours: 24
+    pitr_enabled: false
+  secret_store:
+    provider: env_dev_only
+    references_only: false
+  limits:
+    max_concurrent_runs: 1
+    max_sandbox_replicas: 1
+  gateway_security:
+    tls_enabled: false
+    cors_origins: []
+    csrf_enabled: false
+    rate_limit_enabled: false
+  log_redaction_enabled: false
 
 # ============================================================================
 # User-Owned IM Channel Connections
