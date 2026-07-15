@@ -3,7 +3,7 @@
 > 状态：MVP 工程规范  
 > 关联：[测试策略](testing-strategy.md) · [生产 Runbook](../ops/production-runbook.md) · [安全基线](../security/baseline.md) · [可观测性与 SLO](../ops/observability-and-slo.md) · [ADR-0004](../adr/0004-agent-artifacts-and-release.md)
 
-本文定义 DeerNexus 代码、数据库、镜像、配置和 Agent 制品的流水线。代码 Fork 尚未初始化，因此 Workflow 名和命令待补；门禁、证据、晋升和回滚语义为强制要求。
+本文定义 DeerNexus 代码、数据库、镜像、配置和 Agent 制品的流水线。Fork 基线已初始化；PR-002 起按 §19 的真实 Workflow、Job 和命令逐步落地门禁。尚未映射的门禁仍是后续实施要求，不能视为已满足。
 
 ---
 
@@ -600,3 +600,18 @@ waivers
 10. Release Evidence 存储；
 11. CODEOWNERS；
 12. On-call / Approver。
+
+### 19.1 PR-002 初始映射
+
+| 领域 | 实际实现 |
+| --- | --- |
+| Git Provider | GitHub；目标仓库 `MementoMoriCheng/DeerNexus`；保护分支 `main` |
+| Backend lint | `.github/workflows/lint-check.yml` → `lint-backend` → `cd backend && make lint` |
+| Frontend lint / type / build | `.github/workflows/lint-check.yml` → `lint-frontend` → `pnpm format`、`pnpm lint`、`pnpm typecheck`、`SKIP_ENV_VALIDATION=1 pnpm build` |
+| Harness boundary | `.github/workflows/backend-unit-tests.yml` → `backend-unit-tests` 的 `Enforce harness import boundary` 步骤 → `uv run pytest tests/test_harness_boundary.py -v` |
+| Backend unit | `.github/workflows/backend-unit-tests.yml` → `backend-unit-tests` → `cd backend && make test` |
+| Frontend unit | `.github/workflows/frontend-unit-tests.yml` → `frontend-unit-tests` → `cd frontend && make test` |
+| Secret scan | `.github/workflows/secret-scan.yml` → `gitleaks`；第三方 Action 固定 commit；已审查的上游误报仅通过 `.gitleaksignore` 精确 fingerprint 豁免 |
+| CODEOWNERS | `.github/CODEOWNERS`；MVP 初始 Owner 为 `@MementoMoriCheng` |
+
+`main` 的必需检查与 Code Owner Review 由 GitHub Branch Protection 配置，并在 PR-002 合并前验证。SAST、完整 SCA、SBOM、镜像扫描、签名、环境保护和发布证据仍按后续 PR 实施，不因本节存在而视为完成。

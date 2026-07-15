@@ -1,0 +1,8 @@
+# Reviewed false positives inherited from the pinned DeerFlow v2.0.0 snapshot.
+# Fingerprints are commit-, path-, rule-, and line-specific so future findings
+# in the same files remain blocking.
+7f796e870d5782c8d5f3bb2a7192a50fce66d7e1:backend/docs/AUTH_TEST_PLAN.md:curl-auth-header:353
+7f796e870d5782c8d5f3bb2a7192a50fce66d7e1:backend/docs/AUTH_TEST_PLAN.md:curl-auth-header:1680
+7f796e870d5782c8d5f3bb2a7192a50fce66d7e1:backend/tests/test_setup_agent_e2e_user_isolation.py:generic-api-key:215
+7f796e870d5782c8d5f3bb2a7192a50fce66d7e1:backend/tests/test_update_agent_e2e_user_isolation.py:generic-api-key:170
+7f796e870d5782c8d5f3bb2a7192a50fce66d7e1:docs/superpowers/plans/2026-06-12-telegram-streaming.md:generic-api-key:23

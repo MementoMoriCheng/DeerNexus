@@ -1,0 +1,9 @@
+# DeerNexus currently has one repository owner. Split these entries by domain
+# as Runtime, Control Plane, Security, SRE, and Frontend maintainers are added.
+* @MementoMoriCheng
+
+/.github/ @MementoMoriCheng
+/backend/packages/harness/ @MementoMoriCheng
+/backend/app/ @MementoMoriCheng
+/frontend/ @MementoMoriCheng
+/docs/ @MementoMoriCheng
