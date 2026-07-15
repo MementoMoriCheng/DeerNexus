@@ -60,6 +60,10 @@ class SandboxConfig(BaseModel):
         default=None,
         description="Maximum number of concurrent sandbox containers (default: 3). When the limit is reached the least-recently-used sandbox is evicted to make room.",
     )
+    provisioner_url: str | None = Field(
+        default=None,
+        description="Remote isolated-sandbox provisioner URL. Required by the production preflight.",
+    )
     container_prefix: str | None = Field(
         default=None,
         description="Prefix for container names",

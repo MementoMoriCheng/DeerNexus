@@ -11,6 +11,8 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -660,9 +662,70 @@ def check_env_file(project_root: Path) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
+def _run_production_doctor(config_path: Path):
+    backend_root = Path(__file__).resolve().parents[1] / "backend"
+    backend_root_text = str(backend_root)
+    if backend_root_text not in sys.path:
+        sys.path.insert(0, backend_root_text)
+
+    from app.doctor.models import DoctorCheckResult, DoctorReport, DoctorStatus
+    from app.doctor.production import run_production_checks
+    from deerflow.config.app_config import AppConfig
+
+    try:
+        raw_config = _load_yaml_file(config_path)
+        config = AppConfig.from_file(str(config_path))
+    except Exception:
+        check = DoctorCheckResult(
+            check_id="config.schema",
+            status=DoctorStatus.FAIL,
+            component="configuration",
+            message="Production configuration could not be loaded or validated.",
+            remediation="Validate config.yaml against config.example.yaml without printing Secret values.",
+            config_source="config.yaml",
+        )
+        return DoctorReport(profile="production", config_path=str(config_path), checks=(check,))
+    return run_production_checks(config, config_path, raw_config)
+
+
+def _print_production_report(report) -> None:
+    print()
+    print(bold("DeerNexus Production Preflight"))
+    print("═" * 72)
+    for check in report.checks:
+        status_color = {
+            "PASS": green,
+            "WARN": yellow,
+            "FAIL": red,
+        }[check.status.value]
+        print(f"[{status_color(check.status.value)}] {check.check_id} ({check.component})")
+        print(f"  {check.message}")
+        print(f"  source: {check.config_source}")
+        if check.remediation:
+            print(f"  remediation: {check.remediation}")
+    print("═" * 72)
+    print(f"PASS={report.pass_count} WARN={report.warn_count} FAIL={report.fail_count}")
+    print(f"Status: {green('Ready') if report.ready else red('Blocked')}")
+    print()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=argv is not None)
+    parser.add_argument("--profile", choices=("development", "production"), default="development")
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--json", action="store_true", dest="json_output")
+    args = parser.parse_args(argv or [])
+
     project_root = Path(__file__).resolve().parents[1]
-    config_path = project_root / "config.yaml"
+    config_path = args.config or project_root / "config.yaml"
+
+    if args.profile == "production":
+        report = _run_production_doctor(config_path)
+        if args.json_output:
+            print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            _print_production_report(report)
+        return report.exit_code
 
     # Load .env early so key checks work
     try:
@@ -749,4 +812,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

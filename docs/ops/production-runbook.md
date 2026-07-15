@@ -762,22 +762,23 @@ issues, owner, due date
 
 代码导入后立即补充，并最迟在 Day 75 前完成 staging 验证；生产验收不得使用占位命令或模拟 doctor 替代：
 
-| 项目 | 待填 |
+| 项目 | 实现映射 / 待填 |
 | --- | --- |
 | Backend 启动命令 | 路径与参数 |
 | Frontend 构建 / 启动 | 路径与参数 |
 | Alembic 配置与 head | 路径 / revision |
-| Doctor 命令 | 命令、退出码 |
+| Doctor 命令 | `make doctor-production`；结构化证据：`cd backend && uv run python ../scripts/doctor.py --profile production --json`；存在任一 `FAIL` 时退出 1，否则退出 0 |
+| 生产声明 Schema | `config.yaml:production`，类型定义见 `backend/packages/harness/deerflow/config/production_config.py` |
 | Helm / Compose / IaC | 路径 |
 | Gateway health endpoints | 路径 |
 | Redis Stream / ownership Key | 实际格式 |
 | Run lease 参数 | 配置名与默认值 |
-| Sandbox Provisioner 配置 | 路径 |
+| Sandbox Provisioner 配置 | `config.yaml:sandbox.provisioner_url`、`sandbox.replicas` 与 `production.limits.max_sandbox_replicas` |
 | Backup Job | 名称与计划 |
 | Dashboard / Alerts | 链接 |
 | On-call / Owner | 团队与升级方式 |
 
-在这些映射补齐并经过 staging 验证前，本文是运行语义基线，不应被描述为已验证的逐命令操作手册。
+PR-003 的 PostgreSQL、Redis、OIDC、Sandbox、Backup、部署证据、Secret Store 与 Gateway 安全真实探针会明确返回 `FAIL`，直到 PR-064 接入真实依赖；静态声明通过不能作为生产准入证据。在其余映射补齐并经过 staging 验证前，本文仍是运行语义基线，不应被描述为已验证的逐命令操作手册。
 
 ---
 
