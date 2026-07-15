@@ -1,0 +1,586 @@
+# DeerNexus 运行时稳定契约
+
+> 状态：MVP 契约草案  
+> 版本：`v1alpha1`  
+> 关联：[目标架构](target-architecture.md) · [ADR-0001](../adr/0001-fork-evolution-strategy.md) · [ADR-0002](../adr/0002-tenant-workspace-keys.md) · [API 边界](api-boundaries.md)
+
+本文冻结控制面与 DeerFlow Runtime Kernel 之间的最小稳定协议。目标是让 `packages/harness/deerflow` 只依赖 DTO、Protocol 和 ContextVar，不导入 `app.control_plane.*`，同时保证租户、策略、发布、审计和用量语义可测试。
+
+---
+
+## 1. 设计原则
+
+1. **内核不认识控制面表**：harness 不读取 Organization、RoleBinding、AgentPackage 等私有表。
+2. **入口解析，运行时消费**：Gateway、Worker、Scheduler、Channel Adapter 负责构造可信上下文。
+3. **默认拒绝**：租户上下文、权限结果或发布引用缺失时 fail-closed。
+4. **Run 级可重现**：创建 Run 时固定租户、Agent 制品和普通策略版本；在途 Run 不跟随通道漂移。
+5. **高风险动作实时决策**：高风险工具每次调用都评估当前策略，避免长 Run 使用过期授权。
+6. **幂等可追踪**：异步信封、审计和用量记录具有稳定事件 ID 或幂等键。
+7. **契约可演进**：字段只追加，破坏性变更升级主版本并提供兼容窗口。
+
+---
+
+## 2. 包边界
+
+目标目录：
+
+```text
+backend/packages/harness/deerflow/contracts/
+├── __init__.py
+├── context.py        # TenantContext + ContextVar helpers
+├── identity.py       # PrincipalRef
+├── policy.py         # PolicyRequest / PolicyDecision / PolicyEvaluator
+├── release.py        # ReleaseRef / ReleaseResolver
+├── approval.py       # ApprovalTicket（MVP 仅预留）
+├── events.py         # AuditEvent / UsageRecord / EventSink
+├── runs.py           # RunEnvelope
+└── errors.py         # 稳定错误码
+```
+
+依赖方向：
+
+```text
+deerflow runtime → deerflow.contracts ← app.control_plane adapters
+```
+
+允许：
+
+- contracts 依赖 Python 标准库和无业务语义的基础类型；
+- app 层实现 contracts 中的 Protocol；
+- Gateway 在进入 harness 前绑定 TenantContext。
+
+禁止：
+
+- contracts 导入 ORM Model、FastAPI Router 或控制面 Service；
+- harness 导入 `app.control_plane.*`；
+- 运行时以 SQL、HTTP 路由细节或 UI 状态作为契约；
+- 控制面把可变 ORM 对象直接传给 harness。
+
+---
+
+## 3. 通用类型约定
+
+| 类型 | 约定 |
+| --- | --- |
+| ID | UUID 的规范小写字符串；外部系统 ID 可为字符串但必须带 provider |
+| 时间 | UTC、RFC 3339、微秒可选；持久化使用带时区 timestamp |
+| 枚举 | 小写 snake_case；未知值由消费者安全拒绝或忽略，不能静默映射 |
+| 金额 | 十进制定点字符串 + ISO 4217 币种，不使用浮点数 |
+| Token | 非负整数 |
+| Metadata | JSON 对象；只允许显式白名单字段，不放密钥或完整 Prompt |
+| Schema 版本 | `schema_version`，初始值 `v1alpha1` |
+
+所有跨进程 DTO 必须可 JSON 序列化。进程内可以使用不可变 dataclass/Pydantic model，但序列化结果必须符合本文字段。
+
+---
+
+## 4. PrincipalRef
+
+```text
+PrincipalRef(
+  type: "user" | "service_account" | "system",
+  id: str,
+  user_id: str | None,
+  display_name: str | None
+)
+```
+
+规则：
+
+- `id` 是稳定审计主体 ID；
+- `display_name` 只用于展示，不参与授权；
+- `service_account` 的 `user_id` 必须为空；
+- `system` 只用于平台任务，不可伪装为用户；
+- 不在该 DTO 中传递角色或 permission，避免长期运行持有过期权限集合。
+
+---
+
+## 5. TenantContext
+
+```text
+TenantContext(
+  schema_version: "v1alpha1",
+  org_id: str,
+  workspace_id: str | None,
+  principal: PrincipalRef,
+  auth_method: "oidc" | "session" | "api_key" | "internal",
+  request_id: str,
+  trace_id: str | None,
+  issued_at: datetime
+)
+```
+
+### 5.1 不变量
+
+- 租户请求 `org_id` 非空；
+- `workspace_id` 存在时必须属于 `org_id`；
+- Context 对象不可变；
+- 不包含密钥、原始 Token、Session Cookie 或完整 OIDC claims；
+- 不把客户端请求体中的 `org_id` 当作可信来源；
+- Run 创建后，Run 的 `org_id` 不可修改。
+
+### 5.2 ContextVar 生命周期
+
+统一提供：
+
+```text
+bind_tenant_context(context) -> token
+get_tenant_context() -> TenantContext
+reset_tenant_context(token) -> None
+require_tenant_context() -> TenantContext
+```
+
+使用规则：
+
+1. Gateway 在鉴权、组织解析和 Workspace 校验后绑定；
+2. 绑定必须使用 `try/finally` 恢复；
+3. 创建后台任务时显式复制需要的值，不依赖隐式线程继承；
+4. Worker 从 RunEnvelope 重建上下文；
+5. 测试用例结束必须断言没有遗留上下文；
+6. 缺少上下文时抛出稳定错误 `tenant_context_missing`，不得回退默认 Org。
+
+### 5.3 日志传播
+
+日志上下文至少包含：
+
+```text
+request_id, trace_id, org_id, workspace_id, principal_type,
+principal_id, thread_id?, run_id?, release_digest?
+```
+
+禁止把 `org_id` 作为无界高基数指标标签直接写入公共 Metrics；按 Org 的分析通过日志、Trace 或 UsageRecord 完成。
+
+---
+
+## 6. RunEnvelope
+
+RunEnvelope 是 Gateway、Scheduler、Channel 与执行器之间的可信任务信封：
+
+```text
+RunEnvelope(
+  schema_version: "v1alpha1",
+  run_id: str,
+  thread_id: str,
+  tenant: TenantContext,
+  release_ref: ReleaseRef,
+  policy_snapshot: PolicySnapshotRef,
+  created_at: datetime,
+  idempotency_key: str,
+  source: "api" | "scheduler" | "channel" | "webhook" | "internal",
+  source_ref: str | None,
+  integrity: EnvelopeIntegrity | None
+)
+```
+
+策略快照引用：
+
+```text
+PolicySnapshotRef(
+  schema_version: "v1alpha1",
+  policy_version: str,
+  evaluated_at: datetime,
+  expires_at: datetime | None
+)
+```
+
+`policy_version` 同时持久化到 Run。它标识 Run admission 和普通装载所依据的策略版本；高风险动作仍按 §7.3 逐次实时评估。
+
+跨信任边界传输时的完整性信息：
+
+```text
+EnvelopeIntegrity(
+  algorithm: "hmac-sha256" | "jwt",
+  key_id: str,
+  signature: str
+)
+```
+
+约束：
+
+- `run_id + org_id` 唯一；
+- `tenant.org_id` 必须与持久化 Run、Thread、ReleaseRef 一致；
+- 信封从可信数据库或签名消息队列读取，不接受客户端直接提交；
+- Gateway 与内嵌执行器从同一可信数据库读取时 `integrity` 可以为空；经过消息队列或跨信任边界传输时必须携带并验证 `integrity`；
+- 重复消费相同 `idempotency_key` 不得创建第二个 Run；
+- Worker 执行前重新验证 Run 仍处于可执行状态；
+- `source_ref` 只保存引用，不保存外部事件中的密钥。
+
+---
+
+## 7. Policy 契约
+
+### 7.1 PolicyRequest
+
+```text
+PolicyRequest(
+  schema_version: "v1alpha1",
+  request_id: str,
+  tenant: TenantContext,
+  run_id: str | None,
+  action: str,
+  resource: ResourceRef,
+  risk_class: "low" | "medium" | "high" | "critical",
+  context: dict
+)
+```
+
+`ResourceRef`：
+
+```text
+ResourceRef(
+  type: str,
+  id: str | None,
+  org_id: str,
+  workspace_id: str | None,
+  attributes: dict
+)
+```
+
+`context` 只允许策略所需的白名单属性，例如工具名、目标域名、模型 ID、数据分类；禁止放完整 Secret、Prompt 或文件内容。
+
+### 7.2 PolicyDecision
+
+```text
+PolicyDecision(
+  schema_version: "v1alpha1",
+  decision: "allow" | "deny" | "require_approval",
+  reason_code: str,
+  reason: str,
+  rule_id: str | None,
+  policy_version: str,
+  evaluated_at: datetime,
+  expires_at: datetime | None,
+  obligations: list[PolicyObligation]
+)
+```
+
+```text
+PolicyObligation(
+  type: "audit" | "redact" | "limit" | "approval_stub",
+  parameters: dict
+)
+```
+
+`parameters` 必须按 obligation 类型使用白名单 Schema；未知 obligation 必须安全拒绝，不能忽略后继续执行。
+
+MVP 支持的 obligation：
+
+- `audit`：必须产生指定类型 AuditEvent；
+- `redact`：对结果应用指定脱敏规则；
+- `limit`：施加超时、大小、token 或网络范围限制；
+- `approval_stub`：返回待审批中断信息；MVP 不交付完整审批工单系统。
+
+### 7.3 评估时机
+
+| 动作 | MVP 策略 |
+| --- | --- |
+| 创建 Run、选择模型、加载普通 Skill | 创建 Run 时评估并记录 `policy_version` |
+| 读取 Agent ReleaseRef | 创建 Run 时评估并固定 |
+| 高风险/关键工具调用 | 每次调用实时评估 |
+| 外部网络、写操作、凭证访问 | 每次调用实时评估 |
+| 长 Run 恢复 | 恢复前重评估 Run admission；已完成步骤不重放 |
+
+高风险判断由工具元数据与租户策略共同决定，调用方不得自行降级 `risk_class`。
+
+### 7.4 超时和失败
+
+- `high` / `critical` 动作评估超时：`deny`，错误码 `policy_unavailable`；
+- `low` / `medium` 动作：MVP 默认同样 fail-closed；后续如需缓存放行必须单独 ADR；
+- `require_approval` 但审批能力未启用：安全中断，不得当作 `allow`；
+- 每次 `deny`、`require_approval` 和评估异常均写审计事件；
+- PolicyEvaluator 不得返回空 decision。
+
+### 7.5 Protocol
+
+```text
+PolicyEvaluator.evaluate(request: PolicyRequest) -> PolicyDecision
+```
+
+实现可以是进程内适配器、缓存快照或远程服务，但 harness 只认识该 Protocol。MVP 优先使用进程内 app adapter，避免过早引入独立 Policy 服务。
+
+---
+
+## 8. Release 契约
+
+### 8.1 ReleaseRef
+
+```text
+ReleaseRef(
+  schema_version: "v1alpha1",
+  org_id: str,
+  workspace_id: str | None,
+  package_id: str,
+  agent_name: str,
+  version: str,
+  digest: str,
+  channel: "dev" | "staging" | "prod",
+  resolved_at: datetime
+)
+```
+
+规则：
+
+- `digest` 是不可变内容摘要，初始使用 `sha256:<hex>`；
+- `version` 是展示和排序信息，执行身份以 digest 为准；
+- `prod` 只能解析已发布且未撤销的版本；
+- Run 创建后完整 ReleaseRef 持久化，不在执行阶段重新读取 channel；
+- channel 回滚只影响回滚后新创建的 Run；
+- 同 Org 内解析，禁止跨 Org 引用；
+- 开发态文件 Agent 必须先导入为制品，才能进入 prod。
+- 迁移标记为 `legacy_unpinned=true` 的 Run 在 prod 不得 admit、resume 或继续执行，只允许读取、取消和归档。
+
+### 8.2 ReleaseResolver
+
+```text
+ReleaseResolver.resolve(
+  tenant: TenantContext,
+  agent_name: str,
+  channel: str
+) -> ReleaseRef
+```
+
+Resolver 位于 app adapter；harness 只消费已解析 ReleaseRef。解析失败抛出：
+
+- `release_not_found`
+- `release_not_published`
+- `release_revoked`
+- `release_tenant_mismatch`
+
+---
+
+## 9. ApprovalTicket（MVP 预留）
+
+```text
+ApprovalTicket(
+  schema_version: "v1alpha1",
+  ticket_id: str,
+  org_id: str,
+  run_id: str,
+  action: str,
+  risk_class: str,
+  status: "pending" | "approved" | "rejected" | "expired",
+  resume_token_ref: str,
+  created_at: datetime,
+  expires_at: datetime
+)
+```
+
+MVP 约束：
+
+- 仅允许 Runtime 产生 `require_approval` 中断和稳定引用；
+- 不交付会签、SLA、审批 UI 或完整状态机；
+- `resume_token_ref` 是安全引用，不直接暴露可复用 Token；
+- 未实现审批适配器时，Run 保持安全终止或明确的不可恢复等待状态；
+- `ask_clarification` 不得创建 ApprovalTicket。
+
+---
+
+## 10. AuditEvent
+
+```text
+AuditEvent(
+  schema_version: "v1alpha1",
+  event_id: str,
+  idempotency_key: str,
+  org_id: str | None,
+  workspace_id: str | None,
+  actor: PrincipalRef,
+  action: str,
+  resource: ResourceRef | None,
+  outcome: "success" | "denied" | "failure",
+  reason_code: str | None,
+  request_id: str,
+  trace_id: str | None,
+  run_id: str | None,
+  occurred_at: datetime,
+  payload: dict
+)
+```
+
+MVP 必须事件：
+
+```text
+auth.login
+iam.role_binding.created
+iam.role_binding.deleted
+catalog.skill.changed
+catalog.mcp.changed
+policy.tool.denied
+policy.approval.required
+release.agent.published
+release.agent.rolled_back
+```
+
+`release.agent.published` 表示 ReleaseChannel promote 成功；AgentVersion 状态进入 published 使用 ADR-0005 的 `catalog.agent_version.published`，不能混用。
+
+规则：
+
+- `payload` 使用事件类型白名单 Schema；
+- 不记录 Secret、原始 Token、完整 Prompt 或工具原始敏感结果；
+- 业务事务成功但审计写入失败时，高风险管理操作必须回滚或进入 outbox；
+- 工具拒绝等运行事件可异步写入，但不得静默丢弃；
+- 详细防篡改与保留由[ADR-0005](../adr/0005-audit-event.md)冻结。
+
+EventSink：
+
+```text
+AuditSink.emit(event: AuditEvent) -> None
+```
+
+---
+
+## 11. UsageRecord
+
+```text
+UsageRecord(
+  schema_version: "v1alpha1",
+  record_id: str,
+  idempotency_key: str,
+  org_id: str,
+  workspace_id: str | None,
+  run_id: str,
+  release_digest: str,
+  provider: str,
+  model: str,
+  attempt: int,
+  input_tokens: int,
+  output_tokens: int,
+  cached_tokens: int,
+  cost_amount: str | None,
+  cost_currency: str | None,
+  started_at: datetime,
+  completed_at: datetime,
+  status: "success" | "failure" | "cancelled"
+)
+```
+
+规则：
+
+- token 计量来源于模型适配器，不能由客户端提交；
+- `org_id` 从 RunEnvelope 继承；
+- provider 重试产生多条底层记录时，用 attempt 维度区分，汇总避免重复；
+- 缺少价格表时允许 cost 为空，但 token 不得丢失；
+- UsageRecord 是计量事实，不是账单；MVP 不做发票和 chargeback。
+
+---
+
+## 12. 稳定错误模型
+
+错误响应内部统一包含：
+
+```text
+ContractError(
+  code: str,
+  message: str,
+  retryable: bool,
+  request_id: str,
+  details: dict
+)
+```
+
+MVP 错误码：
+
+| Code | 语义 | Retryable |
+| --- | --- | --- |
+| `tenant_context_missing` | 可信租户上下文不存在 | 否 |
+| `tenant_mismatch` | 资源与当前 Org/Workspace 不一致 | 否 |
+| `authentication_invalid` | 凭证无效、过期或无法映射主体 | 否 |
+| `principal_disabled` | 已认证主体被禁用或撤销 | 否 |
+| `org_suspended` | Org 已暂停，不允许新 Run 或发布 | 否 |
+| `org_deleting` | Org 正在删除，只允许删除流程、受控导出、审计和取消 | 否 |
+| `permission_denied` | 已知作用域内权限不足 | 否 |
+| `policy_denied` | 策略明确拒绝 | 否 |
+| `policy_unavailable` | 策略无法安全评估 | 视调用方退避重试 |
+| `approval_required` | 动作需要企业审批 | 否 |
+| `release_not_found` | 通道没有可用制品 | 否 |
+| `release_not_published` | prod 指向未发布版本 | 否 |
+| `release_revoked` | 制品已撤销 | 否 |
+| `release_unpinned` | prod Run 缺少不可变 ReleaseRef / digest | 否 |
+| `release_tenant_mismatch` | 制品跨 Org | 否 |
+| `release_conflict` | ReleaseChannel 的 If-Match / row version 冲突 | 可 |
+| `run_conflict` | 幂等键或状态转换冲突 | 可 |
+| `idempotency_conflict` | 同幂等键对应不同请求 | 否 |
+| `audit_unavailable` | 强审计写路径不可用 | 可 |
+| `validation_error` | 请求不符合 Schema 或业务前置条件 | 否 |
+| `rate_limited` | 请求超过主体或 Org 限制 | 可 |
+
+对外 HTTP 映射见 [API 边界](api-boundaries.md)。内部日志可记录诊断信息，对外消息不得泄露资源存在性、策略细节或密钥信息。
+
+---
+
+## 13. 兼容性与版本策略
+
+### 13.1 `v1alpha1`
+
+Alpha 阶段允许调整字段，但每次变更必须：
+
+- 更新本文；
+- 更新生产者和消费者契约测试；
+- 在同一 PR 中更新序列化 fixture；
+- 标注迁移与回滚影响。
+
+### 13.2 兼容规则
+
+兼容变更：
+
+- 新增可选字段；
+- 新增消费者可忽略的 metadata；
+- 新增错误码或枚举值，前提是旧消费者能安全拒绝。
+
+破坏性变更：
+
+- 删除、重命名或改变字段语义；
+- 可选字段改必填；
+- 改变默认授权、fail-open/fail-closed 或 Run pin 行为；
+- 改变 ID、时间、摘要格式。
+
+进入 `v1` 后，破坏性变更使用新主版本，旧版本至少保留一个发布周期，并提供双读或适配器。
+
+---
+
+## 14. 测试与验收
+
+### 14.1 边界测试
+
+- [ ] `packages/harness/deerflow` 不导入 `app.control_plane`
+- [ ] contracts 不导入 ORM、Router 和 app Service
+- [ ] app adapters 通过 Protocol 注入
+
+### 14.2 Context 测试
+
+- [ ] 并发请求、协程、线程池之间不串 TenantContext
+- [ ] 请求完成和异常退出均恢复 ContextVar
+- [ ] Worker、Scheduler、IM 可从可信信封重建上下文
+- [ ] 上下文缺失或 Org 冲突 fail-closed
+
+### 14.3 Policy 测试
+
+- [ ] 高风险工具逐次实时评估
+- [ ] 评估超时不执行工具
+- [ ] deny / require_approval 产生审计事件
+- [ ] 普通策略版本随 Run 保存
+
+### 14.4 Release 测试
+
+- [ ] prod 不能解析草稿或已撤销版本
+- [ ] channel 从 v1 晋升 v2 后，在途 Run 仍使用 v1 digest
+- [ ] 回滚后新 Run 使用 v1，历史 Run 不变
+- [ ] 跨 Org ReleaseRef 被拒绝
+
+### 14.5 事件测试
+
+- [ ] AuditEvent 与 UsageRecord 幂等
+- [ ] 敏感字段不进入 payload
+- [ ] 强审计管理操作在 sink 不可用时不提交
+- [ ] UsageRecord 重试不重复计费
+
+---
+
+## 15. MVP 非目标
+
+- 独立 Policy 微服务；
+- 完整 Approval 工单与 UI；
+- 实时账单、发票和 chargeback；
+- 跨区域契约复制；
+- Workspace 级 RBAC；
+- 把 ORM Model 暴露为公共 SDK。
