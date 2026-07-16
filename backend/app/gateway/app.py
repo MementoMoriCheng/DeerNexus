@@ -29,6 +29,7 @@ from app.gateway.routers import (
     threads,
     uploads,
 )
+from app.gateway.tenant import TenantResolutionMiddleware
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.config.app_config import apply_logging_level
 
@@ -337,6 +338,12 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
             },
         ],
     )
+
+    # Tenant: resolve and bind TenantContext after auth (PR-013). Note
+    # BaseHTTPMiddleware runs in reverse add order inside call_next: the
+    # middleware added LAST runs FIRST. To run tenant resolution AFTER auth,
+    # register it BEFORE AuthMiddleware here.
+    app.add_middleware(TenantResolutionMiddleware)
 
     # Auth: reject unauthenticated requests to non-public paths (fail-closed safety net)
     app.add_middleware(AuthMiddleware)
