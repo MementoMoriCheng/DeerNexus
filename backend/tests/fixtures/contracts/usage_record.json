@@ -1,0 +1,20 @@
+{
+  "schema_version": "v1alpha1",
+  "record_id": "rec-001",
+  "idempotency_key": "idem-001",
+  "org_id": "9f1c2b3a-4d5e-4789-abcd-ef0123456789",
+  "workspace_id": null,
+  "run_id": "run-a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "release_digest": "sha256:5d41402abc4b2a76b9719d911017c592a3b2c4d5e6f7890abcdef1234567890",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "attempt": 0,
+  "input_tokens": 1250,
+  "output_tokens": 480,
+  "cached_tokens": 300,
+  "cost_amount": "0.023700",
+  "cost_currency": "USD",
+  "started_at": "2026-07-16T10:00:10Z",
+  "completed_at": "2026-07-16T10:00:12Z",
+  "status": "success"
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": "v1alpha1",
+  "run_id": "run-a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "thread_id": "thread-b2c3d4e5-f6a7-8901-bcde-f12345678901",
+  "tenant": {
+    "schema_version": "v1alpha1",
+    "org_id": "9f1c2b3a-4d5e-4789-abcd-ef0123456789",
+    "workspace_id": null,
+    "principal": {
+      "type": "user",
+      "id": "4a3f2c1e-9b8d-4a7e-b6c5-1a2b3c4d5e6f",
+      "user_id": "4a3f2c1e-9b8d-4a7e-b6c5-1a2b3c4d5e6f",
+      "display_name": "Ada Lovelace"
+    },
+    "auth_method": "oidc",
+    "request_id": "7b8e9f0a-1234-5678-9abc-def012345678",
+    "trace_id": "1234567890abcdef1234567890abcdef",
+    "issued_at": "2026-07-16T10:00:00Z"
+  },
+  "release_ref": {
+    "schema_version": "v1alpha1",
+    "org_id": "9f1c2b3a-4d5e-4789-abcd-ef0123456789",
+    "workspace_id": null,
+    "package_id": "pkg-demo-11111111-2222-3333-4444-555555555555",
+    "agent_name": "demo",
+    "version": "1.2.0",
+    "digest": "sha256:5d41402abc4b2a76b9719d911017c592a3b2c4d5e6f7890abcdef1234567890",
+    "channel": "prod",
+    "resolved_at": "2026-07-16T09:59:00Z"
+  },
+  "policy_snapshot": {
+    "schema_version": "v1alpha1",
+    "policy_version": "2026-07-15-01",
+    "evaluated_at": "2026-07-16T10:00:01Z",
+    "expires_at": null
+  },
+  "created_at": "2026-07-16T10:00:02Z",
+  "idempotency_key": "idem-001",
+  "source": "api",
+  "source_ref": null,
+  "integrity": null
+}
