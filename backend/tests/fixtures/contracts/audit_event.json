@@ -1,0 +1,32 @@
+{
+  "schema_version": "v1alpha1",
+  "event_id": "evt-001",
+  "idempotency_key": "idem-001",
+  "org_id": "9f1c2b3a-4d5e-4789-abcd-ef0123456789",
+  "workspace_id": null,
+  "actor": {
+    "type": "user",
+    "id": "4a3f2c1e-9b8d-4a7e-b6c5-1a2b3c4d5e6f",
+    "user_id": "4a3f2c1e-9b8d-4a7e-b6c5-1a2b3c4d5e6f",
+    "display_name": "Ada Lovelace"
+  },
+  "action": "release.agent.published",
+  "resource": {
+    "type": "agent_version",
+    "id": "ver-demo-1-2-0",
+    "org_id": "9f1c2b3a-4d5e-4789-abcd-ef0123456789",
+    "workspace_id": null,
+    "attributes": {}
+  },
+  "outcome": "success",
+  "reason_code": null,
+  "request_id": "7b8e9f0a-1234-5678-9abc-def012345678",
+  "trace_id": "1234567890abcdef1234567890abcdef",
+  "run_id": null,
+  "occurred_at": "2026-07-16T10:05:00Z",
+  "payload": {
+    "release_from_version": "1.1.0",
+    "release_to_version": "1.2.0",
+    "channel": "prod"
+  }
+}

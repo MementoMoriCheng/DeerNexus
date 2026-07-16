@@ -627,9 +627,43 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`principal_ref
 显式排除（后续 PR 交付）：
 
 - §5.2 ContextVar 生命周期（`bind_tenant_context` / `get_tenant_context` / `require_tenant_context` / `reset_tenant_context`）与 `TEN-001`~`TEN-009` → **PR-012**；
-- §6 `RunEnvelope`、`PolicySnapshotRef`、`EnvelopeIntegrity` → **PR-011**；
-- §7 Policy 契约（`PolicyRequest` / `PolicyDecision` / `PolicyObligation` / `PolicyEvaluator`）→ **PR-011**；
-- §8 Release 契约（`ReleaseRef` / `ReleaseResolver`）→ **PR-011**；
-- §9 `ApprovalTicket`（MVP 仅预留）→ **PR-011**；
-- §10 `AuditEvent` / `EventSink` 与 §11 `UsageRecord` → **PR-011**；
 - 真实 OIDC / Membership 查询、Gateway Tenant 解析适配器、异步入口 Tenant 传播 → PR-013 / PR-014。
+
+（§6–§11 的 DTO 与 Protocol 由 PR-011 交付，见 §16.3。）
+
+### 16.3 PR-011：Policy / Release / Event 契约（已交付）
+
+落地模块（`backend/packages/harness/deerflow/contracts/`）：
+
+| 模块 | 内容 | 对应章节 |
+| --- | --- | --- |
+| `policy.py` | `ResourceRef`、`PolicyRequest`、`PolicyDecision`、`PolicyObligation`、`PolicyEvaluator` Protocol；`RiskClass` / `Decision` / `ObligationType` 闭集 | §7 |
+| `release.py` | `ReleaseRef`、`ReleaseResolver` Protocol；`ReleaseChannel` 闭集 | §8 |
+| `runs.py` | `RunEnvelope`、`PolicySnapshotRef`、`EnvelopeIntegrity`；`EnvelopeSource` / `IntegrityAlgorithm` 闭集 | §6 |
+| `approval.py` | `ApprovalTicket`（MVP 仅预留中断引用）、`ApprovalStatus` 闭集 | §9 |
+| `events.py` | `AuditEvent`、`AuditSink` Protocol、`UsageRecord`、`UsageRecorder` Protocol；`AuditOutcome` / `UsageStatus` 闭集 | §10、§11 |
+
+关键不变量已在 DTO 层强制：
+
+- **Policy**：`ResourceRef.org_id` 非空（资源始终带租户）；`risk_class` 闭集且调用方不得降级；`decision` 闭集且永不返回空；`ObligationType` 闭集，未知 obligation 必须被消费者拒绝而非忽略（§7.2）；`context` 为白名单策略包，不含 Secret。
+- **Release**：`digest` 为不可变内容身份（`sha256:<hex>`），`version` 仅展示；`channel` 闭集 `dev`/`staging`/`prod`；`org_id` 非空，禁止跨 Org 引用；`resolved_at` 强制带时区并归一化 UTC。prod 只解析 published 版本由 resolver 适配器强制，非 DTO。
+- **RunEnvelope**：不可变、`extra="ignore"`；`idempotency_key` 非空（重复消费不得创建第二个 Run）；`source` 闭集；`integrity` 可空（同库读可空，跨信任边界必填并校验）；携带完整 `tenant` 与 `release_ref` 供适配器做一致性校验（§6、§7.3）。
+- **AuditEvent**：`event_id` / `idempotency_key` 非空；`org_id` 仅系统全局事件可空（ADR-0002 §4.1）；`outcome` 闭集；`payload` 在 DTO 边界剥离 forbidden key（`api_key`、`cookie`、`oauth_token`、`full_prompt`、`full_model_response`、`full_file_content`、`signed_url_query`、`database_dsn` 等，ADR-0005 §6），防御性纵深。
+- **UsageRecord**：token 为来自模型适配器的非负整数，不接受客户端提交；`org_id` 从 RunEnvelope 继承且非空；`cost_*` 可空（无价表时），但 token 不得丢失；`attempt` 区分供应商重试（§11）。
+
+Protocol（`PolicyEvaluator`、`ReleaseResolver`、`AuditSink`、`UsageRecorder`）为结构化类型，app 层适配器满足签名即可注入；harness 只依赖 Protocol。
+
+Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_request.json`、`policy_decision.json`、`release_ref.json`、`run_envelope.json`、`audit_event.json`、`usage_record.json`、`approval_ticket.json`。
+
+测试（`backend/tests/test_contracts_policy_release_event.py`，标记 `CONTRACT-011-*`）：Policy（资源 org、风险闭集、决策闭集、obligation 闭集）、Release（channel 闭集、digest/org 必填、UTC）、RunEnvelope（source 闭集、幂等键、integrity 可空与校验、pin 语义、tenant/release 可携带不同 Org 以暴露不一致）、ApprovalTicket（status 闭集、`resume_token_ref` 必填、`expires_at` 必填）、AuditEvent（outcome 闭集、event_id 必填、org 可空仅系统、forbidden payload key 全量拒绝）、UsageRecord（status 闭集、非负整数、cost 可空、release_digest 必填）、Protocol 可被 duck-type 满足、不可变（含嵌套）、fixture 往返与前向兼容。
+
+边界：沿用 PR-010 的 allow-list（标准库 + `pydantic` + 内部）；新模块只依赖 `deerflow.contracts.*`、`pydantic`、标准库，fail-closed。
+
+### 16.4 PR-011 不包含
+
+显式排除（后续 PR 交付）：
+
+- §5.2 ContextVar 生命周期与 `TEN-001`~`TEN-009` → **PR-012**；
+- Policy / Release / Audit / Usage 的**具体 app 适配器实现**与跨 Org 一致性、签名校验、outbox 投递 → RBAC / Audit / Release Track（PR-030+ / PR-040+ / PR-050+）；
+- Action 注册表（ADR-0005 §5 全量）与每 action 的 payload Schema → Audit Track；
+- 真实 OIDC / Membership 解析与异步入口传播 → PR-013 / PR-014。
