@@ -43,9 +43,9 @@
 | PR-013 | Gateway Tenant 解析适配器（单 Org bootstrap） | #11 | 已交付 | `TEN-入口`（12 测试，TM-001）；`TenantResolutionMiddleware`；fail-closed 503 | `b8108a10` |
 | PR-014A | Worker RunEnvelope 重建 + Tenant 绑定（内嵌 Worker） | #13 | 已交付 | `TEN-入口 Worker`（8 测试）；`tenant_rebuild.py`；`run_agent` 防御性 rebind（§5.2 rule 3/4） | `e1d77242` |
 | PR-014B | Scheduler 入口 Tenant 传播 | — | 阻塞 → scheduler 模块（greenfield，尚未存在） | — | — |
-| PR-014C | Channel / IM-Webhook 入口 Tenant 传播 | — | 未开始 | PR-014A 合并后规划 | — |
+| PR-014C | Channel / IM dispatch Tenant 直接绑定 | #15 | 已交付 | `TEN-入口 Channel`（10 测试）；`resolve_channel_tenant_context` + `channel_tenant_scope`；`_handle_message` 分发包 scope（§5.2 rule 3/6） | `0def292f` |
 
-**Track A 出口**：PR-010～013 + PR-014A 已交付；PR-014C 完成后 Schema Expand（Track B）即可开始。PR-014B（Scheduler）因 scheduler 模块 greenfield 延后，不阻塞 Track B。
+**Track A 出口**：PR-010～013 + PR-014A + PR-014C 已交付 —— **Track A 出口达成，Schema Expand（Track B）解锁**。PR-014B（Scheduler）因 scheduler 模块 greenfield 延后，不阻塞 Track B。
 
 ---
 
@@ -53,7 +53,7 @@
 
 | 逻辑 PR | 主题 | GitHub PR | 状态 | 备注 |
 | --- | --- | --- | --- | --- |
-| PR-020 | 控制面 Schema Expand（org / IAM 表） | — | 阻塞 → Track A | Alembic expand |
+| PR-020 | 控制面 Schema Expand（org / IAM 表） | — | 未开始（Track A 已解锁） | Alembic expand |
 | PR-021 | 存量资源 `org_id` Expand | — | 阻塞 → PR-020 | 可空列 + 兼容索引 |
 | PR-022 | 默认 Org Bootstrap | — | 阻塞 → PR-020 | 幂等 |
 | PR-023 | Backfill Job | — | 阻塞 → PR-022 | dry-run |
@@ -66,7 +66,7 @@
 
 | 逻辑 PR | 主题 | GitHub PR | 状态 | 备注 |
 | --- | --- | --- | --- | --- |
-| PR-030 | 权限注册表与内置角色 | — | 阻塞 → Track A | 正反向单测 |
+| PR-030 | 权限注册表与内置角色 | — | 未开始（Track A 已解锁） | 正反向单测 |
 | PR-031 | 统一 Authorize Service | — | 阻塞 → PR-030 | 403/404；缓存 |
 | PR-032 | Runtime Router 切 RBAC | — | 阻塞 → PR-031 | 按 Thread/Run/Artifact |
 | PR-033 | Admin / Studio Router 切 RBAC | — | 阻塞 → PR-031 | — |
@@ -137,7 +137,7 @@
 
 | 阶段 | 窗口 | 对应 Track / PR | 进度 |
 | --- | --- | --- | --- |
-| Phase A | 0–30 天 | Track 0（完成）+ Track A + PR-062/063 | Track 0 已交付；Track A 进行中（PR-010 / PR-011 / PR-012 / PR-013 / PR-014A 落地；PR-014B 阻塞 scheduler greenfield；下一步 PR-014C） |
+| Phase A | 0–30 天 | Track 0（完成）+ Track A + PR-062/063 | Track 0 已交付；**Track A 出口达成**（PR-010 / PR-011 / PR-012 / PR-013 / PR-014A / PR-014C 落地；PR-014B 阻塞 scheduler greenfield，不阻塞 Track B）；下一步 Track B（PR-020） |
 | Phase B | 31–60 天 | Track B + C + D + PR-060 | 未开始 |
 | Phase C | 61–90 天 | Track E + F（UI/Doctor/Backup/Gate） | 未开始 |
 
