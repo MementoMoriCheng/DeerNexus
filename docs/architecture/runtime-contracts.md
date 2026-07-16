@@ -697,3 +697,35 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 
 - `TEN-009`（数据库连接池复用时清理 tenant session state / RLS）→ DB 相关，属 CI `connection-pool tenant reuse` 阶段与 90 天测试出口（testing-strategy.md §22.1 / §27），不归 PR-012；
 - Gateway Tenant 解析适配器、异步入口（RunEnvelope / Scheduler / IM-Webhook）Tenant 传播 → PR-013 / PR-014。
+
+### 16.7 PR-013：Gateway Tenant 解析适配器（已交付）
+
+落地模块（`backend/app/gateway/`）：
+
+| 模块 | 内容 | 对应章节 |
+| --- | --- | --- |
+| `config.py` | `DEFAULT_BOOTSTRAP_ORG_ID` 常量 + `GatewayConfig.default_org_id`（env `DEER_FLOW_DEFAULT_ORG_ID`） | §5.2、ADR-0001 §6 |
+| `tenant.py` | `TenantResolutionMiddleware`、`resolve_principal`、`resolve_tenant_context`（单 Org bootstrap）、auth-source→`AuthMethod` 映射 | §5.2、api-boundaries §6.1 |
+| `app.py` | 中间件注册（tenant 在 auth 之前 add，因 `BaseHTTPMiddleware` 反序执行） | §5.2 |
+
+解析语义（单 Org bootstrap，ADR-0001 §6 / ADR-0002 §5 行 1）：
+
+- 中间件在 `AuthMiddleware` 鉴权完成后读取 `request.state.user` / `auth_source`，构造可信 `TenantContext` 并 `bind_tenant_context`，`try/finally reset`（§5.2 rule 1/2）。
+- `org_id` 来自配置的 bootstrap org，**不读请求体 org_id**（不可信，§5.1、ADR-0002 §2.1、TM-001）。
+- `auth_source` 映射：`session→session`、`internal→internal`、`auth_disabled→internal`（契约 `AuthMethod` 无 `auth_disabled`）。
+- 可信内部调用带 `X-DeerFlow-Owner-User-Id` 时，`principal.user_id` 取该 header（已信任）；`request_id` 取 `X-Request-Id` header，缺则合成。
+- 非公开路径无认证 principal → fail-closed 503（`authentication_invalid`），不静默放行。
+- bind 成功后 emit 结构化日志（`request_id/org_id/principal_type/principal_id/auth_method`，对齐 §5.3）。
+
+测试（`backend/tests/test_gateway_tenant_resolver.py`，`TEN-入口` 系列 / TM-001）：session 解析到 bootstrap org、internal 调用 honor owner header、auth-disabled 仍 bind、客户端 org_id（header/query）被忽略、bootstrap org 可经 env 配置、try/finally 正常与异常退出恢复、`X-Request-Id` 透传与缺省合成、公开路径绕过。
+
+边界：resolver 在 app 层（`app.gateway`），依赖方向 app→contracts；不动 `deerflow.contracts` allow-list（`contextvars` 已在 PR-012 加入）。`create_app()` 仍可构建（gate smoke 绿）。
+
+### 16.8 PR-013 不包含
+
+显式排除（后续 PR 交付）：
+
+- 真实 Membership / OIDC group 查询（ADR-0003 §10 为 additive-only，MVP 不做 authoritative）→ RBAC Track（PR-030+）；
+- 第二 Org 对外开放 → PR-025；
+- 异步入口（RunEnvelope / Worker / Scheduler / IM-Webhook）Tenant 传播 → PR-014A/B/C；
+- 持久层按 `org_id` owner 过滤（当前 bind 仅建立可信入口不变量与审计主体，尚无消费者）→ PR-024。
