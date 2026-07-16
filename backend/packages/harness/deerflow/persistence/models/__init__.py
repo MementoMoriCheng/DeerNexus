@@ -9,6 +9,7 @@ The actual ORM classes have moved to entity-specific subpackages:
 - ``deerflow.persistence.feedback``
 - ``deerflow.persistence.user``
 - ``deerflow.persistence.orgs`` (tenant control-plane tables, PR-020A)
+- ``deerflow.persistence.iam`` (IAM control-plane tables, PR-020B)
 
 ``RunEventRow`` remains in ``deerflow.persistence.models.run_event`` because
 its storage implementation lives in ``deerflow.runtime.events.store.db`` and
@@ -22,6 +23,12 @@ from deerflow.persistence.channel_connections.model import (
     ChannelOAuthStateRow,
 )
 from deerflow.persistence.feedback.model import FeedbackRow
+from deerflow.persistence.iam.model import (
+    ApiKeyRow,
+    RoleBindingRow,
+    RoleRow,
+    ServiceAccountRow,
+)
 from deerflow.persistence.models.run_event import RunEventRow
 from deerflow.persistence.orgs.model import (
     ExternalIdentityRow,
@@ -34,6 +41,7 @@ from deerflow.persistence.thread_meta.model import ThreadMetaRow
 from deerflow.persistence.user.model import UserRow
 
 __all__ = [
+    "ApiKeyRow",
     "ChannelConnectionRow",
     "ChannelConversationRow",
     "ChannelCredentialRow",
@@ -42,8 +50,11 @@ __all__ = [
     "FeedbackRow",
     "OrgMembershipRow",
     "OrganizationRow",
+    "RoleBindingRow",
+    "RoleRow",
     "RunEventRow",
     "RunRow",
+    "ServiceAccountRow",
     "ThreadMetaRow",
     "UserRow",
     "WorkspaceRow",
