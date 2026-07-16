@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, Index, String, Text, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from deerflow.persistence.base import Base
@@ -15,6 +15,11 @@ class RunRow(Base):
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     thread_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # Tenant boundary for this run (PR-021 Expand: nullable so legacy rows
+    # remain NULL until PR-023 backfill; NOT NULL enforced in PR-025A). FK
+    # RESTRICT keeps run history intact if an org is hard-deleted (orgs
+    # normally soft-delete via deleted_at).
+    org_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
     assistant_id: Mapped[str | None] = mapped_column(String(128))
     user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
@@ -47,4 +52,11 @@ class RunRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
-    __table_args__ = (Index("ix_runs_thread_status", "thread_id", "status"),)
+    __table_args__ = (
+        Index("ix_runs_thread_status", "thread_id", "status"),
+        # Compatible (temporary) org_id-prefixed indexes for org-scoped run
+        # queries (data-model.md §1 #9, §7.2). Cleaned up at the Contract
+        # phase (§13.4).
+        Index("ix_runs_org_status_created", "org_id", "status", "created_at"),
+        Index("ix_runs_org_thread_created", "org_id", "thread_id", "created_at"),
+    )

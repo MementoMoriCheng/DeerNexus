@@ -249,3 +249,25 @@ def safe_create_index(
     if index_name in existing:
         return
     op.create_index(index_name, table_name, columns, unique=unique, **dialect_kwargs)
+
+
+def safe_drop_index(index_name: str, table_name: str) -> None:
+    """``op.drop_index`` that no-ops when the index or table is already gone.
+
+    Companion to :func:`safe_create_index`, and load-bearing for any
+    revision whose ``downgrade`` drops a column that an org_id-prefixed
+    (or other) index references: on SQLite, ``safe_drop_column`` rebuilds
+    the table via ``batch_alter_table`` and *re-creates every reflected
+    index* on the rebuilt table. If a reflected index still names the
+    column being dropped, that recreate fails with
+    ``no such column``. Dropping such indexes explicitly (before the
+    column) avoids the failed recreate; this helper keeps that drop
+    idempotent for re-runs / partial states.
+    """
+    insp = _inspector()
+    if table_name not in insp.get_table_names():
+        return
+    existing = {idx["name"] for idx in insp.get_indexes(table_name)}
+    if index_name not in existing:
+        return
+    op.drop_index(index_name, table_name=table_name)
