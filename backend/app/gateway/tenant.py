@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from fastapi import Request, Response
@@ -138,6 +139,68 @@ def resolve_tenant_context(
         request_id=request_id,
         issued_at=datetime.now(UTC),
     )
+
+
+def resolve_channel_tenant_context(owner_user_id: str, request_id: str) -> TenantContext:
+    """Resolve the trusted TenantContext for a channel dispatch (PR-014C).
+
+    This is the Request-less counterpart of :func:`resolve_tenant_context`,
+    serving the channel dispatch path (``ChannelManager._handle_message``)
+    which has no HTTP request: it drives runs via HTTP loopback using the
+    internal token + ``X-Deer-Flow-Owner-User-Id`` (see
+    ``manager.py::_owner_headers``).
+
+    * ``org_id`` comes from the configured bootstrap org — never synthesized
+      from the message body (ADR-0002 §2.1; TM-001), mirroring the HTTP path;
+    * ``principal`` is built from the trusted connection ``owner_user_id``
+      (already resolved from the connection repo inside the manager); there is
+      no user object, so ``id`` and ``user_id`` both name the owner;
+    * ``auth_method`` is fixed to ``"internal"`` because channel-triggered
+      runs always re-enter via the internal token (``_BOOTSTRAP_AUTH_METHOD_MAP``
+      maps ``internal``→``internal`` the same way on the receiving side).
+    """
+    config = get_gateway_config()
+    principal = PrincipalRef(
+        type="user",
+        id=owner_user_id,
+        user_id=owner_user_id,
+        display_name=None,
+    )
+    return TenantContext(
+        org_id=config.default_org_id,
+        principal=principal,
+        auth_method="internal",
+        request_id=request_id,
+        issued_at=datetime.now(UTC),
+    )
+
+
+@contextmanager
+def channel_tenant_scope(owner_user_id: str | None, request_id: str) -> Iterator[None]:
+    """Bind a TenantContext for the duration of a channel dispatch (PR-014C).
+
+    Complements (does not replace) the HTTP-loopback binding: the channel
+    dispatch task itself becomes a tenant-scoped, auditable entry point per
+    runtime-contracts.md §5.2 rule 3 (explicit, not implicit inheritance).
+
+    When ``owner_user_id`` is ``None`` this is a no-op (mirrors
+    ``manager.py::_owner_headers`` returning ``None``); the downstream HTTP
+    loopback is the fail-closed gate for owner-less dispatches, so this scope
+    binds only when there is a trusted owner and never synthesizes a default
+    Org (§5.2 rule 6).
+
+    Callers do not need to reset manually — the contextmanager restores the
+    contextvar on both normal and exceptional exits (§5.2 rule 2).
+    """
+    if owner_user_id is None:
+        yield
+        return
+    tenant = resolve_channel_tenant_context(owner_user_id, request_id)
+    token = bind_tenant_context(tenant)
+    try:
+        yield
+    finally:
+        reset_tenant_context(token)
 
 
 class TenantResolutionMiddleware(BaseHTTPMiddleware):
