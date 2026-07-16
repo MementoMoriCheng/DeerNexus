@@ -187,3 +187,65 @@ def safe_drop_column(table: str, column_name: str) -> None:
         return
     with op.batch_alter_table(table) as batch:
         batch.drop_column(column_name)
+
+
+def safe_create_table(table_name: str, *columns: sa.Column, **kwargs: object) -> None:
+    """``op.create_table`` that no-ops when the table already exists.
+
+    Closes the documented gap in ``bootstrap.py`` (no analogous
+    ``safe_create_table`` existed alongside ``safe_add_column`` /
+    ``safe_drop_column``). The bootstrap three-branch decision already keeps
+    raw ``op.create_table`` safe — the empty branch uses an unrestricted
+    ``create_all`` + ``stamp head`` (so the upgrade never runs), and the legacy
+    branch's baseline-only ``create_all`` deliberately omits post-baseline
+    tables so their revisions see a DB where the table is genuinely absent.
+    This helper is defence-in-depth on top of that locking: if a table is
+    already present (manual ``CREATE TABLE``, a re-run after a partially
+    applied revision, or a race that bypasses the bootstrap lock), the revision
+    skips it instead of raising ``relation already exists``.
+
+    Unlike ``safe_add_column`` there is no drift-warning pass here: table-level
+    drift detection (comparing every column, constraint, and index) is far more
+    involved than column-level comparison and is better handled by an explicit
+    schema-audit tool. A name match is treated as "close enough; leave as-is".
+
+    Note: indexes that live outside the table (created via
+    ``op.create_index`` / ``batch_alter_table``) are NOT covered by this guard.
+    Use :func:`safe_create_index` for those, so the full table+index revision
+    is idempotent when the legacy branch's ``create_all`` backfill (which seeds
+    test fixtures with the complete schema) has already created both.
+    """
+    insp = _inspector()
+    if table_name in insp.get_table_names():
+        return
+    op.create_table(table_name, *columns, **kwargs)
+
+
+def safe_create_index(
+    index_name: str,
+    table_name: str,
+    columns: list[str],
+    *,
+    unique: bool = False,
+    **dialect_kwargs: object,
+) -> None:
+    """``op.create_index`` that no-ops when the index already exists.
+
+    Companion to :func:`safe_create_table`: when a table revision's
+    ``safe_create_table`` skips (table already present, e.g. the legacy
+    bootstrap branch's full-``create_all`` test seeds), the follow-on
+    ``op.create_index`` would otherwise raise ``index already exists``.
+    This guard checks the inspector first so the whole table+index revision
+    re-runs safely.
+
+    ``dialect_kwargs`` carries partial-index predicates
+    (``sqlite_where`` / ``postgresql_where``) which are forwarded verbatim to
+    ``op.create_index``.
+    """
+    insp = _inspector()
+    if table_name not in insp.get_table_names():
+        return
+    existing = {idx["name"] for idx in insp.get_indexes(table_name)}
+    if index_name in existing:
+        return
+    op.create_index(index_name, table_name, columns, unique=unique, **dialect_kwargs)
