@@ -21,6 +21,7 @@
 | [CI/CD](engineering/ci-cd.md) | MVP 规范 | 流水线、制品、环境晋升与迁移门禁 |
 | [上游同步](engineering/upstream-sync.md) | MVP 规范 | DeerFlow 基线、同步节奏与分叉度量 |
 | [PR 拆分指南](engineering/pr-split-guide.md) | MVP 指南 | Fork、多租户、RBAC、审计与发布的可审查拆分 |
+| [实施进度](engineering/progress.md) | 单一权威 | 按 Track 的 PR 落地状态表（GitHub PR 号、测试 ID、落地 commit） |
 | [90 天 MVP](roadmap/90-day-mvp.md) | 可执行草案 | 分期交付与验收 |
 | [ADR-0001](adr/0001-fork-evolution-strategy.md) | Accepted | Fork 渐进演进决策 |
 | [ADR-0002](adr/0002-tenant-workspace-keys.md) | Accepted | 租户主键、Workspace 语义与资源归属 |

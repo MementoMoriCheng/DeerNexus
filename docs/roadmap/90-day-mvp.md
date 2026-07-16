@@ -1,7 +1,7 @@
 # DeerNexus 90 天 MVP 路线图
 
 > 状态：可执行草案  
-> 关联：[README](../../README.md) · [目标架构](../architecture/target-architecture.md) · [ADR-0001](../adr/0001-fork-evolution-strategy.md) · [ADR-0002](../adr/0002-tenant-workspace-keys.md) · [运行时契约](../architecture/runtime-contracts.md) · [数据模型](../architecture/data-model.md) · [API 边界](../architecture/api-boundaries.md) · [安全基线](../security/baseline.md) · [生产 Runbook](../ops/production-runbook.md) · [测试策略](../engineering/testing-strategy.md)
+> 关联：[README](../../README.md) · [目标架构](../architecture/target-architecture.md) · [ADR-0001](../adr/0001-fork-evolution-strategy.md) · [ADR-0002](../adr/0002-tenant-workspace-keys.md) · [运行时契约](../architecture/runtime-contracts.md) · [数据模型](../architecture/data-model.md) · [API 边界](../architecture/api-boundaries.md) · [安全基线](../security/baseline.md) · [生产 Runbook](../ops/production-runbook.md) · [测试策略](../engineering/testing-strategy.md) · [实施进度](../engineering/progress.md)
 
 **目标**：在 90 天内建成「不会反复推倒」的企业 Agent OS 基座——生产可运行、组织可隔离、操作可审计、Agent 可版本发布。  
 **不以**建成完整市场、计费或知识库为验收。

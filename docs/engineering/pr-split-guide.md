@@ -2,7 +2,7 @@
 
 > 状态：MVP 工程指南 v0.1  
 > 适用范围：DeerFlow Fork 初始化、多租户、RBAC、Audit、Agent Release、Admin UI、运行控制与生产基线  
-> 关联：[ADR-0001](../adr/0001-fork-evolution-strategy.md) · [90 天 MVP](../roadmap/90-day-mvp.md) · [测试策略](testing-strategy.md) · [CI/CD](ci-cd.md) · [上游同步](upstream-sync.md)
+> 关联：[ADR-0001](../adr/0001-fork-evolution-strategy.md) · [90 天 MVP](../roadmap/90-day-mvp.md) · [实施进度](progress.md) · [测试策略](testing-strategy.md) · [CI/CD](ci-cd.md) · [上游同步](upstream-sync.md)
 
 本文把 90 天大改造拆成可审查、可测试、可回滚的 PR。目标不是追求最少文件，而是让每个 PR 只有一个清晰架构意图，并避免在同一变更中同时引入 Schema、授权、业务切流和 UI。
 
