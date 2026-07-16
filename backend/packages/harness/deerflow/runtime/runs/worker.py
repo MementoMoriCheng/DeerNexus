@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from langchain_core.messages import HumanMessage
 
 from deerflow.config.app_config import AppConfig
+from deerflow.contracts import TenantContext, bind_tenant_context, get_tenant_context, reset_tenant_context
 from deerflow.runtime.serialization import serialize
 from deerflow.runtime.stream_bridge import StreamBridge
 from deerflow.runtime.user_context import get_effective_user_id
@@ -87,6 +88,10 @@ class RunContext:
     run_events_config: Any | None = field(default=None)
     thread_store: Any | None = field(default=None)
     app_config: AppConfig | None = field(default=None)
+    # Trusted tenant context carried on the envelope (runtime-contracts
+    # §5.2 rule 4). When set, run_agent rebinds it defensively so the Worker
+    # does not rely solely on ContextVar inheritance across create_task.
+    tenant: TenantContext | None = field(default=None)
 
 
 def _install_runtime_context(config: dict, runtime_context: dict[str, Any]) -> None:
@@ -160,6 +165,16 @@ async def run_agent(
             "Run %s: 'events' stream_mode not supported in gateway (requires astream_events + checkpoint callbacks). Skipping.",
             run_id,
         )
+
+    # Defensive tenant rebind (runtime-contracts §5.2 rule 3/4): the Worker must
+    # not rely solely on ContextVar inheritance across ``create_task``. If a
+    # trusted tenant is carried on the RunContext (from the RunEnvelope) but the
+    # contextvar is unset (e.g. inheritance failed, or a future physical Worker
+    # process starts with a clean context), rebind it here so the run executes
+    # inside a verified tenant scope.
+    tenant_token = None
+    if ctx.tenant is not None and get_tenant_context() is None:
+        tenant_token = bind_tenant_context(ctx.tenant)
 
     try:
         # Initialize RunJournal + write human_message event.
@@ -398,6 +413,10 @@ async def run_agent(
         )
 
     finally:
+        # Restore the tenant contextvar if the Worker rebound it defensively.
+        if tenant_token is not None:
+            reset_tenant_context(tenant_token)
+
         # Flush any buffered journal events and persist completion data
         if journal is not None:
             try:

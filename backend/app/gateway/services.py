@@ -356,6 +356,10 @@ async def start_run(
             raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
     owner_context_token = set_current_user(SimpleNamespace(id=owner_user_id)) if owner_user_id else None
+    # Tenant context is carried on run_ctx (via get_run_context, populated from
+    # the TenantResolutionMiddleware bind) so the embedded Worker can rebind it
+    # defensively from the trusted envelope tenant instead of relying solely on
+    # ContextVar inheritance across create_task (runtime-contracts §5.2 rule 4).
     try:
         try:
             record = await run_mgr.create_or_reject(
