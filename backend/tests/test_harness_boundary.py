@@ -111,3 +111,108 @@ def test_collect_imports_ignores_non_import_mentions(tmp_path: Path, source: str
     imports = _collect_imports(sample)
 
     assert not any(_is_banned(module) for _, module in imports)
+
+
+# ---------------------------------------------------------------------------
+# deerflow.contracts boundary (testing-strategy.md §8)
+#
+# Contracts are the stable boundary between the deerflow runtime kernel and the
+# DeerNexus control plane. They must depend only on the standard library and
+# base types (pydantic is the allowed exception here, since it provides the
+# base DTO mechanism). They must never import ORM models, FastAPI routers,
+# LangGraph/LangChain, or any control-plane service. Keeping this guard in the
+# boundary test means a forbidden import can never slip in via a future PR
+# without turning CI red.
+# ---------------------------------------------------------------------------
+
+CONTRACTS_ROOT = HARNESS_ROOT / "contracts"
+
+# Modules contracts may never import. ``pydantic`` is the sole allowed external
+# dependency; everything else would leak a framework, persistence or
+# control-plane concern into the stable boundary.
+CONTRACTS_BANNED_PREFIXES = (
+    "app.",
+    "deerflow.agents",
+    "deerflow.sandbox",
+    "deerflow.mcp",
+    "deerflow.subagents",
+    "deerflow.models",
+    "deerflow.skills",
+    "deerflow.community",
+    "deerflow.persistence",
+    "deerflow.runtime",
+    "deerflow.config",
+    "fastapi",
+    "langgraph",
+    "langchain",
+    "sqlalchemy",
+    "alembic",
+)
+
+# stdlib / base modules contracts may use. The guard fails closed: anything not
+# in this allow-list is a violation, so adding a dependency requires an
+# explicit decision recorded against runtime-contracts.md §2.
+CONTRACTS_ALLOWED_MODULES = frozenset(
+    {
+        "pydantic",
+        "datetime",
+        "enum",
+        "typing",
+        "typing_extensions",
+        "__future__",
+        "deerflow.contracts",
+    }
+)
+
+
+def _top_level_module(module: str) -> str:
+    return module.split(".", 1)[0]
+
+
+def test_contracts_dir_exists():
+    """The contracts package must live at ``deerflow/contracts`` (spec §2)."""
+    assert CONTRACTS_ROOT.is_dir(), f"expected contracts package at {CONTRACTS_ROOT}"
+    assert (CONTRACTS_ROOT / "__init__.py").is_file()
+
+
+def test_contracts_only_imports_allowlisted_modules():
+    """Every import in deerflow.contracts must be stdlib, pydantic, or internal.
+
+    Uses an allow-list so the boundary fails closed: a new external dependency
+    is only permitted after being explicitly reviewed and added to the allow-list.
+    """
+    assert CONTRACTS_ROOT.is_dir(), "contracts package missing"
+    py_files = sorted(CONTRACTS_ROOT.rglob("*.py"))
+    assert py_files, "contracts package has no python files"
+
+    violations: list[str] = []
+    for py_file in py_files:
+        for lineno, module in _collect_imports(py_file):
+            # Internal intra-contracts imports are always allowed.
+            if module == "deerflow.contracts" or module.startswith("deerflow.contracts."):
+                continue
+            top = _top_level_module(module)
+            if top in CONTRACTS_ALLOWED_MODULES:
+                continue
+            if module in CONTRACTS_BANNED_PREFIXES or any(module == prefix.rstrip(".") or module.startswith(prefix) for prefix in CONTRACTS_BANNED_PREFIXES):
+                rel = py_file.relative_to(HARNESS_ROOT.parent.parent.parent)
+                violations.append(f"  {rel}:{lineno}  imports {module}")
+                continue
+            # Unknown module: fail closed by reporting it for explicit review.
+            rel = py_file.relative_to(HARNESS_ROOT.parent.parent.parent)
+            violations.append(f"  {rel}:{lineno}  imports {module} (not in allow-list; add to CONTRACTS_ALLOWED_MODULES if intentional)")
+
+    assert not violations, "deerflow.contracts must only depend on stdlib, pydantic and itself:\n" + "\n".join(violations)
+
+
+def test_contracts_does_not_import_app_layer():
+    """Contracts must never import the control plane (spec §2, ADR-0001)."""
+    assert CONTRACTS_ROOT.is_dir(), "contracts package missing"
+    violations: list[str] = []
+    for py_file in sorted(CONTRACTS_ROOT.rglob("*.py")):
+        for lineno, module in _collect_imports(py_file):
+            if _is_banned(module):
+                rel = py_file.relative_to(HARNESS_ROOT.parent.parent.parent)
+                violations.append(f"  {rel}:{lineno}  imports {module}")
+
+    assert not violations, "deerflow.contracts must not import the app layer:\n" + "\n".join(violations)

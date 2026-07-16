@@ -1,0 +1,9 @@
+{
+  "code": "tenant_context_missing",
+  "message": "Trusted tenant context is not bound for this request.",
+  "retryable": false,
+  "request_id": "7b8e9f0a-1234-5678-9abc-def012345678",
+  "details": {
+    "entry_point": "gateway"
+  }
+}

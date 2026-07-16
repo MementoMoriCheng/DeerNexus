@@ -1,0 +1,15 @@
+{
+  "schema_version": "v1alpha1",
+  "org_id": "9f1c2b3a-4d5e-4789-abcd-ef0123456789",
+  "workspace_id": null,
+  "principal": {
+    "type": "user",
+    "id": "4a3f2c1e-9b8d-4a7e-b6c5-1a2b3c4d5e6f",
+    "user_id": "4a3f2c1e-9b8d-4a7e-b6c5-1a2b3c4d5e6f",
+    "display_name": "Ada Lovelace"
+  },
+  "auth_method": "oidc",
+  "request_id": "7b8e9f0a-1234-5678-9abc-def012345678",
+  "trace_id": "1234567890abcdef1234567890abcdef",
+  "issued_at": "2026-07-15T10:00:00Z"
+}

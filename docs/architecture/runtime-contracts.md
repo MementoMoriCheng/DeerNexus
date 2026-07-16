@@ -584,3 +584,52 @@ Alpha 阶段允许调整字段，但每次变更必须：
 - 跨区域契约复制；
 - Workspace 级 RBAC；
 - 把 ORM Model 暴露为公共 SDK。
+
+---
+
+## 16. 实现状态
+
+本文冻结契约语义；代码按 [PR 拆分指南](../engineering/pr-split-guide.md) Track A 分阶段交付。本节记录已落地的模块、对应 PR、测试 ID 与尚未实现部分，保证文档、代码和边界测试可双向追溯。字段语义以 §2–§14 为唯一来源，本节不重定义字段。
+
+### 16.1 PR-010：基础包（已交付）
+
+落地模块（`backend/packages/harness/deerflow/contracts/`）：
+
+| 模块 | 内容 | 对应章节 |
+| --- | --- | --- |
+| `versioning.py` | `CURRENT_SCHEMA_VERSION = "v1alpha1"` | §3、§13 |
+| `identity.py` | `PrincipalRef`、`PrincipalType` | §4 |
+| `context.py` | `TenantContext`、`AuthMethod`（DTO 与不变量） | §5、§5.1 |
+| `errors.py` | `ContractError`、`ErrorCode` 注册表、`is_retryable_code` | §12 |
+| `__init__.py` | 公开导出与分阶段交付说明 | §2 |
+
+关键不变量已在 DTO 层强制：
+
+- `PrincipalRef`：`service_account` / `system` 不得携带 `user_id`；`id` 非空；`type` 为闭集 Literal，未知值拒绝；`extra="ignore"` 防止凭据随 DTO 传播。
+- `TenantContext`：`org_id`、`request_id` 非空；`auth_method` 为闭集 Literal；`issued_at` 强制带时区并归一化为 UTC；`schema_version` 默认 `v1alpha1`；`extra="ignore"` 丢弃客户端 `org_id`、cookie、token 等未知字段。
+- `ContractError`：`from_code` 根据 §12 表派生 `retryable`，禁止把安全相关失败误标为可重试；`request_id` 非空。
+
+Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`principal_ref.json`、`tenant_context.json`、`contract_error.json`。
+
+测试（`backend/tests/test_contracts_base.py`，标记 `CONTRACT-010-*`）：
+
+- `CONTRACT-010-IDENT`：PrincipalRef 类别、`user_id` 约束、必填与未知字段丢弃；
+- `CONTRACT-010-TENANT`：schema 版本、必填、`auth_method` 闭集、`issued_at` UTC 归一化与 naive 拒绝、`workspace_id` 可空、客户端字段不覆盖可信 `org_id`；
+- `CONTRACT-010-IMMUTABLE`：`PrincipalRef` / `TenantContext` 冻结、嵌套冻结、`model_copy(update=...)` 仍可用；
+- `CONTRACT-010-ERROR`：注册表与 §12 一致（21 码）、可重试集合、`tenant_context_missing` / `release_unpinned` 不可重试；
+- `CONTRACT-010-FIXTURE`：fixture 载入、稳定往返、`v1alpha1` 与 UTC；
+- `CONTRACT-010-COMPAT`：未知可选字段忽略、缺必填失败。
+
+边界（`backend/tests/test_harness_boundary.py`，testing-strategy.md §8）：`deerflow.contracts` 仅允许标准库与 `pydantic`，禁止导入 `app.*`、ORM、FastAPI、LangGraph/LangChain 及其余 `deerflow.*` 业务子包；采用 allow-list fail-closed。
+
+### 16.2 PR-010 不包含
+
+显式排除（后续 PR 交付）：
+
+- §5.2 ContextVar 生命周期（`bind_tenant_context` / `get_tenant_context` / `require_tenant_context` / `reset_tenant_context`）与 `TEN-001`~`TEN-009` → **PR-012**；
+- §6 `RunEnvelope`、`PolicySnapshotRef`、`EnvelopeIntegrity` → **PR-011**；
+- §7 Policy 契约（`PolicyRequest` / `PolicyDecision` / `PolicyObligation` / `PolicyEvaluator`）→ **PR-011**；
+- §8 Release 契约（`ReleaseRef` / `ReleaseResolver`）→ **PR-011**；
+- §9 `ApprovalTicket`（MVP 仅预留）→ **PR-011**；
+- §10 `AuditEvent` / `EventSink` 与 §11 `UsageRecord` → **PR-011**；
+- 真实 OIDC / Membership 查询、Gateway Tenant 解析适配器、异步入口 Tenant 传播 → PR-013 / PR-014。
