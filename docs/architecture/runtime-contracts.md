@@ -548,10 +548,10 @@ Alpha 阶段允许调整字段，但每次变更必须：
 
 ### 14.2 Context 测试
 
-- [ ] 并发请求、协程、线程池之间不串 TenantContext
-- [ ] 请求完成和异常退出均恢复 ContextVar
+- [x] 并发请求、协程、线程池之间不串 TenantContext
+- [x] 请求完成和异常退出均恢复 ContextVar
 - [ ] Worker、Scheduler、IM 可从可信信封重建上下文
-- [ ] 上下文缺失或 Org 冲突 fail-closed
+- [x] 上下文缺失或 Org 冲突 fail-closed
 
 ### 14.3 Policy 测试
 
