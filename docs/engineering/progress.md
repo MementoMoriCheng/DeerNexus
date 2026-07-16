@@ -40,7 +40,7 @@
 | PR-010 | `deerflow.contracts` 基础包（PrincipalRef / TenantContext / ContractError） | #4 | 已交付 | `CONTRACT-010-*`（76 测试）；boundary allow-list | `7fd9467e` |
 | PR-011 | Policy / Release / Event 契约 + Protocols | #7 | 已交付 | `CONTRACT-011-*`（114 测试）；gitleaks 清洁 | `1cd85c16` |
 | PR-012 | ContextVar 生命周期（bind/get/require/reset）+ `TEN-001`~`TEN-008`（`TEN-009` DB 相关，待 CI 阶段） | #9 | 已交付 | `TEN-001`~`TEN-008`（20 测试）；boundary allow-list 加 `contextvars` | `7a634239` |
-| PR-013 | Gateway Tenant 解析适配器（单 Org bootstrap） | — | 未开始 | — | — |
+| PR-013 | Gateway Tenant 解析适配器（单 Org bootstrap） | #11 | 已交付 | `TEN-入口`（12 测试，TM-001）；`TenantResolutionMiddleware`；fail-closed 503 | `b8108a10` |
 | PR-014A/B/C | 异步入口 Tenant 传播（RunEnvelope / Scheduler / IM-Webhook） | — | 未开始 | 每入口 fail-closed 测试 | — |
 
 **Track A 出口**：PR-010～014 完成后，Schema Expand（Track B）可开始。
@@ -135,7 +135,7 @@
 
 | 阶段 | 窗口 | 对应 Track / PR | 进度 |
 | --- | --- | --- | --- |
-| Phase A | 0–30 天 | Track 0（完成）+ Track A + PR-062/063 | Track 0 已交付；Track A 进行中（PR-010 / PR-011 / PR-012 落地，下一步 PR-013） |
+| Phase A | 0–30 天 | Track 0（完成）+ Track A + PR-062/063 | Track 0 已交付；Track A 进行中（PR-010 / PR-011 / PR-012 / PR-013 落地，下一步 PR-014） |
 | Phase B | 31–60 天 | Track B + C + D + PR-060 | 未开始 |
 | Phase C | 61–90 天 | Track E + F（UI/Doctor/Backup/Gate） | 未开始 |
 
