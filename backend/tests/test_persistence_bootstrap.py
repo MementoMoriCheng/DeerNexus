@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0003_tenant_tables"
+HEAD = "0004_iam_tables"
 BASELINE = "0001_baseline"
 
 
@@ -615,7 +615,7 @@ class TestDecideState:
 # ---------------------------------------------------------------------------
 
 
-def test_head_revision_is_tenant_tables_revision() -> None:
+def test_head_revision_is_iam_tables_revision() -> None:
     assert _get_head_revision() == HEAD
 
 
