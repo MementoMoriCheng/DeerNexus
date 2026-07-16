@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.gateway.auth_disabled import warn_if_auth_disabled_enabled
 from app.gateway.auth_middleware import AuthMiddleware
-from app.gateway.config import get_gateway_config
+from app.gateway.config import DEFAULT_ORG_NAME, DEFAULT_ORG_SLUG, get_gateway_config
 from app.gateway.csrf_middleware import CSRFMiddleware, get_configured_cors_origins
 from app.gateway.deps import langgraph_runtime
 from app.gateway.routers import (
@@ -123,6 +123,41 @@ async def _ensure_admin_user(app: FastAPI) -> None:
             logger.exception("LangGraph thread migration failed (non-fatal)")
 
 
+async def _ensure_default_org(app: FastAPI) -> None:
+    """Startup hook: materialise the default Organization + system admin role (PR-022).
+
+    The single-Org tenant resolver (PR-013/014) already binds every request
+    and channel dispatch to ``config.default_org_id``; this hook creates the
+    matching ``organizations`` row so that FK targets exist for
+    ``runs.org_id`` / ``feedback.org_id`` etc. (PR-021) and for the admin
+    OrgMembership created later in ``/initialize``. The system-template
+    ``org:admin`` role is created here too (no FK dependency) so the
+    RoleBinding's ``role_id`` FK target exists before the first admin binds.
+
+    Idempotent and non-fatal: a failure logs and continues (the resolver
+    still hands out the configured org id; a later boot or operator can
+    reconcile). Runs inside the lifespan after persistence is ready.
+    """
+    from deerflow.persistence.engine import get_session_factory
+    from deerflow.tenancy import ensure_default_org, ensure_system_admin_role
+
+    sf = get_session_factory()
+    if sf is None:
+        return  # Persistence not initialised (some test/boot paths).
+
+    config = get_gateway_config()
+    try:
+        await ensure_default_org(
+            sf,
+            org_id=config.default_org_id,
+            slug=DEFAULT_ORG_SLUG,
+            name=DEFAULT_ORG_NAME,
+        )
+        await ensure_system_admin_role(sf)
+    except Exception:
+        logger.exception("Default Org bootstrap failed (non-fatal)")
+
+
 async def _iter_store_items(store, namespace, *, page_size: int = 500):
     """Paginated async iterator over a LangGraph store namespace.
 
@@ -211,6 +246,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize LangGraph runtime components (StreamBridge, RunManager, checkpointer, store)
     async with langgraph_runtime(app, startup_config):
         logger.info("LangGraph runtime initialised")
+
+        # Materialise the default Organization + system admin role (PR-022).
+        # Must run BEFORE _ensure_admin_user so the Org row exists for any
+        # admin-creation path, and before the first /initialize binds a
+        # RoleBinding (the role_id FK target must already exist).
+        await _ensure_default_org(app)
 
         # Check admin bootstrap state and migrate orphan threads after admin exists.
         # Must run AFTER langgraph_runtime so app.state.store is available for thread migration

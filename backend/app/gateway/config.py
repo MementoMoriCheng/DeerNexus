@@ -8,6 +8,12 @@ from pydantic import BaseModel, Field
 # via DEER_FLOW_DEFAULT_ORG_ID so dev/staging/prod don't share an org id.
 DEFAULT_BOOTSTRAP_ORG_ID = "default"
 
+# Display attributes for the default Organization row materialised by PR-022.
+# The slug is platform-unique among non-deleted orgs; "default" cannot collide
+# with a future second org because multi-org is gated behind PR-025B.
+DEFAULT_ORG_SLUG = "default"
+DEFAULT_ORG_NAME = "Default Organization"
+
 
 class GatewayConfig(BaseModel):
     """Configuration for the API Gateway."""

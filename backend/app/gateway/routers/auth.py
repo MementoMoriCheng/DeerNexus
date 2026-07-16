@@ -470,6 +470,43 @@ class InitializeAdminRequest(BaseModel):
     _strong_password = field_validator("password")(classmethod(lambda cls, v: _validate_strong_password(v)))
 
 
+async def _establish_admin_tenant_relationships(user_id: str) -> None:
+    """Create the first admin's OrgMembership + admin RoleBinding (PR-022).
+
+    Runs after ``create_user`` succeeds in ``/initialize``. The default Org
+    and system-template ``org:admin`` role are seeded by the lifespan
+    (``_ensure_default_org``); this binds the just-created admin user into
+    them. All three helpers are idempotent, so a re-run (e.g. a future
+    code path that also calls this) converges without raising.
+
+    Non-fatal on failure: the admin user already exists, so a relationship
+    error is logged (and surfaced via the audit event) rather than turning a
+    successful first-admin creation into a 500. An operator can reconcile on
+    the next boot, which re-runs the lifespan seed.
+    """
+    from app.gateway.config import get_gateway_config
+    from deerflow.persistence.engine import get_session_factory
+    from deerflow.tenancy import (
+        ensure_admin_membership,
+        ensure_admin_role_binding,
+        ensure_system_admin_role,
+    )
+
+    sf = get_session_factory()
+    if sf is None:
+        logger.warning("Cannot establish admin tenant relationships: persistence not ready")
+        return
+
+    config = get_gateway_config()
+    org_id = config.default_org_id
+    try:
+        await ensure_admin_membership(sf, org_id=org_id, user_id=user_id)
+        role = await ensure_system_admin_role(sf)
+        await ensure_admin_role_binding(sf, org_id=org_id, user_id=user_id, role_id=role.id)
+    except Exception:
+        logger.exception("Failed to establish admin tenant relationships for user %s (non-fatal)", user_id)
+
+
 @router.post("/initialize", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def initialize_admin(request: Request, response: Response, body: InitializeAdminRequest):
     """Create the first admin account on initial system setup.
@@ -495,6 +532,13 @@ async def initialize_admin(request: Request, response: Response, body: Initializ
             status_code=status.HTTP_409_CONFLICT,
             detail=AuthErrorResponse(code=AuthErrorCode.SYSTEM_ALREADY_INITIALIZED, message="System already initialized").model_dump(),
         )
+
+    # Establish the admin's tenant relationships (PR-022): active OrgMembership
+    # in the default Org + a binding to the system-template org:admin role.
+    # Non-fatal: the admin user is already created, so a relationship failure
+    # must not turn a successful /initialize into a 500. The bootstrap helpers
+    # are idempotent and emit audit events rather than silently dropping them.
+    await _establish_admin_tenant_relationships(str(user.id))
 
     token = create_access_token(str(user.id), token_version=user.token_version)
     _set_session_cookie(response, token, request)
