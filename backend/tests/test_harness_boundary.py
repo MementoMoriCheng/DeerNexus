@@ -155,6 +155,7 @@ CONTRACTS_BANNED_PREFIXES = (
 CONTRACTS_ALLOWED_MODULES = frozenset(
     {
         "pydantic",
+        "contextvars",
         "datetime",
         "enum",
         "typing",

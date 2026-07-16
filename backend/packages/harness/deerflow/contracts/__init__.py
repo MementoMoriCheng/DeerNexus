@@ -18,14 +18,23 @@ Phased rollout (``docs/engineering/pr-split-guide.md`` Track A):
 
 * PR-010 — PrincipalRef, TenantContext DTO, ContractError + error code registry,
   and canonical JSON fixtures.
-* PR-011 (this commit) — RunEnvelope, PolicySnapshotRef, EnvelopeIntegrity,
+* PR-011 — RunEnvelope, PolicySnapshotRef, EnvelopeIntegrity,
   Policy (Request/Decision/Obligation/Evaluator), ReleaseRef/Resolver,
   ApprovalTicket, AuditEvent/AuditSink, UsageRecord/UsageRecorder + fixtures.
-* PR-012 — TenantContext ContextVar lifecycle helpers.
+* PR-012 (this commit) — TenantContext ContextVar lifecycle helpers
+  (bind/get/require/reset + TenantContextError).
 """
 
 from deerflow.contracts.approval import ApprovalStatus, ApprovalTicket
-from deerflow.contracts.context import AuthMethod, TenantContext
+from deerflow.contracts.context import (
+    AuthMethod,
+    TenantContext,
+    TenantContextError,
+    bind_tenant_context,
+    get_tenant_context,
+    require_tenant_context,
+    reset_tenant_context,
+)
 from deerflow.contracts.errors import ContractError, ErrorCode, is_retryable_code
 from deerflow.contracts.events import (
     AuditEvent,
@@ -65,6 +74,11 @@ __all__ = [
     # context
     "TenantContext",
     "AuthMethod",
+    "TenantContextError",
+    "bind_tenant_context",
+    "get_tenant_context",
+    "require_tenant_context",
+    "reset_tenant_context",
     # errors
     "ContractError",
     "ErrorCode",

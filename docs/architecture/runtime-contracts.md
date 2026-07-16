@@ -667,3 +667,33 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 - Policy / Release / Audit / Usage 的**具体 app 适配器实现**与跨 Org 一致性、签名校验、outbox 投递 → RBAC / Audit / Release Track（PR-030+ / PR-040+ / PR-050+）；
 - Action 注册表（ADR-0005 §5 全量）与每 action 的 payload Schema → Audit Track；
 - 真实 OIDC / Membership 解析与异步入口传播 → PR-013 / PR-014。
+
+### 16.5 PR-012：ContextVar 生命周期（已交付）
+
+落地模块（`backend/packages/harness/deerflow/contracts/context.py`）：§5.2 的四个生命周期函数与 `TenantContextError`，与 `TenantContext` DTO 同模块。
+
+| 符号 | 语义 | 对应章节 |
+| --- | --- | --- |
+| `_current_tenant` | `ContextVar[TenantContext \| None]`，`default=None`，名为 `deerflow_current_tenant` | §5.2 |
+| `bind_tenant_context(context) -> Token` | 绑定当前任务上下文，返回 reset token | §5.2 |
+| `reset_tenant_context(token) -> None` | 用 token 恢复先前值（必须 try/finally） | §5.2 |
+| `get_tenant_context() -> TenantContext \| None` | 读取或返回 None，**不回退默认 Org** | §5.2、§5.1 |
+| `require_tenant_context() -> TenantContext` | 未绑定时 `raise TenantContextError(TENANT_CONTEXT_MISSING)` | §5.2 |
+| `TenantContextError(RuntimeError)` | 携带稳定 `ErrorCode`，入口层可据此产出 `ContractError` 信封 | §12 |
+
+关键不变量已在代码层强制：
+
+- `bind` 必须配 `reset`（调用方 try/finally）；测试以 autouse fixture 在每个用例 teardown 断言无残留（TEN-006）。
+- `get` 永不合成默认 Org；`require` 缺失即抛 `tenant_context_missing`（fail-closed），不可重试。
+- `TenantContextError` 携带 `ErrorCode` 而非字符串，PR-013/014 入口层据此稳定捕获，无需字符串匹配。
+
+测试（`backend/tests/test_tenant_context_lifecycle.py`，标记 `TEN-001`~`TEN-008`）：绑定可读（TEN-001）、正常退出恢复含嵌套（TEN-002）、异常退出恢复（TEN-003）、并发协程 OrgA/OrgB 不串且子任务快照不被父任务后续 rebind 污染（TEN-004）、裸线程池不继承且 `copy_context().run` 转义有效（TEN-005）、autouse 断言无残留（TEN-006）、缺失抛 `tenant_context_missing` 且码不可重试（TEN-007）、不回退默认 Org（TEN-008）。
+
+边界：`contextvars` 为标准库，已加入 `test_harness_boundary.py` 的 `CONTRACTS_ALLOWED_MODULES`（§2 允许标准库 + `pydantic`）；`context.py` 未引入 `app.*`、ORM、FastAPI 等被禁依赖。
+
+### 16.6 PR-012 不包含
+
+显式排除（后续 PR 交付）：
+
+- `TEN-009`（数据库连接池复用时清理 tenant session state / RLS）→ DB 相关，属 CI `connection-pool tenant reuse` 阶段与 90 天测试出口（testing-strategy.md §22.1 / §27），不归 PR-012；
+- Gateway Tenant 解析适配器、异步入口（RunEnvelope / Scheduler / IM-Webhook）Tenant 传播 → PR-013 / PR-014。
