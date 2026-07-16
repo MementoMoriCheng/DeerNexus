@@ -1,0 +1,11 @@
+{
+  "schema_version": "v1alpha1",
+  "org_id": "9f1c2b3a-4d5e-4789-abcd-ef0123456789",
+  "workspace_id": null,
+  "package_id": "pkg-demo-11111111-2222-3333-4444-555555555555",
+  "agent_name": "demo",
+  "version": "1.2.0",
+  "digest": "sha256:5d41402abc4b2a76b9719d911017c592a3b2c4d5e6f7890abcdef1234567890",
+  "channel": "prod",
+  "resolved_at": "2026-07-16T09:59:00Z"
+}

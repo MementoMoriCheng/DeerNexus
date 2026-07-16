@@ -1,0 +1,24 @@
+{
+  "schema_version": "v1alpha1",
+  "decision": "allow",
+  "reason_code": "rule_match",
+  "reason": "Matched org default policy.",
+  "rule_id": "org-default-allow-run",
+  "policy_version": "2026-07-15-01",
+  "evaluated_at": "2026-07-16T10:00:01Z",
+  "expires_at": null,
+  "obligations": [
+    {
+      "type": "audit",
+      "parameters": {
+        "event_action": "runtime.run.created"
+      }
+    },
+    {
+      "type": "limit",
+      "parameters": {
+        "timeout_seconds": 1800
+      }
+    }
+  ]
+}
