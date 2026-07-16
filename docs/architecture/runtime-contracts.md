@@ -729,3 +729,33 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 - 第二 Org 对外开放 → PR-025；
 - 异步入口（RunEnvelope / Worker / Scheduler / IM-Webhook）Tenant 传播 → PR-014A/B/C；
 - 持久层按 `org_id` owner 过滤（当前 bind 仅建立可信入口不变量与审计主体，尚无消费者）→ PR-024。
+
+### 16.9 PR-014A：Worker RunEnvelope 重建 + Tenant 绑定（已交付）
+
+落地模块：
+
+| 模块 | 内容 | 对应章节 |
+| --- | --- | --- |
+| `app/gateway/tenant_rebuild.py` | `rebuild_tenant_context(envelope)`、`bind_tenant_from_envelope(envelope)` | §5.2 rule 4 |
+| `runtime/runs/worker.py` | `RunContext.tenant` 字段（可选，向后兼容）；`run_agent` 入口防御性 rebind | §5.2 rule 3/4 |
+| `app/gateway/deps.py` | `get_run_context` 从 contextvar 填充 `tenant` | §5.2 |
+
+解析语义（§5.2 rule 3/4，ADR-0002 §3 invariant 6）：
+
+- `rebuild_tenant_context` 从可信 `RunEnvelope.tenant` 重建 `TenantContext`——**从信封而非 contextvar 继承**，为未来物理 Worker 拆分（ADR-0006）铺路。envelope/tenant 缺失 → `TenantContextError(TENANT_CONTEXT_MISSING)` fail-closed（不回退默认 Org）。
+- `run_agent` 入口防御性 rebind：若 `RunContext.tenant` 已设置但 contextvar 未设置（模拟继承失效或物理 Worker），从 `RunContext.tenant` 显式 rebind，不依赖隐式继承。contextvar 已设置时不覆盖（信任继承的作用域）。`finally` 恢复。
+- 当前内嵌模式下 tenant 通过 `create_task` 继承 + 防御性 rebind 双重保障；RunEnvelope 暂不持久化（同进程不需要）。
+
+测试（`backend/tests/test_tenant_rebuild.py`，`TEN-入口` Worker 系列 / TM-024）：rebuild 返回信封 tenant、bind 可读、org 来自信封非默认、None envelope fail-closed、Worker contextvar 未设置时防御性 rebind、contextvar 已设置时不覆盖、无 tenant 时无作用域运行、异常退出恢复。
+
+边界：`worker.py` 在 `deerflow.runtime`，可依赖 `deerflow.contracts`（runtime→contracts 允许）；`tenant_rebuild.py` 在 app 层。不动 contracts allow-list。`RunContext.tenant` 为可选字段，现有 worker 测试无回归。
+
+### 16.10 PR-014A 不包含
+
+显式排除（后续 PR 交付）：
+
+- **PR-014B Scheduler**：scheduler 模块完全 greenfield（无 ScheduledTask 模型、无 cron/APScheduler），属独立功能，待 scheduler 存在后做 tenant 传播；
+- **PR-014C Channel/IM/Webhook**：channel 触发的 run 当前通过 HTTP 回环（`_owner_headers` → internal token → `TenantResolutionMiddleware`）已获得 tenant 绑定；channel dispatch 任务自身的直接 bind 待 PR-014C；
+- RunEnvelope 持久化与跨进程 `EnvelopeIntegrity` 校验（同进程不需要；属未来物理 Worker 拆分，ADR-0006）；
+- `release_ref` / `policy_snapshot` 一致性校验（属 Release Track PR-050+ / RBAC Track PR-030+）；
+- TEN-009（DB 连接池 RLS 清理）→ CI 阶段。

@@ -284,7 +284,14 @@ def get_run_context(request: Request) -> RunContext:
     ``event_store`` / ``run_events_config`` pair stays frozen to the snapshot
     captured in :func:`langgraph_runtime` so callers never see a store bound
     to one backend paired with a config pointing at another.
+
+    The ``tenant`` field is populated from the bound TenantContext (set by
+    TenantResolutionMiddleware, PR-013) so the embedded Worker can defensively
+    rebind it (runtime-contracts §5.2 rule 4) instead of relying solely on
+    ContextVar inheritance.
     """
+    from deerflow.contracts import get_tenant_context
+
     return RunContext(
         checkpointer=get_checkpointer(request),
         store=get_store(request),
@@ -292,6 +299,7 @@ def get_run_context(request: Request) -> RunContext:
         run_events_config=getattr(request.app.state, "run_events_config", None),
         thread_store=get_thread_store(request),
         app_config=get_config(),
+        tenant=get_tenant_context(),
     )
 
 
