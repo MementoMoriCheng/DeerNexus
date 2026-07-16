@@ -755,7 +755,37 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 显式排除（后续 PR 交付）：
 
 - **PR-014B Scheduler**：scheduler 模块完全 greenfield（无 ScheduledTask 模型、无 cron/APScheduler），属独立功能，待 scheduler 存在后做 tenant 传播；
-- **PR-014C Channel/IM/Webhook**：channel 触发的 run 当前通过 HTTP 回环（`_owner_headers` → internal token → `TenantResolutionMiddleware`）已获得 tenant 绑定；channel dispatch 任务自身的直接 bind 待 PR-014C；
+- ~~**PR-014C Channel/IM/Webhook**~~：已在 PR-014C 交付（见 §16.11）；
 - RunEnvelope 持久化与跨进程 `EnvelopeIntegrity` 校验（同进程不需要；属未来物理 Worker 拆分，ADR-0006）；
 - `release_ref` / `policy_snapshot` 一致性校验（属 Release Track PR-050+ / RBAC Track PR-030+）；
 - TEN-009（DB 连接池 RLS 清理）→ CI 阶段。
+
+### 16.11 PR-014C：Channel / IM dispatch Tenant 直接绑定（已交付）
+
+落地模块：
+
+| 模块 | 内容 | 对应章节 |
+| --- | --- | --- |
+| `app/gateway/tenant.py` | `resolve_channel_tenant_context(owner_user_id, request_id)`（无 `Request` 解析器，镜像 HTTP 路径的 `resolve_tenant_context`）；`channel_tenant_scope(owner_user_id, request_id)` contextmanager（bind/reset，owner 缺失时 no-op） | §5.2 rule 2/3/6 |
+| `app/channels/manager.py` | `ChannelManager._handle_message` 在 `_apply_effective_owner` 后、现有 try/except 外层用 `channel_tenant_scope` 包裹分发 | §5.2 rule 3 |
+
+解析语义（§5.2 rule 3，补足而非替代 HTTP 回环）：
+
+- channel 触发的 run 创建走 **HTTP 回环**（`_owner_headers` → internal token → `TenantResolutionMiddleware`），tenant 已在接收侧绑定。但分发任务自身此前**从不** `bind_tenant_context`（`grep backend/app/channels` 零命中）。
+- PR-014C 让分发任务自身成为可审计的 tenant-scoped 入口（§5.2 rule 3「显式非隐式」）：`_handle_message` 用 `channel_tenant_scope` 包住 COMMAND + CHAT 两条路径，per-dispatch 生成 `request_id`，`org_id` 来自配置（非合成默认值），`principal` 来自可信连接 owner，`auth_method="internal"`（回环恒走 internal token）。
+- owner 缺失时 scope 为 no-op（镜像 `_owner_headers` 返回 `None`），**不合成默认 Org**（§5.2 rule 6）——回环仍是 fail-closed 关口。
+- `with` 作最外层 scope，不重构现有 try/except；异常退出时 contextmanager 的 `finally` 恢复 contextvar（§5.2 rule 2）。
+
+测试（`backend/tests/test_channel_tenant_binding.py`，`TEN-入口` Channel 系列 / TM-001 / TM-024）：解析器 org 来自 config、principal 命名自 owner、auth_method=internal、request_id 回显、issued_at 时区感知；scope bind/restore、异常退出 restore、owner 缺失 no-op；集成用例在 mock `runs.wait` 闭包内捕获 `get_tenant_context()`，证明分发期间 tenant 已绑定且 org 正确、owner 缺失时不绑定（10 测试）。
+
+边界：纯 app 层改动，不动 contracts allow-list；不动 `_owner_headers` / 回环 HTTP 行为 / 运行准入。**诚实标注**：本 PR 是增量补强（回环路径已让接收侧 tenant 可用），价值在于分发任务自身成为 tenant-scoped 审计入口并为未来直驱 runtime 铺路。现有 channel 测试无回归（13 个 Windows 文件系统/symlink/UUID 时序失败在 clean main 同样存在，与本 PR 无关）。
+
+### 16.12 PR-014C 不包含
+
+显式排除（后续 PR 交付）：
+
+- **PR-014B Scheduler**：继续阻塞（scheduler 模块 greenfield）；PR-014C 完成后 Track A 出口以 A+C 达成，Track B 解锁，B 不阻塞 Track B；
+- 不在 `_owner_headers` 加 `X-Request-Id` 端到端传播（未来增强，本 PR 聚焦 tenant scope）；
+- 不做 principal-disabled / Org-suspended / Workspace-mismatch 完整矩阵（需 Track B Membership 数据）；
+- 不构建 IM webhook 路由（不存在；所有 IM 为出站 WebSocket/Socket Mode/长轮询连接）；
+- 不直驱内嵌 runtime（当前仍走 HTTP 回环；直驱属未来 Worker 拆分）。

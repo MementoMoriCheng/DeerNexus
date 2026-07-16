@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import re
 import time
+import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from app.channels.message_bus import (
 from app.channels.store import ChannelStore
 from app.gateway.csrf_middleware import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, generate_csrf_token
 from app.gateway.internal_auth import create_internal_auth_headers
+from app.gateway.tenant import channel_tenant_scope
 from deerflow.config.agents_config import load_agent_config
 from deerflow.config.paths import make_safe_user_id
 from deerflow.runtime.user_context import get_effective_user_id
@@ -1060,50 +1062,60 @@ class ChannelManager:
 
     async def _handle_message(self, msg: InboundMessage) -> None:
         msg = _apply_effective_owner(msg)
-        try:
-            # Non-command chat can be rejected before it consumes a semaphore
-            # slot. Commands are handled below because provider adapters consume
-            # binding commands before manager dispatch, and _handle_command()
-            # applies its own admission gate for manager-level commands.
-            bound_identity_rejection = None
-            if msg.msg_type != InboundMessageType.COMMAND:
-                bound_identity_rejection = await self._get_bound_identity_rejection(msg)
-            if bound_identity_rejection is not None:
-                await self._reject_unbound_channel_message(msg, bound_identity_rejection=bound_identity_rejection)
-                return
+        # Bind a tenant scope for this dispatch so the channel task is itself an
+        # auditable tenant-scoped entry point (runtime-contracts.md §5.2 rule 3:
+        # explicit, not implicit inheritance). This complements — does not
+        # replace — the HTTP-loopback binding performed by
+        # TenantResolutionMiddleware on the re-entered run request. When no
+        # trusted owner is present the scope is a no-op; the loopback remains the
+        # fail-closed gate, so no default Org is synthesized here (§5.2 rule 6).
+        request_id = uuid.uuid4().hex
+        owner_user_id = _effective_owner_user_id(msg)
+        with channel_tenant_scope(owner_user_id, request_id):
+            try:
+                # Non-command chat can be rejected before it consumes a semaphore
+                # slot. Commands are handled below because provider adapters consume
+                # binding commands before manager dispatch, and _handle_command()
+                # applies its own admission gate for manager-level commands.
+                bound_identity_rejection = None
+                if msg.msg_type != InboundMessageType.COMMAND:
+                    bound_identity_rejection = await self._get_bound_identity_rejection(msg)
+                if bound_identity_rejection is not None:
+                    await self._reject_unbound_channel_message(msg, bound_identity_rejection=bound_identity_rejection)
+                    return
 
-            async with self._semaphore:
-                if msg.msg_type == InboundMessageType.COMMAND:
-                    await self._handle_command(msg)
-                else:
-                    await self._handle_chat(msg, bound_identity_checked=True)
-        except InvalidChannelSessionConfigError as exc:
-            logger.warning(
-                "Invalid channel session config for %s (chat=%s): %s",
-                msg.channel_name,
-                msg.chat_id,
-                exc,
-            )
-            await self._send_error(msg, str(exc))
-        except SlashSkillCommandResolutionError as exc:
-            logger.warning(
-                "Slash skill command resolution failed for %s (chat=%s): %s",
-                msg.channel_name,
-                msg.chat_id,
-                exc,
-            )
-            await self._send_error(msg, str(exc))
-        except Exception:
-            logger.exception(
-                "Error handling message from %s (chat=%s)",
-                msg.channel_name,
-                msg.chat_id,
-            )
-            # Transient/unexpected failure: release the dedupe key so a provider
-            # redelivery of the same message can recover instead of being dropped
-            # for the dedupe TTL.
-            self._release_inbound_dedupe_key(msg)
-            await self._send_error(msg, "An internal error occurred. Please try again.")
+                async with self._semaphore:
+                    if msg.msg_type == InboundMessageType.COMMAND:
+                        await self._handle_command(msg)
+                    else:
+                        await self._handle_chat(msg, bound_identity_checked=True)
+            except InvalidChannelSessionConfigError as exc:
+                logger.warning(
+                    "Invalid channel session config for %s (chat=%s): %s",
+                    msg.channel_name,
+                    msg.chat_id,
+                    exc,
+                )
+                await self._send_error(msg, str(exc))
+            except SlashSkillCommandResolutionError as exc:
+                logger.warning(
+                    "Slash skill command resolution failed for %s (chat=%s): %s",
+                    msg.channel_name,
+                    msg.chat_id,
+                    exc,
+                )
+                await self._send_error(msg, str(exc))
+            except Exception:
+                logger.exception(
+                    "Error handling message from %s (chat=%s)",
+                    msg.channel_name,
+                    msg.chat_id,
+                )
+                # Transient/unexpected failure: release the dedupe key so a provider
+                # redelivery of the same message can recover instead of being dropped
+                # for the dedupe TTL.
+                self._release_inbound_dedupe_key(msg)
+                await self._send_error(msg, "An internal error occurred. Please try again.")
 
     # -- chat handling -----------------------------------------------------
 
