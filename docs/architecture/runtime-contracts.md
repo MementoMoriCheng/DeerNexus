@@ -919,3 +919,34 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
 - 把 `phase` 翻到 `active`：操作者的 CD 动作，门禁在 ci-cd §10.3；doctor 只读不翻；
 - 移除 `user_id` 隔离分支 + 清理临时兼容索引 + org-scope 现有全局唯一（Contract，PR-025D）：ci-cd §10.2 要求 Contract 至少晚一个稳定窗口；
 - RLS（§11.1 spike）、Audit 接入（Track D）。
+
+### 16.21 PR-025C+：解析器切 Membership-based Org 解析（已交付）
+
+让多租户在 HTTP 请求路径真正生效的关键一步。把 `resolve_tenant_context` 从单 Org bootstrap（所有人 → `default_org_id`）切换为**基于 OrgMembership 的 org 解析**，门禁在 `tenancy.multi_org.phase`。PR-025B 的 Flag 机制 + PR-025C 的 doctor 探测都为此铺路。
+
+落地：
+
+- **新建 membership-read helper（仓库此前无此代码，只有写侧 `ensure_admin_membership`）**：`deerflow/tenancy/membership.py::get_active_membership(sf, *, user_id) -> OrgMembershipRow | None`。**单 membership 严格语义**：0 个 active → `None`（调用方 fail-closed）；1 个 active → 该 row（`org_id` 绑 TenantContext）；>1 个 active → raise `MultiMembershipError`（携带 user_id + count，调用方 fail-closed）。查询命中 `idx_org_memberships_user_status (user_id, status)` 索引，按 `created_at ASC` 确定性排序；纯读不 commit。
+- **`resolve_tenant_context` 改 `async` + phase 门禁**：顶部读 `current_multi_org_phase()`。`disabled` → 今天的快速单 Org 路径（无 await、无 DB，行为与今天完全一致——可回滚）；`validation`/`active` → 经延迟 import 取 `get_session_factory()`，调 `get_active_membership(sf, user_id=principal.user_id)`，org 来自返回的 membership。`principal.user_id` 已由 `resolve_principal` 正确计算（`get_trusted_internal_owner_user_id(request)` else `str(getattr(user, "id"))`——覆盖 session UUID id 与内部 owner header）。
+- **middleware 一行 await 改动**：`TenantResolutionMiddleware.dispatch`（已是 async）调用处 `resolve_tenant_context(...)` → `await resolve_tenant_context(...)`。现有 `try/except Exception → 503` fail-closed wrapper **不变**——`MultiMembershipError`、`RuntimeError`（无 membership / sf=None）自动捕获成 503。
+
+语义与边界：
+
+- **仅 HTTP 路径**：channel dispatch 路径（`resolve_channel_tenant_context` + `channel_tenant_scope`，同步 `@contextmanager`）**保持单 Org 不动**——它只有 `owner_user_id` 无 Request，且 `channel_tenant_scope` 在 `manager.py:1074` 以同步 `with` 调用。channel membership 切换留给后续 PR。
+- **TEN-008 不变量保持**：无 membership 不合成默认 org——`validation`/`active` phase 下无 active membership → fail-closed 503（不回退 `default_org_id`）。
+- **backend=memory 处理**：memory 模式 `get_session_factory()` 返回 None。`disabled` phase 不触达 DB（memory 测试不受影响）；`validation`/`active` 遇 sf=None → fail-closed RuntimeError → 503（正确：memory 模式不该开多租户）。
+- **可信内部/auth-disabled 主体**：它们的 `principal.user_id` 是真实 owner（内部）或合成 id（auth-disabled）。`disabled` phase 走单 Org 不受影响；翻到 validation/active 后若无 membership 行 → fail-closed（操作者须先建 membership，这是 CD 步骤）。
+- **可回滚**：`phase=disabled` = 今天的同步单 Org 行为（无 DB 查询、无 await 成本）。Flag 回滚即行为回滚。
+- **不翻 `active`**：本 PR 只交付机制；`phase` 翻 `active` 仍是操作者 CD 动作（ci-cd §10.3 门禁）。
+
+测试：`test_membership_resolver.py`（`get_active_membership` 三态 0/1/>1 + 非 active status 排除 + resolver phase 门禁 disabled/validation/active + fail-closed 无 membership / 多 membership / sf=None）。既有 `test_gateway_tenant_resolver.py` 12 测试在默认 `disabled` phase 下保持绿（回归 backstop）。全套 backend suite 零新失败（52 失败全为 main 上预存 Windows/sandbox/symlink flake，`comm -23` 对比 main 为空集）。
+
+### 16.22 PR-025C+ 不包含
+
+显式排除（后续 PR 交付）：
+
+- channel dispatch 路径切 Membership-based org 解析：`resolve_channel_tenant_context` + `channel_tenant_scope`（需把 `@contextmanager` 改 `@asynccontextmanager`，改 `manager.py` 调用点）；属后续 PR；
+- 多 membership 选择策略（workspace 路由、OIDC group 映射、当前 org 切换 API）：本 PR 单 membership 严格（>1 → fail-closed），多 membership 选择留给 PR-036（OIDC Group Mapping）之后的专门 PR；
+- 把 `phase` 翻到 `active`：操作者 CD 动作，门禁在 ci-cd §10.3；
+- 移除 `user_id` 隔离分支 + 清理临时兼容索引 + org-scope 现有全局唯一（Contract，PR-025D）：ci-cd §10.2 要求 Contract 至少晚一个稳定窗口；
+- RLS（§11.1 spike）、Audit 接入（Track D）。

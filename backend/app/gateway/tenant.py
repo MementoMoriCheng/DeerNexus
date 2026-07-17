@@ -52,6 +52,7 @@ from deerflow.contracts import (
     bind_tenant_context,
     reset_tenant_context,
 )
+from deerflow.tenancy import current_multi_org_phase
 
 logger = logging.getLogger(__name__)
 
@@ -118,23 +119,70 @@ def resolve_principal(user: object, request: Request) -> PrincipalRef:
     )
 
 
-def resolve_tenant_context(
+async def resolve_tenant_context(
     user: object,
     auth_source: str,
     request_id: str,
     request: Request,
 ) -> TenantContext:
-    """Resolve the trusted TenantContext for this request (single-Org bootstrap).
+    """Resolve the trusted TenantContext for this request.
 
-    The org id is the configured bootstrap org — never read from the request
-    body. ``workspace_id`` is unset (bootstrap has a single org, no workspace
-    selection yet).
+    Two resolution modes, gated on ``tenancy.multi_org.phase`` (read via
+    :func:`deerflow.tenancy.current_multi_org_phase`):
+
+    * ``disabled`` (default) — **single-Org bootstrap**: org id is the
+      configured ``default_org_id``, never read from the request body. This is
+      today's behaviour — zero DB cost, fully reversible. ``workspace_id`` is
+      unset (single org, no workspace selection yet).
+    * ``validation`` / ``active`` — **Membership-based**: the org id comes from
+      the authenticated principal's active ``OrgMembership`` (queried via
+      :func:`deerflow.tenancy.get_active_membership`), never from the request
+      body and never synthesized (TEN-008). Single-membership-strict: zero
+      active memberships or more than one both fail closed (raised → 503 by
+      the middleware).
+
+    The org id is **always** resolver-determined — a client-supplied org_id
+    (request body or header) is never the trusted source of truth
+    (ADR-0002 §2.1; TM-001).
     """
     config = get_gateway_config()
     auth_method = _BOOTSTRAP_AUTH_METHOD_MAP.get(auth_source, "internal")
+    principal = resolve_principal(user, request)
+
+    phase = current_multi_org_phase()
+    if phase == "disabled":
+        # Fast single-Org path: no DB, no await cost. Identical to pre-PR-025C+
+        # behaviour so rolling the flag back is a pure config change.
+        return TenantContext(
+            org_id=config.default_org_id,
+            principal=principal,
+            auth_method=auth_method,
+            request_id=request_id,
+            issued_at=datetime.now(UTC),
+        )
+
+    # validation / active: resolve org from the principal's membership.
+    # Deferred imports keep the disabled fast path free of persistence import
+    # cost and mirror routers/auth.py's request-time import pattern.
+    from deerflow.persistence.engine import get_session_factory
+    from deerflow.tenancy import MultiMembershipError, get_active_membership
+
+    sf = get_session_factory()
+    if sf is None:
+        # backend=memory (dev) has no ORM engine / membership data; multi-org
+        # phases require persistence, so fail closed rather than fabricate.
+        raise RuntimeError(f"tenancy.multi_org.phase={phase!r} requires persistence but no session factory is available (backend=memory does not support multi-org).")
+
+    try:
+        membership = await get_active_membership(sf, user_id=principal.user_id)
+    except MultiMembershipError:
+        raise  # surfaced as fail-closed 503 by the middleware wrapper
+    if membership is None:
+        raise RuntimeError(f"no active OrgMembership for principal user_id={principal.user_id!r} in phase={phase!r}; cannot bind a tenant context (TEN-008: never synthesize a default org).")
+
     return TenantContext(
-        org_id=config.default_org_id,
-        principal=resolve_principal(user, request),
+        org_id=membership.org_id,
+        principal=principal,
         auth_method=auth_method,
         request_id=request_id,
         issued_at=datetime.now(UTC),
@@ -236,7 +284,7 @@ class TenantResolutionMiddleware(BaseHTTPMiddleware):
             return JSONResponse(status_code=503, content={"detail": err.model_dump()})
 
         try:
-            tenant = resolve_tenant_context(user, auth_source, request_id, request)
+            tenant = await resolve_tenant_context(user, auth_source, request_id, request)
         except Exception as exc:  # noqa: BLE001 — surface any resolver failure as fail-closed
             err = ContractError.from_code(
                 ErrorCode.AUTHENTICATION_INVALID,
