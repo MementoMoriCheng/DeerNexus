@@ -224,7 +224,6 @@ def test_plaintext_production_endpoints_are_rejected(mutator, check_id: str):
 def test_all_runbook_placeholders_remain_fail_closed():
     expected = {
         "object_storage.security",
-        "tenant.migration_state",
         "agent.release_ref_enforcement",
         "audit.outbox",
         "gateway.rate_limit_retry_after",
@@ -262,7 +261,11 @@ def test_production_cli_json_uses_report_exit_code(monkeypatch, capsys):
             ),
         ),
     )
-    monkeypatch.setattr(doctor, "_run_production_doctor", lambda _path: report)
+
+    async def _fake_run(_path):
+        return report
+
+    monkeypatch.setattr(doctor, "_run_production_doctor", _fake_run)
 
     exit_code = doctor.main(["--profile", "production", "--json"])
     output = json.loads(capsys.readouterr().out)

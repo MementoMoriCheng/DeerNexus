@@ -12,6 +12,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -662,7 +663,7 @@ def check_env_file(project_root: Path) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
-def _run_production_doctor(config_path: Path):
+async def _run_production_doctor(config_path: Path):
     backend_root = Path(__file__).resolve().parents[1] / "backend"
     backend_root_text = str(backend_root)
     if backend_root_text not in sys.path:
@@ -670,6 +671,7 @@ def _run_production_doctor(config_path: Path):
 
     from app.doctor.models import DoctorCheckResult, DoctorReport, DoctorStatus
     from app.doctor.production import run_production_checks
+    from app.doctor.tenant_probe import probe_tenant_migration_phase
     from deerflow.config.app_config import AppConfig
 
     try:
@@ -685,7 +687,13 @@ def _run_production_doctor(config_path: Path):
             config_source="config.yaml",
         )
         return DoctorReport(profile="production", config_path=str(config_path), checks=(check,))
-    return run_production_checks(config, config_path, raw_config)
+
+    # Live-DB tenant migration-phase probe (runbook §5.2). Awaits a throwaway
+    # read-only engine; any DB failure is contained into a FAIL result inside
+    # the probe, so this never raises. Passed as a pre-computed check so
+    # run_production_checks stays synchronous.
+    tenant_probe = await probe_tenant_migration_phase(config)
+    return run_production_checks(config, config_path, raw_config, extra_checks=(tenant_probe,))
 
 
 def _print_production_report(report) -> None:
@@ -720,7 +728,7 @@ def main(argv: list[str] | None = None) -> int:
     config_path = args.config or project_root / "config.yaml"
 
     if args.profile == "production":
-        report = _run_production_doctor(config_path)
+        report = asyncio.run(_run_production_doctor(config_path))
         if args.json_output:
             print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
         else:
