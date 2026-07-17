@@ -57,7 +57,7 @@
 | PR-020B | 控制面 IAM 表（roles / role_bindings / service_accounts / api_keys） | #19 | 已交付 | `test_iam_schema`（14 测试）；`0004_iam_tables` revision；system-template NULL-org CHECK；多态 principal；hash-only api_keys | `70ff2b42` |
 | PR-021 | 存量资源 `org_id` Expand | #21 | 已交付 | `test_resource_org_schema`（17 测试）；`0005_resource_org_id` revision；4 表可空 `org_id`（FK RESTRICT）+ 5 兼容索引；`safe_drop_index` helper | `621a09b8` |
 | PR-022 | 默认 Org Bootstrap | #23 | 已交付 | `test_default_org_bootstrap`（12 测试）；`deerflow/tenancy/` 子包（4 幂等 helper + 临时 audit event 接口）；两阶段：lifespan 建默认 Org + 系统模板 `org:admin` Role，`/initialize` 建 admin OrgMembership + RoleBinding | `55754503` |
-| PR-023 | Backfill Job | — | 未开始（PR-022 已交付） | dry-run |
+| PR-023 | Backfill Job | #25 | 已交付 | `test_backfill_default_org`（9 测试）；`deerflow/tenancy/backfill.py`（隐式水位 PK 子查询分批 + 校验门）+ `scripts/backfill_default_org.py` CLI（`--dry-run`/`--batch-size`/`--throttle-ms`）；按依赖序回填 4 表 NULL org_id→默认 Org | `a227344d` |
 | PR-024A–E | Repository Org Scope（按资源拆） | — | 未开始（PR-021 已交付） | 隔离矩阵 |
 | PR-025A–D | Enforce + Multi-org Feature | — | 阻塞 → PR-024 | 不可回滚发布 |
 
@@ -138,8 +138,8 @@
 
 | 阶段 | 窗口 | 对应 Track / PR | 进度 |
 | --- | --- | --- | --- |
-| Phase A | 0–30 天 | Track 0（完成）+ Track A + PR-062/063 | Track 0 已交付；**Track A 出口达成**（PR-010 / PR-011 / PR-012 / PR-013 / PR-014A / PR-014C 落地；PR-014B 阻塞 scheduler greenfield，不阻塞 Track B）；Track B 进行中（PR-020A / PR-020B / PR-021 / PR-022 落地，下一步 PR-023） |
-| Phase B | 31–60 天 | Track B + C + D + PR-060 | 进行中（PR-020 全部交付、PR-021/PR-022 落地） |
+| Phase A | 0–30 天 | Track 0（完成）+ Track A + PR-062/063 | Track 0 已交付；**Track A 出口达成**（PR-010 / PR-011 / PR-012 / PR-013 / PR-014A / PR-014C 落地；PR-014B 阻塞 scheduler greenfield，不阻塞 Track B）；Track B 进行中（PR-020A / PR-020B / PR-021 / PR-022 / PR-023 落地，下一步 PR-024） |
+| Phase B | 31–60 天 | Track B + C + D + PR-060 | 进行中（PR-020 全部交付、PR-021/PR-022/PR-023 落地） |
 | Phase C | 61–90 天 | Track E + F（UI/Doctor/Backup/Gate） | 未开始 |
 
 阶段出口验收以 [90-day-mvp.md](../roadmap/90-day-mvp.md) 各 §x.4/§x.5 的 checkbox 为准；本表只跟踪 PR 落地状态，不替代验收清单。
