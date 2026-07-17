@@ -158,6 +158,55 @@ async def _ensure_default_org(app: FastAPI) -> None:
         logger.exception("Default Org bootstrap failed (non-fatal)")
 
 
+async def _ensure_validation_org(app: FastAPI) -> None:
+    """Startup hook: materialise the non-public validation Org (PR-025B).
+
+    Called only when ``tenancy.multi_org.phase == "validation"``. The
+    validation Org is the migration milestone for the validation phase
+    (data-model §13.3, ci-cd §10.3): an audited, inert second Org whose row
+    the operator can later bind the validation cohort to. It receives no
+    traffic in PR-025B — the request-path tenant resolver is still single-Org
+    and maps every request to ``default_org_id``; this hook only creates the
+    ``organizations`` row, no Membership / RoleBinding.
+
+    Not called for ``disabled`` (no validation Org wanted — today's behaviour)
+    or ``active`` (multi-org is open; the validation Org has either been
+    promoted to a real tenant or soft-deleted, both of which are operator
+    decisions that happen after the flag leaves the validation phase).
+
+    Idempotent and non-fatal, mirroring :func:`_ensure_default_org`: a failure
+    logs and continues. The config's phase ↔ validation_org coupling is
+    enforced at the pydantic layer (``MultiOrgConfig``), so by the time we
+    read ``validation_org`` here it is guaranteed non-None.
+    """
+    startup_config = get_app_config()
+    multi_org = startup_config.tenancy.multi_org
+    if multi_org.phase != "validation":
+        return
+
+    validation_org = multi_org.validation_org
+    if validation_org is None:  # pragma: no cover — pydantic invariant; defensive
+        logger.warning("validation phase active but validation_org unset; skipping")
+        return
+
+    from deerflow.persistence.engine import get_session_factory
+    from deerflow.tenancy import ensure_validation_org
+
+    sf = get_session_factory()
+    if sf is None:
+        return  # Persistence not initialised (some test/boot paths).
+
+    try:
+        await ensure_validation_org(
+            sf,
+            org_id=validation_org.id,
+            slug=validation_org.slug,
+            name=validation_org.name,
+        )
+    except Exception:
+        logger.exception("Validation Org bootstrap failed (non-fatal)")
+
+
 async def _iter_store_items(store, namespace, *, page_size: int = 500):
     """Paginated async iterator over a LangGraph store namespace.
 
@@ -252,6 +301,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # admin-creation path, and before the first /initialize binds a
         # RoleBinding (the role_id FK target must already exist).
         await _ensure_default_org(app)
+
+        # Seed the non-public validation Org (PR-025B) when the operator has
+        # set tenancy.multi_org.phase=validation. No-op for disabled/active;
+        # see _ensure_validation_org for the phase semantics.
+        await _ensure_validation_org(app)
 
         # Check admin bootstrap state and migrate orphan threads after admin exists.
         # Must run AFTER langgraph_runtime so app.state.store is available for thread migration

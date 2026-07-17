@@ -389,6 +389,8 @@ expires_at
 - 临时 Flag 有清理日期；
 - 关闭 Flag 不导致无法读取历史数据。
 
+本仓库的高风险 Flag registry 实现于 `backend/packages/harness/deerflow/tenancy/feature_flags.py`（`FeatureFlag` frozen dataclass 逐字段落实上述八项），实时状态读自 `tenancy.multi_org.phase` config（`current_multi_org_phase()`）。当前注册：`multi_org`（PR-025B，default=`disabled`，详见 runtime-contracts §16.17）。doctor（PR-025C）将交叉校验实时 phase 与观测到的 DB 状态。
+
 ---
 
 ## 12. 部署

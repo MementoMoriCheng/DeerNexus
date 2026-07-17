@@ -254,3 +254,29 @@ class TestAuditEventNoSilentDrop:
                 payload={"slug": DEFAULT_ORG_SLUG},
             )
         assert any("default_org_created" in rec.message for rec in caplog.records)
+
+
+# ===========================================================================
+# Single-Org invariant (PR-025B reversibility)
+# ===========================================================================
+
+
+class TestSingleOrgInvariant:
+    """The default-org bootstrap must stay a single-Org operation.
+
+    PR-025B keeps the request-path resolver single-Org and adds the
+    validation Org only when ``tenancy.multi_org.phase == "validation"``. The
+    default bootstrap path here must therefore never create a second Org row
+    on its own — that is the reversibility property (phase=disabled ==
+    today's exact behaviour).
+    """
+
+    @pytest.mark.anyio
+    async def test_default_bootstrap_creates_exactly_one_org(self, sf):
+        await ensure_default_org(sf, org_id=DEFAULT_ORG_ID, slug=DEFAULT_ORG_SLUG, name=DEFAULT_ORG_NAME)
+        await ensure_system_admin_role(sf)
+
+        async with sf() as session:
+            org_count = await session.scalar(sa.select(sa.func.count()).select_from(OrganizationRow))
+
+        assert org_count == 1
