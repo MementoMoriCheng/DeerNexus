@@ -209,6 +209,62 @@ def check_deployment_profile(config: AppConfig) -> DoctorCheckResult:
     )
 
 
+def check_feature_flag_expiry(config: AppConfig) -> DoctorCheckResult:
+    """Surface approaching/expired high-risk Feature Flag cleanup dates (ci-cd §11).
+
+    ci-cd §11 requires every temporary Feature Flag to carry a cleanup date
+    (``expires_at``). This check makes that date operational: a flag nearing
+    its expiry is a WARN (schedule its removal / Contract), and an expired
+    flag is a FAIL (the temporary flag has overstayed and must be removed or
+    re-justified). Reads the static registry in
+    ``deerflow.tenancy.feature_flags`` — no live state, so it is a normal
+    ``ProductionCheck`` (unlike the live-DB tenant migration probe).
+
+    The 30-day WARN window is a judgement call: long enough that an on-call
+    has time to land the Contract PR without a surprise, short enough that a
+    stale flag does not WARN for months. Pinned here so the doctor output is
+    deterministic.
+    """
+    from datetime import UTC, date, datetime
+
+    from deerflow.tenancy.feature_flags import MULTI_ORG_FLAG
+
+    # ``del`` signals this check does not consume ``config``; it reads the
+    # static registry. Mirrors ``check_auth_enabled``'s convention.
+    del config
+
+    today = datetime.now(UTC).date()
+    expires = date.fromisoformat(MULTI_ORG_FLAG.expires_at)
+    days_left = (expires - today).days
+
+    _config_source = "deerflow/tenancy/feature_flags.py:expires_at"
+    if days_left < 0:
+        return _result(
+            "feature_flag.expiry",
+            DoctorStatus.FAIL,
+            "feature-flag",
+            f"multi_org Feature Flag expired on {MULTI_ORG_FLAG.expires_at} ({abs(days_left)} day(s) overdue). Temporary flags must be removed or explicitly re-justified past their cleanup date.",
+            _config_source,
+            "Land the Contract cleanup (removing the flag) or update expires_at in deerflow/tenancy/feature_flags.py with a justified new date.",
+        )
+    if days_left <= 30:
+        return _result(
+            "feature_flag.expiry",
+            DoctorStatus.WARN,
+            "feature-flag",
+            f"multi_org Feature Flag expires on {MULTI_ORG_FLAG.expires_at} ({days_left} day(s) left). Schedule its removal before the date.",
+            _config_source,
+            "Land the Contract cleanup (PR-025D) that removes the flag, or move expires_at out with an explicit reason.",
+        )
+    return _result(
+        "feature_flag.expiry",
+        DoctorStatus.PASS,
+        "feature-flag",
+        f"multi_org Feature Flag expires on {MULTI_ORG_FLAG.expires_at} ({days_left} day(s) left).",
+        _config_source,
+    )
+
+
 STATIC_CHECKS: tuple[ProductionCheck, ...] = (
     check_production_enabled,
     check_postgres_declared,
@@ -217,6 +273,7 @@ STATIC_CHECKS: tuple[ProductionCheck, ...] = (
     check_oidc_declared,
     check_auth_enabled,
     check_sandbox_declared,
+    check_feature_flag_expiry,
     check_backup_declared,
     check_security_declarations,
     check_deployment_profile,
@@ -278,12 +335,6 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str], ...] = (
         "planned production object-storage declaration",
     ),
     (
-        "tenant.migration_state",
-        "tenant",
-        "org_id enforcement and explicit tenant migration-state validation is not implemented.",
-        "planned production tenant-migration declaration",
-    ),
-    (
         "agent.release_ref_enforcement",
         "release",
         "Published ReleaseRef-only production admission validation is not implemented.",
@@ -308,9 +359,22 @@ def run_production_checks(
     config: AppConfig,
     config_path: Path,
     raw_config: Mapping[str, Any] | None = None,
+    extra_checks: tuple[DoctorCheckResult, ...] = (),
 ) -> DoctorReport:
+    """Assemble the production doctor report.
+
+    ``extra_checks`` carries pre-computed live-DB probes (e.g. the tenant
+    migration-phase probe from ``app.doctor.tenant_probe``) that cannot be a
+    plain ``ProductionCheck`` because they need an async DB connection. The
+    caller awaits the probe and passes its ``DoctorCheckResult`` here; this
+    keeps ``run_production_checks`` itself synchronous so the unit tests do
+    not need to be async-ified. The extra checks land after the secret-
+    references check and before the deferred placeholders, mirroring their
+    logical role as "live verification of the static declarations".
+    """
     checks = [check(config) for check in STATIC_CHECKS]
     checks.append(check_secret_references(raw_config))
+    checks.extend(extra_checks)
     checks.extend(
         _result(
             check_id,

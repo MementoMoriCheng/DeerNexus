@@ -207,6 +207,10 @@ Fork 后实现 `doctor` 或等价检查器。检查结果分：
 
 Doctor 必须读取明确迁移阶段，不得只根据 Feature Flag 猜测状态。
 
+实现（PR-025C）：production doctor 的 `tenant.migration_state` check 经 `app/doctor/tenant_probe.py` 读 `tenancy.multi_org.phase`（config）+ count 4 张资源表 NULL `org_id` 行数 + count `organizations` 行数（live-DB，临时只读 engine，不跑 alembic），按上表分类。另有 `feature_flag.expiry` check：对接近 `expires_at` 的 multi-org Flag 判 WARN（≤30 天）、过期判 FAIL。两 check 任一 FAIL 阻断生产准入（`--profile production` 退出码 1）。
+
+启用流程：`phase` 翻 `active` 是操作者的 CD 动作（ci-cd §10.3），门禁在生产双 Org 隔离矩阵全绿 + 空 `org_id=0` + Enforce 上线之后。doctor 在 CD §10.3「post-enable verification」步骤作为门禁运行：`make doctor-production` 必须全 PASS（或登记 WARN）才视为 multi-org Active 达成；任一 FAIL（残留 NULL、过滤关但多 Org、Flag 过期）回滚到上一阶段。
+
 ### 5.3 Doctor 输出
 
 禁止输出 Secret。输出至少包含：
