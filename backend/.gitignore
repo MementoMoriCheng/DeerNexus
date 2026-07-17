@@ -31,3 +31,6 @@ config.yaml
 
 # Claude Code settings
 .claude/settings.local.json
+
+# ZCode session artifacts (plans, logs)
+.zcode/
