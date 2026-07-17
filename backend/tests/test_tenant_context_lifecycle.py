@@ -49,6 +49,12 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "contracts"
 ORG_A = "9f1c2b3a-4d5e-4789-abcd-ef0123456789"
 ORG_B = "11111111-2222-3333-4444-555555555555"
 REQ_ID = "7b8e9f0a-1234-5678-9abc-def012345678"
+
+# These are pure ContextVar lifecycle tests that bind/reset their own tenant
+# and assert no residue (TEN-006). The autouse user/tenant fixture
+# (conftest._auto_user_context) would inject a default-org tenant and trip the
+# residue assertion, so the whole module opts out.
+pytestmark = pytest.mark.no_auto_user
 TS = "2026-07-16T10:00:00Z"
 
 

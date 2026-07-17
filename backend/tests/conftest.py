@@ -112,11 +112,20 @@ def _restore_title_config_singleton():
 
 @pytest.fixture(autouse=True)
 def _auto_user_context(request):
-    """Inject a default ``test-user-autouse`` into the contextvar.
+    """Inject a default ``test-user-autouse`` user and bound tenant context.
 
     Opt-out via ``@pytest.mark.no_auto_user``. Uses lazy import so that
     tests which don't touch the persistence layer never pay the cost
     of importing runtime.user_context.
+
+    Since PR-024, repository reads/writes resolve ``org_id`` from the bound
+    :class:`~deerflow.contracts.TenantContext` and fail closed when none is
+    bound. To mirror production (every request binds a tenant via
+    TenantResolutionMiddleware, PR-013), the autouse fixture also binds a
+    minimal tenant context for the default bootstrap org so ordinary
+    persistence tests keep working without per-test boilerplate. The literal
+    ``"default"`` matches ``DEFAULT_BOOTSTRAP_ORG_ID`` (app.gateway.config);
+    importing that module here would drag in the full app config chain.
     """
     if request.node.get_closest_marker("no_auto_user"):
         yield
@@ -133,7 +142,76 @@ def _auto_user_context(request):
 
     user = SimpleNamespace(id="test-user-autouse", email="test@local")
     token = set_current_user(user)
+
+    # Bind a tenant context for the default bootstrap org (PR-024: repository
+    # reads/writes resolve org_id from the bound tenant context and fail
+    # closed when none is bound). Lazy import keeps the contracts import out
+    # of tests that never touch persistence.
+    tenant_token = None
+    try:
+        from datetime import UTC, datetime
+
+        from deerflow.contracts import (
+            PrincipalRef,
+            TenantContext,
+            bind_tenant_context,
+            reset_tenant_context,
+        )
+    except ImportError:
+        datetime = None  # type: ignore[assignment]
+        TenantContext = None  # type: ignore[assignment]
+
+    if TenantContext is not None:
+        tenant = TenantContext(
+            org_id="default",
+            principal=PrincipalRef(
+                id="test-user-autouse",
+                type="user",
+                user_id="test-user-autouse",
+            ),
+            auth_method="session",
+            request_id="test-request-autouse",
+            issued_at=datetime.now(UTC),
+        )
+        tenant_token = bind_tenant_context(tenant)
+
     try:
         yield
     finally:
+        if tenant_token is not None:
+            reset_tenant_context(tenant_token)
         reset_current_user(token)
+
+
+async def seed_test_default_org() -> None:
+    """Idempotently insert the default bootstrap org row into the active DB.
+
+    Repository writes stamp ``org_id`` from the bound tenant context (PR-024),
+    and ``org_id`` carries a real FK to ``organizations.id`` (PR-021). Test
+    databases created via ``init_engine`` + ``create_all`` have the table but
+    no rows, so a stamped ``org_id='default'`` would violate the FK. Call this
+    from a test's engine-init fixture (after ``init_engine``) so the autouse
+    tenant context's org satisfies the constraint. No-op when no engine is
+    initialised or the row already exists.
+    """
+    from deerflow.persistence.engine import get_session_factory
+    from deerflow.persistence.orgs.model import OrganizationRow
+
+    sf = get_session_factory()
+    if sf is None:
+        return
+    async with sf() as session:
+        existing = await session.get(OrganizationRow, "default")
+        if existing is not None:
+            return
+        session.add(
+            OrganizationRow(
+                id="default",
+                slug="default",
+                name="Default (test)",
+                status="active",
+            )
+        )
+        await session.commit()
+
+

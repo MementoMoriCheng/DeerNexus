@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from deerflow.contracts import AUTO_ORG, _OrgIdSentinel, resolve_org_id
 from deerflow.persistence.json_compat import json_match
 from deerflow.persistence.thread_meta.base import InvalidMetadataFilterError, ThreadMetaStore
 from deerflow.persistence.thread_meta.model import ThreadMetaRow
@@ -40,15 +41,18 @@ class ThreadMetaRepository(ThreadMetaStore):
         *,
         assistant_id: str | None = None,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
         display_name: str | None = None,
         metadata: dict | None = None,
     ) -> dict:
-        # Auto-resolve user_id from contextvar when AUTO; explicit None
-        # creates an orphan row (used by migration scripts).
+        # Auto-resolve user_id/org_id from contextvars when sentinels; explicit
+        # None creates an orphan row (used by migration scripts).
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.create")
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.create")
         now = datetime.now(UTC)
         row = ThreadMetaRow(
             thread_id=thread_id,
+            org_id=resolved_org_id,
             assistant_id=assistant_id,
             user_id=resolved_user_id,
             display_name=display_name,
@@ -67,18 +71,30 @@ class ThreadMetaRepository(ThreadMetaStore):
         thread_id: str,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> dict | None:
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.get")
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.get")
         async with self._sf() as session:
             row = await session.get(ThreadMetaRow, thread_id)
             if row is None:
                 return None
-            # Enforce owner filter unless explicitly bypassed (user_id=None).
+            # Enforce org filter first (hard tenant boundary), then the owner
+            # filter, unless either is explicitly bypassed (None).
+            if resolved_org_id is not None and row.org_id != resolved_org_id:
+                return None
             if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return None
             return self._row_to_dict(row)
 
-    async def check_access(self, thread_id: str, user_id: str, *, require_existing: bool = False) -> bool:
+    async def check_access(
+        self,
+        thread_id: str,
+        user_id: str,
+        *,
+        require_existing: bool = False,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
+    ) -> bool:
         """Check if ``user_id`` has access to ``thread_id``.
 
         Two modes — one row, two distinct semantics depending on what
@@ -99,11 +115,21 @@ class ThreadMetaRepository(ThreadMetaStore):
           cannot be re-targeted by any caller — closing the
           delete-idempotence cross-user gap where the row vanishing
           made every other user appear to "own" it.
+
+        The org filter (PR-024) gates both modes: when ``org_id`` resolves,
+        a row in a different org always returns False (deny) regardless of
+        the permissive ``user_id is None`` branch — an untracked user must
+        not tunnel across the tenant boundary.
         """
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.check_access")
         async with self._sf() as session:
             row = await session.get(ThreadMetaRow, thread_id)
             if row is None:
                 return not require_existing
+            # Hard tenant boundary: a cross-org row is always denied, even for
+            # the permissive user_id=None case.
+            if resolved_org_id is not None and row.org_id != resolved_org_id:
+                return False
             if row.user_id is None:
                 return True
             return row.user_id == user_id
@@ -116,14 +142,19 @@ class ThreadMetaRepository(ThreadMetaStore):
         limit: int = 100,
         offset: int = 0,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> list[dict[str, Any]]:
         """Search threads with optional metadata and status filters.
 
-        Owner filter is enforced by default: caller must be in a user
-        context. Pass ``user_id=None`` to bypass (migration/CLI).
+        Owner and org filters are enforced by default: caller must be in a
+        user + tenant context. Pass either as ``None`` to bypass
+        (migration/CLI).
         """
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.search")
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.search")
         stmt = select(ThreadMetaRow).order_by(ThreadMetaRow.updated_at.desc(), ThreadMetaRow.thread_id.desc())
+        if resolved_org_id is not None:
+            stmt = stmt.where(ThreadMetaRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(ThreadMetaRow.user_id == resolved_user_id)
         if status:
@@ -149,12 +180,22 @@ class ThreadMetaRepository(ThreadMetaStore):
             result = await session.execute(stmt)
             return [self._row_to_dict(r) for r in result.scalars()]
 
-    async def _check_ownership(self, session: AsyncSession, thread_id: str, resolved_user_id: str | None) -> bool:
-        """Return True if the row exists and is owned (or filter bypassed)."""
+    async def _check_ownership(
+        self,
+        session: AsyncSession,
+        thread_id: str,
+        resolved_user_id: str | None,
+        resolved_org_id: str | None,
+    ) -> bool:
+        """Return True if the row exists and is owned in the same org (or filter bypassed)."""
+        row = await session.get(ThreadMetaRow, thread_id)
+        if row is None:
+            return False
+        if resolved_org_id is not None and row.org_id != resolved_org_id:
+            return False
         if resolved_user_id is None:
             return True  # explicit bypass
-        row = await session.get(ThreadMetaRow, thread_id)
-        return row is not None and row.user_id == resolved_user_id
+        return row.user_id == resolved_user_id
 
     async def update_display_name(
         self,
@@ -162,11 +203,13 @@ class ThreadMetaRepository(ThreadMetaStore):
         display_name: str,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         """Update the display_name (title) for a thread."""
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.update_display_name")
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.update_display_name")
         async with self._sf() as session:
-            if not await self._check_ownership(session, thread_id, resolved_user_id):
+            if not await self._check_ownership(session, thread_id, resolved_user_id, resolved_org_id):
                 return
             await session.execute(update(ThreadMetaRow).where(ThreadMetaRow.thread_id == thread_id).values(display_name=display_name, updated_at=datetime.now(UTC)))
             await session.commit()
@@ -177,10 +220,12 @@ class ThreadMetaRepository(ThreadMetaStore):
         status: str,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.update_status")
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.update_status")
         async with self._sf() as session:
-            if not await self._check_ownership(session, thread_id, resolved_user_id):
+            if not await self._check_ownership(session, thread_id, resolved_user_id, resolved_org_id):
                 return
             await session.execute(update(ThreadMetaRow).where(ThreadMetaRow.thread_id == thread_id).values(status=status, updated_at=datetime.now(UTC)))
             await session.commit()
@@ -191,17 +236,21 @@ class ThreadMetaRepository(ThreadMetaStore):
         metadata: dict,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         """Merge ``metadata`` into ``metadata_json``.
 
         Read-modify-write inside a single session/transaction so concurrent
-        callers see consistent state. No-op if the row does not exist or
-        the user_id check fails.
+        callers see consistent state. No-op if the row does not exist
+        or the org/user check fails.
         """
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.update_metadata")
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.update_metadata")
         async with self._sf() as session:
             row = await session.get(ThreadMetaRow, thread_id)
             if row is None:
+                return
+            if resolved_org_id is not None and row.org_id != resolved_org_id:
                 return
             if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return
@@ -217,11 +266,13 @@ class ThreadMetaRepository(ThreadMetaStore):
         owner_user_id: str,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         """Move a thread metadata row to ``owner_user_id``."""
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.update_owner")
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.update_owner")
         async with self._sf() as session:
-            if not await self._check_ownership(session, thread_id, resolved_user_id):
+            if not await self._check_ownership(session, thread_id, resolved_user_id, resolved_org_id):
                 return
             await session.execute(update(ThreadMetaRow).where(ThreadMetaRow.thread_id == thread_id).values(user_id=owner_user_id, updated_at=datetime.now(UTC)))
             await session.commit()
@@ -231,11 +282,15 @@ class ThreadMetaRepository(ThreadMetaStore):
         thread_id: str,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         resolved_user_id = resolve_user_id(user_id, method_name="ThreadMetaRepository.delete")
+        resolved_org_id = resolve_org_id(org_id, method_name="ThreadMetaRepository.delete")
         async with self._sf() as session:
             row = await session.get(ThreadMetaRow, thread_id)
             if row is None:
+                return
+            if resolved_org_id is not None and row.org_id != resolved_org_id:
                 return
             if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return

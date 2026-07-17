@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from deerflow.contracts import AUTO_ORG, _OrgIdSentinel, resolve_org_id
 from deerflow.persistence.feedback.model import FeedbackRow
 from deerflow.runtime.user_context import AUTO, _AutoSentinel, resolve_user_id
 from deerflow.utils.time import coerce_iso
@@ -36,6 +37,7 @@ class FeedbackRepository:
         thread_id: str,
         rating: int,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
         message_id: str | None = None,
         comment: str | None = None,
     ) -> dict:
@@ -43,10 +45,12 @@ class FeedbackRepository:
         if rating not in (1, -1):
             raise ValueError(f"rating must be +1 or -1, got {rating}")
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.create")
+        resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.create")
         row = FeedbackRow(
             feedback_id=str(uuid.uuid4()),
             run_id=run_id,
             thread_id=thread_id,
+            org_id=resolved_org_id,
             user_id=resolved_user_id,
             message_id=message_id,
             rating=rating,
@@ -64,11 +68,15 @@ class FeedbackRepository:
         feedback_id: str,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> dict | None:
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.get")
+        resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.get")
         async with self._sf() as session:
             row = await session.get(FeedbackRow, feedback_id)
             if row is None:
+                return None
+            if resolved_org_id is not None and row.org_id != resolved_org_id:
                 return None
             if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return None
@@ -81,9 +89,13 @@ class FeedbackRepository:
         *,
         limit: int = 100,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> list[dict]:
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.list_by_run")
+        resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.list_by_run")
         stmt = select(FeedbackRow).where(FeedbackRow.thread_id == thread_id, FeedbackRow.run_id == run_id)
+        if resolved_org_id is not None:
+            stmt = stmt.where(FeedbackRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(FeedbackRow.user_id == resolved_user_id)
         stmt = stmt.order_by(FeedbackRow.created_at.asc()).limit(limit)
@@ -97,9 +109,13 @@ class FeedbackRepository:
         *,
         limit: int = 100,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> list[dict]:
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.list_by_thread")
+        resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.list_by_thread")
         stmt = select(FeedbackRow).where(FeedbackRow.thread_id == thread_id)
+        if resolved_org_id is not None:
+            stmt = stmt.where(FeedbackRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(FeedbackRow.user_id == resolved_user_id)
         stmt = stmt.order_by(FeedbackRow.created_at.asc()).limit(limit)
@@ -112,11 +128,15 @@ class FeedbackRepository:
         feedback_id: str,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> bool:
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.delete")
+        resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.delete")
         async with self._sf() as session:
             row = await session.get(FeedbackRow, feedback_id)
             if row is None:
+                return False
+            if resolved_org_id is not None and row.org_id != resolved_org_id:
                 return False
             if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return False
@@ -131,12 +151,18 @@ class FeedbackRepository:
         thread_id: str,
         rating: int,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
         comment: str | None = None,
     ) -> dict:
-        """Create or update feedback for (thread_id, run_id, user_id). rating must be +1 or -1."""
+        """Create or update feedback for (thread_id, run_id, user_id). rating must be +1 or -1.
+
+        ``org_id`` is stamped only on insert; the tenant boundary is immutable
+        for an existing row, so the update branch does not overwrite it.
+        """
         if rating not in (1, -1):
             raise ValueError(f"rating must be +1 or -1, got {rating}")
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.upsert")
+        resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.upsert")
         async with self._sf() as session:
             stmt = select(FeedbackRow).where(
                 FeedbackRow.thread_id == thread_id,
@@ -154,6 +180,7 @@ class FeedbackRepository:
                     feedback_id=str(uuid.uuid4()),
                     run_id=run_id,
                     thread_id=thread_id,
+                    org_id=resolved_org_id,
                     user_id=resolved_user_id,
                     rating=rating,
                     comment=comment,
@@ -170,15 +197,20 @@ class FeedbackRepository:
         thread_id: str,
         run_id: str,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> bool:
         """Delete the current user's feedback for a run. Returns True if a record was deleted."""
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.delete_by_run")
+        resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.delete_by_run")
         async with self._sf() as session:
-            stmt = select(FeedbackRow).where(
+            conditions = [
                 FeedbackRow.thread_id == thread_id,
                 FeedbackRow.run_id == run_id,
                 FeedbackRow.user_id == resolved_user_id,
-            )
+            ]
+            if resolved_org_id is not None:
+                conditions.append(FeedbackRow.org_id == resolved_org_id)
+            stmt = select(FeedbackRow).where(*conditions)
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             if row is None:
@@ -192,10 +224,14 @@ class FeedbackRepository:
         thread_id: str,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> dict[str, dict]:
         """Return feedback grouped by run_id for a thread: {run_id: feedback_dict}."""
         resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.list_by_thread_grouped")
+        resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.list_by_thread_grouped")
         stmt = select(FeedbackRow).where(FeedbackRow.thread_id == thread_id)
+        if resolved_org_id is not None:
+            stmt = stmt.where(FeedbackRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(FeedbackRow.user_id == resolved_user_id)
         async with self._sf() as session:

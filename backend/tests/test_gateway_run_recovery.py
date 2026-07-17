@@ -39,8 +39,8 @@ class _FakeRunManager:
         self.reconcile_calls.append({"error": error, "before": before})
         return self.recovered_runs
 
-    async def list_by_thread(self, thread_id: str, *, user_id=None, limit: int = 100):
-        self.list_by_thread_calls.append({"thread_id": thread_id, "user_id": user_id, "limit": limit})
+    async def list_by_thread(self, thread_id: str, *, user_id=None, org_id=None, limit: int = 100):
+        self.list_by_thread_calls.append({"thread_id": thread_id, "user_id": user_id, "org_id": org_id, "limit": limit})
         return self.latest_by_thread.get(thread_id, self.recovered_runs[:limit])
 
     async def shutdown(self, *, timeout: float = 5.0) -> None:
@@ -53,7 +53,7 @@ class _FakeThreadStore:
     def __init__(self) -> None:
         self.status_updates: list[tuple[str, str, str | None]] = []
 
-    async def update_status(self, thread_id: str, status: str, *, user_id=None) -> None:
+    async def update_status(self, thread_id: str, status: str, *, user_id=None, org_id=None) -> None:
         self.status_updates.append((thread_id, status, user_id))
 
 
@@ -92,7 +92,7 @@ async def test_sqlite_runtime_reconciles_orphaned_runs_on_startup(monkeypatch):
     assert len(_FakeRunManager.instances) == 1
     assert _FakeRunManager.instances[0].reconcile_calls
     assert _FakeRunManager.instances[0].reconcile_calls[0]["error"]
-    assert _FakeRunManager.instances[0].list_by_thread_calls == [{"thread_id": "thread-1", "user_id": None, "limit": 1}]
+    assert _FakeRunManager.instances[0].list_by_thread_calls == [{"thread_id": "thread-1", "user_id": None, "org_id": None, "limit": 1}]
     assert thread_store.status_updates == [("thread-1", "error", None)]
 
 
@@ -129,5 +129,5 @@ async def test_sqlite_runtime_does_not_mark_thread_error_when_newer_run_is_succe
         pass
 
     assert len(_FakeRunManager.instances) == 1
-    assert _FakeRunManager.instances[0].list_by_thread_calls == [{"thread_id": "thread-1", "user_id": None, "limit": 1}]
+    assert _FakeRunManager.instances[0].list_by_thread_calls == [{"thread_id": "thread-1", "user_id": None, "org_id": None, "limit": 1}]
     assert thread_store.status_updates == []

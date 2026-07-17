@@ -789,3 +789,40 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 - 不做 principal-disabled / Org-suspended / Workspace-mismatch 完整矩阵（需 Track B Membership 数据）；
 - 不构建 IM webhook 路由（不存在；所有 IM 为出站 WebSocket/Socket Mode/长轮询连接）；
 - 不直驱内嵌 runtime（当前仍走 HTTP 回环；直驱属未来 Worker 拆分）。
+
+### 16.13 PR-024：Repository Org Scope（已交付）
+
+落地模块（按 §5.2 rule 6 / data-model §11.2 的应用仓储强制过滤要求）：
+
+| 模块 | 内容 | 对应章节 |
+| --- | --- | --- |
+| `contracts/context.py` | `AUTO_ORG` sentinel + `_OrgIdSentinel` + `resolve_org_id(value, *, method_name)`（三态：AUTO_ORG 读 bound tenant，缺失即 `RuntimeError` fail-closed；显式 `str` 覆盖；显式 `None` 绕过） | §5.2、§11.2 |
+| `persistence/thread_meta/{base,sql,memory}.py` | `ThreadMetaStore` 全方法加 `org_id` kw；SQL/memory 实现写入盖戳、读取/变更按 `org_id` 过滤（与 `user_id` 并存做纵深防御）；`check_access` 跨 Org 行恒 deny（即便 `user_id is None` 的 permissive 模式） | §7.1 |
+| `persistence/run/sql.py` + `runtime/runs/store/{base,memory}.py` + `runtime/runs/manager.py` | `RunStore.put` 仅 insert 盖戳 `org_id`（不可变，update 分支不覆盖）；`get`/`list_by_thread`/`delete` 加 `org_id` 谓词；`RunRecord.org_id` 字段经 `_store_put_payload` 显式线程化，保证 `RunManager` 重试仍 tenant-scoped | §7.2 |
+| `runtime/events/store/db.py` | `DbRunEventStore.put`/`put_batch` 软读 tenant 盖戳 `org_id`（Worker PR-014A 防御性 rebind 后通常有 tenant）；`list_messages`/`list_events`/`list_messages_by_run`/`count_messages`/`delete_by_thread`/`delete_by_run` 加 `org_id` 谓词 | §10（run_events） |
+| `persistence/feedback/sql.py` | `FeedbackRepository.create`/`upsert`（仅 insert 盖戳，org_id 不可变）；`get`/`list_by_run`/`list_by_thread`/`delete`/`delete_by_run`/`list_by_thread_grouped` 加 `org_id` 谓词 | feedback |
+| `app/gateway/services.py` `start_run` | 从 `run_ctx.tenant.org_id` 解析并显式传入 `create_or_reject(org_id=...)` 与 `thread_store.create(org_id=...)`；旧行修复路径补 `org_id=None` | §5.2 rule 3 |
+| `app/gateway/deps.py` 启动恢复、`app/gateway/routers/threads.py` 旧行修复 | 显式 `org_id=None`（system-admin 等价扫描/修复路径） | §11.2 |
+
+org scope 语义（与 §11.2 一致）：
+
+- **硬过滤**：PR-023 backfill 已覆盖全部 4 张表（`threads_meta`/`runs`/`run_events`/`feedback`），存量行 `org_id` 全部非空（=默认 Org）。因此 PR-024 采用 `WHERE org_id = X` 硬过滤，无 NULL-tolerant 双读窗口；缺失 tenant 上下文且 `org_id=AUTO_ORG` → `RuntimeError` fail-closed（§5.2 rule 6，不回退默认 Org）。
+- **纵深防御**：`org_id` 过滤与既有 `user_id` 过滤**并存**；移除 `user_id` 分支属 Contract 阶段 PR-025D。`org_id` 不可变：upsert/update 分支不覆盖行 `org_id`。
+- **OrgA 看不到 OrgB 的证明**：每个入口（PR-013 中间件 / PR-014A Worker 防御性 rebind）已绑定可信 `TenantContext`；仓储读取经 `resolve_org_id` 取 `org_id` 作查询谓词；跨 Org 行被数据库层排除；`check_access` 对跨 Org 行恒 deny。
+- **绕过**：仅显式 `org_id=None`（迁移脚本 / CLI / system-admin 扫描 / 启动恢复 / 旧行修复）。
+
+测试（`backend/tests/test_org_isolation.py`，`TEN-隔离` 系列）：4 张表各做 OrgA 写入 → OrgB 读不到 / 改不了 / 删不掉、OrgA 可见；`run_events` 内容不泄漏（最敏感向量）；`org_id=None` 绕过可见全部；`AUTO_ORG` 无 tenant → fail-closed 抛错（10 测试）。`test_owner_isolation.py` 的 `_as_user` 现同步绑定默认 Org tenant（同 Org 内跨 user 隔离不变）。conftest autouse fixture 镜像生产每请求绑 tenant，并 seed 默认 Org 行满足 `org_id` FK。
+
+边界：`resolve_org_id` 仅依赖 stdlib + 本模块既有 `_current_tenant`，不破坏 contracts allow-list（`test_harness_boundary.py` 绿）。依赖方向：`persistence` / `runtime` → `contracts`（已允许）。
+
+### 16.14 PR-024 不包含
+
+显式排除（后续 PR 交付）：
+
+- `RunRepository` 单 `run_id` 主键的状态回写（`update_status` / `update_model_name` / `update_run_completion` / `update_run_progress`）：Worker 已持有该 run，不加 org 谓词以免破坏 writeback（与现状一致，它们也不收 `user_id`）；
+- `RunRepository.list_pending` / `list_inflight`：启动恢复全量 system 扫描（已显式 `org_id=None`）；
+- `RunRepository.aggregate_tokens_by_thread` / `FeedbackRepository.aggregate_by_run`：全局聚合，调用前已 thread-gated（归属校验）；纵深防御加 org 谓词留 follow-up；
+- Memory/Artifact/Skill/MCP/Scheduler 资源（024B–E）：表尚不存在；
+- `org_id NOT NULL` + 复合唯一约束（Enforce，PR-025A）、multi-org Feature Flag（PR-025B）、移除 `user_id` 分支与清理临时兼容索引（Contract，PR-025D）；
+- 内存事件 store（`MemoryRunEventStore`）org 过滤：该 store 为 dev/test stub，`RunEventStore` ABC 本身不含过滤参数（与 `RunStore`/`ThreadMetaStore` 不同）；隔离矩阵在 SQL 后端（生产强制点）验证；
+- RLS（§11.1 spike）、Audit 接入（Track D）。

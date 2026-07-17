@@ -93,14 +93,14 @@ async def _mark_latest_recovered_threads_error(
 
     for thread_id, recovered_run_ids in recovered_by_thread.items():
         try:
-            latest_runs = await run_manager.list_by_thread(thread_id, user_id=None, limit=1)
+            latest_runs = await run_manager.list_by_thread(thread_id, user_id=None, org_id=None, limit=1)
         except Exception:
             logger.warning("Failed to find latest run for thread %s during run reconciliation", thread_id, exc_info=True)
             continue
         if not latest_runs or latest_runs[0].run_id not in recovered_run_ids:
             continue
         try:
-            await thread_store.update_status(thread_id, "error", user_id=None)
+            await thread_store.update_status(thread_id, "error", user_id=None, org_id=None)
         except Exception:
             logger.warning("Failed to mark thread %s as error during run reconciliation", thread_id, exc_info=True)
 

@@ -360,6 +360,10 @@ async def start_run(
     # the TenantResolutionMiddleware bind) so the embedded Worker can rebind it
     # defensively from the trusted envelope tenant instead of relying solely on
     # ContextVar inheritance across create_task (runtime-contracts §5.2 rule 4).
+    # PR-024: the trusted org_id is threaded explicitly into the run record /
+    # persistence so a new run row is tenant-stamped and the retry path stays
+    # tenant-scoped even if the contextvar is gone on the retrying task.
+    resolved_org_id = run_ctx.tenant.org_id if run_ctx.tenant is not None else None
     try:
         try:
             record = await run_mgr.create_or_reject(
@@ -371,6 +375,7 @@ async def start_run(
                 multitask_strategy=body.multitask_strategy,
                 model_name=model_name,
                 user_id=owner_user_id,
+                org_id=resolved_org_id,
             )
         except ConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -383,16 +388,20 @@ async def start_run(
         try:
             existing = await run_ctx.thread_store.get(thread_id)
             if existing is None and owner_user_id:
-                unscoped_existing = await run_ctx.thread_store.get(thread_id, user_id=None)
+                # Legacy-row repair: a thread exists with a different owner
+                # (pre-ownership data). This is a trusted internal repair path,
+                # so both user and org filters are bypassed.
+                unscoped_existing = await run_ctx.thread_store.get(thread_id, user_id=None, org_id=None)
                 if unscoped_existing is not None:
                     if unscoped_existing.get("user_id") != owner_user_id:
-                        await run_ctx.thread_store.update_owner(thread_id, owner_user_id, user_id=None)
+                        await run_ctx.thread_store.update_owner(thread_id, owner_user_id, user_id=None, org_id=None)
                     existing = await run_ctx.thread_store.get(thread_id)
             if existing is None:
                 await run_ctx.thread_store.create(
                     thread_id,
                     assistant_id=body.assistant_id,
                     metadata=body.metadata,
+                    org_id=resolved_org_id,
                 )
             else:
                 await run_ctx.thread_store.update_status(thread_id, "running")

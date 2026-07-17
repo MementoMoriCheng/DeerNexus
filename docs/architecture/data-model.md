@@ -387,6 +387,7 @@ created_by_principal_id uuid
 - contract 阶段 `org_id NOT NULL`；
 - `UNIQUE(org_id, thread_id)`；
 - 列表索引 `INDEX(org_id, workspace_id, updated_at DESC)`。
+- 应用仓储按 `org_id` 强制过滤（Expand 期可空列 + PR-023 backfill + PR-024 仓储硬过滤 + fail-closed，详见 §11.2 与 runtime-contracts §16.13）。
 
 ### 7.2 `runs`
 

@@ -176,3 +176,70 @@ def require_tenant_context() -> TenantContext:
             "tenant context not bound in current task; bind via bind_tenant_context in a try/finally at the trusted entry point",
         )
     return context
+
+
+# ---------------------------------------------------------------------------
+# Sentinel-based org_id resolution (runtime-contracts §5.2, data-model §11.2)
+# ---------------------------------------------------------------------------
+#
+# Repository methods accept an ``org_id`` keyword-only argument that defaults
+# to ``AUTO_ORG``. The three possible values drive distinct behaviours,
+# mirroring the ``user_id`` sentinel in ``deerflow.runtime.user_context`` so
+# org-scoped reads/writes compose with the existing user filter:
+#
+# - :data:`AUTO_ORG` (default): read ``org_id`` from the bound
+#   :class:`TenantContext`; raise :class:`RuntimeError` if no tenant is bound
+#   (fail-closed, §5.2 rule 6 / §11.2 — never synthesize a default Org).
+# - Explicit ``str``: use the provided id verbatim, overriding the bound
+#   tenant. Useful for tests and admin-override flows.
+# - Explicit ``None``: no ``org_id`` clause — the repository should skip the
+#   org WHERE clause / stamp NULL. Reserved for migration scripts, the backfill
+#   job and system-admin scans that intentionally bypass tenant isolation.
+
+
+class _OrgIdSentinel:
+    """Singleton marker meaning 'resolve org_id from the bound tenant context'."""
+
+    _instance: _OrgIdSentinel | None = None
+
+    def __new__(cls) -> _OrgIdSentinel:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "<AUTO_ORG>"
+
+
+AUTO_ORG: Final[_OrgIdSentinel] = _OrgIdSentinel()
+
+
+def resolve_org_id(
+    value: str | None | _OrgIdSentinel,
+    *,
+    method_name: str = "repository method",
+) -> str | None:
+    """Resolve the ``org_id`` parameter passed to a repository method.
+
+    Three-state semantics (mirrors
+    :func:`deerflow.runtime.user_context.resolve_user_id`):
+
+    - :data:`AUTO_ORG` (default): read ``org_id`` from the bound
+      :class:`TenantContext` contextvar; raise :class:`RuntimeError` if no
+      tenant is bound. This is the common case for request-scoped calls.
+    - Explicit ``str``: use the provided id verbatim, overriding any bound
+      tenant. Useful for tests and admin-override flows.
+    - Explicit ``None``: no filter — the repository should skip the org_id
+      WHERE clause / write NULL. Reserved for migration scripts, the backfill
+      job and system-admin scans that intentionally bypass isolation.
+    """
+    if isinstance(value, _OrgIdSentinel):
+        context = _current_tenant.get()
+        if context is None:
+            raise RuntimeError(
+                f"{method_name} called with org_id=AUTO_ORG but no tenant context is bound; "
+                "bind a TenantContext via bind_tenant_context at the trusted entry point, "
+                "or opt out with org_id=None for migration/CLI/system-admin paths."
+            )
+        return context.org_id
+    return value

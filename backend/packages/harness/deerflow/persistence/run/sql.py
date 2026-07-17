@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from deerflow.contracts import AUTO_ORG, _OrgIdSentinel, resolve_org_id
 from deerflow.persistence.run.model import RunRow
 from deerflow.runtime.runs.store.base import RunStore
 from deerflow.runtime.user_context import AUTO, _AutoSentinel, resolve_user_id
@@ -85,6 +86,7 @@ class RunRepository(RunStore):
         thread_id,
         assistant_id=None,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
         model_name: str | None = None,
         status="pending",
         multitask_strategy="reject",
@@ -99,8 +101,15 @@ class RunRepository(RunStore):
         ``RunManager`` retries ``put`` after transient SQLite failures.  Making
         this operation idempotent prevents a successful-but-unacknowledged first
         commit from turning the retry into a primary-key failure.
+
+        ``org_id`` is stamped only on insert (the tenant boundary is immutable
+        for an existing run); it is deliberately omitted from ``values`` so the
+        update branch never overwrites it. The sentinel is still resolved
+        eagerly so a missing tenant context fails closed up front rather than
+        silently creating an un-tenant-scoped row on the insert path.
         """
         resolved_user_id = resolve_user_id(user_id, method_name="RunRepository.put")
+        resolved_org_id = resolve_org_id(org_id, method_name="RunRepository.put")
         now = datetime.now(UTC)
         created = datetime.fromisoformat(created_at) if created_at else now
         values = {
@@ -119,7 +128,7 @@ class RunRepository(RunStore):
         async with self._sf() as session:
             row = await session.get(RunRow, run_id)
             if row is None:
-                session.add(RunRow(run_id=run_id, created_at=created, **values))
+                session.add(RunRow(run_id=run_id, org_id=resolved_org_id, created_at=created, **values))
             else:
                 for key, value in values.items():
                     setattr(row, key, value)
@@ -130,11 +139,15 @@ class RunRepository(RunStore):
         run_id,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="RunRepository.get")
+        resolved_org_id = resolve_org_id(org_id, method_name="RunRepository.get")
         async with self._sf() as session:
             row = await session.get(RunRow, run_id)
             if row is None:
+                return None
+            if resolved_org_id is not None and row.org_id != resolved_org_id:
                 return None
             if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return None
@@ -145,10 +158,14 @@ class RunRepository(RunStore):
         thread_id,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
         limit=100,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="RunRepository.list_by_thread")
+        resolved_org_id = resolve_org_id(org_id, method_name="RunRepository.list_by_thread")
         stmt = select(RunRow).where(RunRow.thread_id == thread_id)
+        if resolved_org_id is not None:
+            stmt = stmt.where(RunRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(RunRow.user_id == resolved_user_id)
         stmt = stmt.order_by(RunRow.created_at.desc()).limit(limit)
@@ -175,11 +192,15 @@ class RunRepository(RunStore):
         run_id,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="RunRepository.delete")
+        resolved_org_id = resolve_org_id(org_id, method_name="RunRepository.delete")
         async with self._sf() as session:
             row = await session.get(RunRow, run_id)
             if row is None:
+                return
+            if resolved_org_id is not None and row.org_id != resolved_org_id:
                 return
             if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return
