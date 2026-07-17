@@ -27,13 +27,16 @@ Phased rollout (``docs/engineering/pr-split-guide.md`` Track A):
 
 from deerflow.contracts.approval import ApprovalStatus, ApprovalTicket
 from deerflow.contracts.context import (
+    AUTO_ORG,
     AuthMethod,
     TenantContext,
     TenantContextError,
+    _OrgIdSentinel,  # noqa: F401  (re-exported for repo type annotations; mirrors deerflow.runtime.user_context._AutoSentinel)
     bind_tenant_context,
     get_tenant_context,
     require_tenant_context,
     reset_tenant_context,
+    resolve_org_id,
 )
 from deerflow.contracts.errors import ContractError, ErrorCode, is_retryable_code
 from deerflow.contracts.events import (
@@ -79,6 +82,8 @@ __all__ = [
     "get_tenant_context",
     "require_tenant_context",
     "reset_tenant_context",
+    "AUTO_ORG",
+    "resolve_org_id",
     # errors
     "ContractError",
     "ErrorCode",

@@ -29,21 +29,21 @@ class _PermissiveThreadMetaStore(MemoryThreadMetaStore):
     timestamp wire format.
     """
 
-    async def _get_owned_record(self, thread_id, user_id, method_name):  # type: ignore[override]
+    async def _get_owned_record(self, thread_id, user_id, org_id, method_name):  # type: ignore[override]
         item = await self._store.aget(THREADS_NS, thread_id)
         return dict(item.value) if item is not None else None
 
-    async def check_access(self, thread_id, user_id, *, require_existing=False):  # type: ignore[override]
+    async def check_access(self, thread_id, user_id, *, require_existing=False, org_id=None):  # type: ignore[override]
         item = await self._store.aget(THREADS_NS, thread_id)
         if item is None:
             return not require_existing
         return True
 
-    async def create(self, thread_id, *, assistant_id=None, user_id=None, display_name=None, metadata=None):  # type: ignore[override]
-        return await super().create(thread_id, assistant_id=assistant_id, user_id=None, display_name=display_name, metadata=metadata)
+    async def create(self, thread_id, *, assistant_id=None, user_id=None, org_id=None, display_name=None, metadata=None):  # type: ignore[override]
+        return await super().create(thread_id, assistant_id=assistant_id, user_id=None, org_id=None, display_name=display_name, metadata=metadata)
 
-    async def search(self, *, metadata=None, status=None, limit=100, offset=0, user_id=None):  # type: ignore[override]
-        return await super().search(metadata=metadata, status=status, limit=limit, offset=offset, user_id=None)
+    async def search(self, *, metadata=None, status=None, limit=100, offset=0, user_id=None, org_id=None):  # type: ignore[override]
+        return await super().search(metadata=metadata, status=status, limit=limit, offset=offset, user_id=None, org_id=None)
 
 
 def _build_thread_app() -> tuple[FastAPI, InMemoryStore, InMemorySaver]:

@@ -47,18 +47,48 @@ async def _make_engines(tmp_path):
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'isolation.db'}"
     await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+    # PR-024: repository writes stamp org_id from the bound tenant context; the
+    # FK to organizations.id requires the default org row to exist.
+    from conftest import seed_test_default_org
+
+    await seed_test_default_org()
     return close_engine
 
 
 def _as_user(user):
-    """Context manager-like helper that set/reset the contextvar."""
+    """Bind the user (and matching default-org tenant) contextvars.
+
+    These tests assert isolation *within* the default org across users, so the
+    tenant always binds to the default org (PR-024: writes/reads resolve org_id
+    from the bound tenant context and fail closed when none is bound).
+    """
 
     class _Ctx:
         def __enter__(self):
+            from datetime import UTC, datetime
+
+            from deerflow.contracts import (
+                PrincipalRef,
+                TenantContext,
+                bind_tenant_context,
+            )
+
             self._token = set_current_user(user)
+            self._tenant_token = bind_tenant_context(
+                TenantContext(
+                    org_id="default",
+                    principal=PrincipalRef(id=str(user.id), type="user", user_id=str(user.id)),
+                    auth_method="session",
+                    request_id=f"owner-isolation-{user.id}",
+                    issued_at=datetime.now(UTC),
+                )
+            )
             return user
 
         def __exit__(self, *exc):
+            from deerflow.contracts import reset_tenant_context
+
+            reset_tenant_context(self._tenant_token)
             reset_current_user(self._token)
 
     return _Ctx()
@@ -437,7 +467,7 @@ async def test_repository_without_context_raises(tmp_path):
 @pytest.mark.anyio
 @pytest.mark.no_auto_user
 async def test_explicit_none_bypasses_filter(tmp_path):
-    """Migration scripts pass user_id=None to see all rows regardless of owner."""
+    """Migration scripts pass user_id=None / org_id=None to see all rows."""
     from deerflow.persistence.engine import get_session_factory
     from deerflow.persistence.thread_meta import ThreadMetaRepository
 
@@ -451,15 +481,16 @@ async def test_explicit_none_bypasses_filter(tmp_path):
         with _as_user(USER_B):
             await repo.create("t-beta")
 
-        # Migration-style read: no contextvar, explicit None bypass.
-        all_rows = await repo.search(user_id=None)
+        # Migration-style read: no contextvar, explicit None bypasses both
+        # user and org filters (PR-024).
+        all_rows = await repo.search(user_id=None, org_id=None)
         thread_ids = {r["thread_id"] for r in all_rows}
         assert thread_ids == {"t-alpha", "t-beta"}
 
         # Explicit get with None does not apply the filter either.
-        row_a = await repo.get("t-alpha", user_id=None)
+        row_a = await repo.get("t-alpha", user_id=None, org_id=None)
         assert row_a is not None
-        row_b = await repo.get("t-beta", user_id=None)
+        row_b = await repo.get("t-beta", user_id=None, org_id=None)
         assert row_b is not None
     finally:
         await cleanup()

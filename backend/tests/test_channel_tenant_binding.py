@@ -38,6 +38,12 @@ from deerflow.contracts import get_tenant_context
 REQ_ID = "7b8e9f0a-1234-5678-9abc-def012345678"
 OWNER = "owner-1"
 
+# These tests manage their own TenantContext bind/reset and assert no residue
+# (TEN-006). The autouse user/tenant fixture (conftest._auto_user_context) would
+# inject a default-org tenant and trip the residue assertion, so the whole
+# module opts out.
+pytestmark = pytest.mark.no_auto_user
+
 
 # ---------------------------------------------------------------------------
 # Builders

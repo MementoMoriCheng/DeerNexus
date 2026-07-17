@@ -16,6 +16,9 @@ async def _make_repo(tmp_path):
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
     await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+    from conftest import seed_test_default_org
+
+    await seed_test_default_org()
     return RunRepository(get_session_factory())
 
 
@@ -426,6 +429,9 @@ class TestRunRepository:
 
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+        from conftest import seed_test_default_org
+
+        await seed_test_default_org()
         repo = RunRepository(get_session_factory())
 
         await repo.put("run-1", thread_id="thread-1", model_name="gpt-4o")

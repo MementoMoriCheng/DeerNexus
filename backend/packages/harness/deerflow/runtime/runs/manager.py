@@ -84,6 +84,10 @@ class RunRecord:
     metadata: dict = field(default_factory=dict)
     kwargs: dict = field(default_factory=dict)
     user_id: str | None = None
+    # Tenant boundary stamped on the persisted run row (PR-024). Threaded
+    # explicitly through ``_store_put_payload`` so retry writes remain
+    # tenant-scoped even if the contextvar is gone on the retrying task.
+    org_id: str | None = None
     created_at: str = ""
     updated_at: str = ""
     task: asyncio.Task | None = field(default=None, repr=False)
@@ -175,6 +179,8 @@ class RunManager:
         }
         if record.user_id is not None:
             payload["user_id"] = record.user_id
+        if record.org_id is not None:
+            payload["org_id"] = record.org_id
         return payload
 
     async def _call_store_with_retry(
@@ -283,6 +289,7 @@ class RunManager:
             created_at=row.get("created_at") or "",
             updated_at=row.get("updated_at") or "",
             user_id=row.get("user_id"),
+            org_id=row.get("org_id"),
             error=row.get("error"),
             model_name=row.get("model_name"),
             store_only=True,
@@ -364,6 +371,7 @@ class RunManager:
         kwargs: dict | None = None,
         multitask_strategy: str = "reject",
         user_id: str | None = None,
+        org_id: str | None = None,
     ) -> RunRecord:
         """Create a new pending run and register it."""
         run_id = str(uuid.uuid4())
@@ -378,6 +386,7 @@ class RunManager:
             metadata=metadata or {},
             kwargs=kwargs or {},
             user_id=user_id,
+            org_id=org_id,
             created_at=now,
             updated_at=now,
         )
@@ -438,7 +447,14 @@ class RunManager:
         """
         return await self.get(run_id, user_id=user_id)
 
-    async def list_by_thread(self, thread_id: str, *, user_id: str | None = None, limit: int = 100) -> list[RunRecord]:
+    async def list_by_thread(
+        self,
+        thread_id: str,
+        *,
+        user_id: str | None = None,
+        org_id: str | None = None,
+        limit: int = 100,
+    ) -> list[RunRecord]:
         """Return runs for a given thread, newest first, at most ``limit`` records.
 
         In-memory runs take precedence only when the same ``run_id`` exists in both
@@ -448,6 +464,8 @@ class RunManager:
         Args:
             thread_id: The thread ID to filter by.
             user_id: Optional user ID for permission filtering when hydrating from store.
+            org_id: Optional org ID for tenant filtering when hydrating from store
+                (``None`` bypasses the org filter, used by startup recovery).
             limit: Maximum number of runs to return.
         """
         async with self._lock:
@@ -457,7 +475,7 @@ class RunManager:
         records_by_id = {record.run_id: record for record in memory_records}
         store_limit = max(0, limit - len(memory_records))
         try:
-            rows = await self._store.list_by_thread(thread_id, user_id=user_id, limit=store_limit)
+            rows = await self._store.list_by_thread(thread_id, user_id=user_id, org_id=org_id, limit=store_limit)
         except Exception:
             logger.warning("Failed to hydrate runs for thread %s from store", thread_id, exc_info=True)
             return sorted(memory_records, key=lambda r: r.created_at, reverse=True)[:limit]
@@ -551,6 +569,7 @@ class RunManager:
         multitask_strategy: str = "reject",
         model_name: str | None = None,
         user_id: str | None = None,
+        org_id: str | None = None,
     ) -> RunRecord:
         """Atomically check for inflight runs and create a new one.
 
@@ -594,6 +613,7 @@ class RunManager:
                 metadata=metadata or {},
                 kwargs=kwargs or {},
                 user_id=user_id,
+                org_id=org_id,
                 created_at=now,
                 updated_at=now,
                 model_name=model_name,

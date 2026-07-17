@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from deerflow.contracts import AUTO_ORG, _OrgIdSentinel, get_tenant_context, resolve_org_id
 from deerflow.persistence.models.run_event import RunEventRow
 from deerflow.runtime.events.store.base import RunEventStore
 from deerflow.runtime.user_context import AUTO, _AutoSentinel, get_current_user, resolve_user_id
@@ -90,6 +91,20 @@ class DbRunEventStore(RunEventStore):
         return str(user.id) if user is not None else None
 
     @staticmethod
+    def _org_id_from_context() -> str | None:
+        """Soft read of org_id from the bound tenant contextvar for write paths.
+
+        Returns ``None`` (no stamp) if no tenant is bound. The Worker
+        (PR-014A) defensively rebinds the tenant from the trusted run envelope
+        before writing events, so worker writes carry a tenant in the normal
+        case; paths without a bound tenant (e.g. legacy/test bootstrap) leave
+        ``org_id`` NULL and rely on the backfill job (PR-023) to populate it,
+        mirroring the ``user_id`` soft-stamp contract.
+        """
+        context = get_tenant_context()
+        return context.org_id if context is not None else None
+
+    @staticmethod
     async def _max_seq_for_thread(session: AsyncSession, thread_id: str) -> int | None:
         """Return the current max seq while serializing writers per thread.
 
@@ -123,6 +138,7 @@ class DbRunEventStore(RunEventStore):
         content, metadata = self._truncate_trace(category, content, metadata)
         db_content, metadata = self._content_to_db(content, metadata)
         user_id = self._user_id_from_context()
+        org_id = self._org_id_from_context()
         async with self._sf() as session:
             async with session.begin():
                 max_seq = await self._max_seq_for_thread(session, thread_id)
@@ -131,6 +147,7 @@ class DbRunEventStore(RunEventStore):
                     thread_id=thread_id,
                     run_id=run_id,
                     user_id=user_id,
+                    org_id=org_id,
                     event_type=event_type,
                     category=category,
                     content=db_content,
@@ -148,6 +165,7 @@ class DbRunEventStore(RunEventStore):
         if len(thread_ids) > 1:
             raise ValueError(f"put_batch requires all events to belong to the same thread; got {thread_ids!r}")
         user_id = self._user_id_from_context()
+        org_id = self._org_id_from_context()
         async with self._sf() as session:
             async with session.begin():
                 # All events belong to the same thread (validated above).
@@ -166,6 +184,7 @@ class DbRunEventStore(RunEventStore):
                         thread_id=e["thread_id"],
                         run_id=e["run_id"],
                         user_id=e.get("user_id", user_id),
+                        org_id=e.get("org_id", org_id),
                         event_type=e["event_type"],
                         category=category,
                         content=db_content,
@@ -185,9 +204,13 @@ class DbRunEventStore(RunEventStore):
         before_seq=None,
         after_seq=None,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.list_messages")
+        resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.list_messages")
         stmt = select(RunEventRow).where(RunEventRow.thread_id == thread_id, RunEventRow.category == "message")
+        if resolved_org_id is not None:
+            stmt = stmt.where(RunEventRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         if before_seq is not None:
@@ -217,9 +240,13 @@ class DbRunEventStore(RunEventStore):
         event_types=None,
         limit=500,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.list_events")
+        resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.list_events")
         stmt = select(RunEventRow).where(RunEventRow.thread_id == thread_id, RunEventRow.run_id == run_id)
+        if resolved_org_id is not None:
+            stmt = stmt.where(RunEventRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         if event_types:
@@ -238,13 +265,17 @@ class DbRunEventStore(RunEventStore):
         before_seq=None,
         after_seq=None,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.list_messages_by_run")
+        resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.list_messages_by_run")
         stmt = select(RunEventRow).where(
             RunEventRow.thread_id == thread_id,
             RunEventRow.run_id == run_id,
             RunEventRow.category == "message",
         )
+        if resolved_org_id is not None:
+            stmt = stmt.where(RunEventRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         if before_seq is not None:
@@ -269,9 +300,13 @@ class DbRunEventStore(RunEventStore):
         thread_id,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.count_messages")
+        resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.count_messages")
         stmt = select(func.count()).select_from(RunEventRow).where(RunEventRow.thread_id == thread_id, RunEventRow.category == "message")
+        if resolved_org_id is not None:
+            stmt = stmt.where(RunEventRow.org_id == resolved_org_id)
         if resolved_user_id is not None:
             stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         async with self._sf() as session:
@@ -282,10 +317,14 @@ class DbRunEventStore(RunEventStore):
         thread_id,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.delete_by_thread")
+        resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.delete_by_thread")
         async with self._sf() as session:
             count_conditions = [RunEventRow.thread_id == thread_id]
+            if resolved_org_id is not None:
+                count_conditions.append(RunEventRow.org_id == resolved_org_id)
             if resolved_user_id is not None:
                 count_conditions.append(RunEventRow.user_id == resolved_user_id)
             count_stmt = select(func.count()).select_from(RunEventRow).where(*count_conditions)
@@ -301,10 +340,14 @@ class DbRunEventStore(RunEventStore):
         run_id,
         *,
         user_id: str | None | _AutoSentinel = AUTO,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
         resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.delete_by_run")
+        resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.delete_by_run")
         async with self._sf() as session:
             count_conditions = [RunEventRow.thread_id == thread_id, RunEventRow.run_id == run_id]
+            if resolved_org_id is not None:
+                count_conditions.append(RunEventRow.org_id == resolved_org_id)
             if resolved_user_id is not None:
                 count_conditions.append(RunEventRow.user_id == resolved_user_id)
             count_stmt = select(func.count()).select_from(RunEventRow).where(*count_conditions)

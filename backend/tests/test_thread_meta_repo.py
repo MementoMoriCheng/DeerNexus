@@ -13,6 +13,9 @@ async def repo(tmp_path):
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
     await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+    from conftest import seed_test_default_org
+
+    await seed_test_default_org()
     yield ThreadMetaRepository(get_session_factory())
     await close_engine()
 

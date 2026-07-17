@@ -2,10 +2,12 @@
 
 RunManager depends on this interface. Implementations:
 - MemoryRunStore: in-memory dict (development, tests)
-- Future: RunRepository backed by SQLAlchemy ORM
+- RunRepository: SQLAlchemy ORM (sqlite / postgres)
 
-All methods accept an optional user_id for user isolation.
-When user_id is None, no user filtering is applied (single-user mode).
+All methods accept an optional ``user_id`` for user isolation, and since
+PR-024 an optional ``org_id`` for the hard tenant boundary
+(runtime-contracts §5.2, data-model §11.2). When either is ``None``, no
+filter on that dimension is applied (single-user / migration / CLI mode).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ class RunStore(abc.ABC):
         thread_id: str,
         assistant_id: str | None = None,
         user_id: str | None = None,
+        org_id: str | None = None,
         model_name: str | None = None,
         status: str = "pending",
         multitask_strategy: str = "reject",
@@ -39,6 +42,7 @@ class RunStore(abc.ABC):
         run_id: str,
         *,
         user_id: str | None = None,
+        org_id: str | None = None,
     ) -> dict[str, Any] | None:
         pass
 
@@ -48,6 +52,7 @@ class RunStore(abc.ABC):
         thread_id: str,
         *,
         user_id: str | None = None,
+        org_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         pass
@@ -68,7 +73,7 @@ class RunStore(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def delete(self, run_id: str) -> None:
+    async def delete(self, run_id: str, *, user_id: str | None = None, org_id: str | None = None) -> None:
         pass
 
     @abc.abstractmethod

@@ -6,11 +6,18 @@ the in-memory LangGraph Store backend used when database.backend=memory.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from langgraph.store.memory import InMemoryStore
 
+from deerflow.contracts import (
+    PrincipalRef,
+    TenantContext,
+    bind_tenant_context,
+    reset_tenant_context,
+)
 from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
 from deerflow.runtime.user_context import reset_current_user, set_current_user
 
@@ -19,12 +26,24 @@ USER_B = SimpleNamespace(id="user-b", email="b@test.local")
 
 
 def _as_user(user):
+    """Bind the user + a default-org tenant (PR-024: writes resolve org_id)."""
+
     class _Ctx:
         def __enter__(self):
             self._token = set_current_user(user)
+            self._tenant_token = bind_tenant_context(
+                TenantContext(
+                    org_id="default",
+                    principal=PrincipalRef(id=str(user.id), type="user", user_id=str(user.id)),
+                    auth_method="session",
+                    request_id=f"memory-iso-{user.id}",
+                    issued_at=datetime.now(UTC),
+                )
+            )
             return user
 
         def __exit__(self, *exc):
+            reset_tenant_context(self._tenant_token)
             reset_current_user(self._token)
 
     return _Ctx()
@@ -135,22 +154,23 @@ async def test_delete_denied(store):
 @pytest.mark.anyio
 @pytest.mark.no_auto_user
 async def test_no_context_raises(store):
-    """Calling methods without user context raises RuntimeError."""
-    with pytest.raises(RuntimeError, match="no user context is set"):
-        await store.search()
+    """Calling methods without user/tenant context raises RuntimeError."""
+    # Bypass the user filter so the tenant resolver is the failing gate.
+    with pytest.raises(RuntimeError):
+        await store.search(user_id=None)
 
 
 @pytest.mark.anyio
 @pytest.mark.no_auto_user
 async def test_explicit_none_bypasses_filter(store):
-    """user_id=None bypasses isolation (migration/CLI escape hatch)."""
+    """user_id=None / org_id=None bypasses isolation (migration/CLI escape hatch)."""
     with _as_user(USER_A):
         await store.create("t-alpha")
     with _as_user(USER_B):
         await store.create("t-beta")
 
-    all_rows = await store.search(user_id=None)
+    all_rows = await store.search(user_id=None, org_id=None)
     assert {r["thread_id"] for r in all_rows} == {"t-alpha", "t-beta"}
 
-    row = await store.get("t-alpha", user_id=None)
+    row = await store.get("t-alpha", user_id=None, org_id=None)
     assert row is not None

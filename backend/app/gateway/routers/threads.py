@@ -266,10 +266,12 @@ async def create_thread(body: ThreadCreateRequest, request: Request) -> ThreadRe
     # Idempotency: return existing record when already present
     existing_record = await thread_store.get(thread_id, **thread_owner_kwargs)
     if existing_record is None and thread_owner_user_id:
-        unscoped_record = await thread_store.get(thread_id, user_id=None)
+        # Legacy-row repair: trusted internal path bypasses both user and org
+        # filters to adopt a pre-ownership / pre-tenant thread.
+        unscoped_record = await thread_store.get(thread_id, user_id=None, org_id=None)
         if unscoped_record is not None:
             if unscoped_record.get("user_id") != thread_owner_user_id:
-                await thread_store.update_owner(thread_id, thread_owner_user_id, user_id=None)
+                await thread_store.update_owner(thread_id, thread_owner_user_id, user_id=None, org_id=None)
             existing_record = await thread_store.get(thread_id, **thread_owner_kwargs)
     if existing_record is not None:
         return ThreadResponse(

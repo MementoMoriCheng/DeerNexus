@@ -37,6 +37,12 @@ ORG_A = "9f1c2b3a-4d5e-4789-abcd-ef0123456789"
 ORG_B = "11111111-2222-3333-4444-555555555555"
 OWNER_USER_ID = "owner-aaa-111"
 
+# These tests manage their own TenantContext bind/reset and assert no residue
+# (TEN-006). The autouse user/tenant fixture (conftest._auto_user_context) would
+# inject a default-org tenant and trip the residue assertion, so the whole
+# module opts out.
+pytestmark = pytest.mark.no_auto_user
+
 
 @pytest.fixture(autouse=True)
 def _reset_gateway_config():
