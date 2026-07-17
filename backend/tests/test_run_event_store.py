@@ -329,6 +329,7 @@ class TestDbRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
         s = DbRunEventStore(get_session_factory())
 
@@ -353,6 +354,7 @@ class TestDbRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
         s = DbRunEventStore(get_session_factory(), max_trace_content=100)
 
@@ -375,6 +377,7 @@ class TestDbRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
         s = DbRunEventStore(get_session_factory())
 
@@ -399,6 +402,7 @@ class TestDbRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
         s = DbRunEventStore(get_session_factory())
 
@@ -427,6 +431,7 @@ class TestDbRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
         s = DbRunEventStore(get_session_factory())
 
@@ -451,6 +456,7 @@ class TestDbRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
         s = DbRunEventStore(get_session_factory())
 
@@ -468,6 +474,7 @@ class TestDbRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
         s = DbRunEventStore(get_session_factory())
 
@@ -501,6 +508,7 @@ class TestDbRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
         s = DbRunEventStore(get_session_factory())
 
@@ -548,6 +556,7 @@ class TestMakeRunEventStore:
         url = f"sqlite+aiosqlite:///{tmp_path / 'test.db'}"
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         from conftest import seed_test_default_org
+
         await seed_test_default_org()
 
         config = MagicMock()

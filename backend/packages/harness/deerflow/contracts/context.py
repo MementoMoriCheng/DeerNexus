@@ -237,9 +237,7 @@ def resolve_org_id(
         context = _current_tenant.get()
         if context is None:
             raise RuntimeError(
-                f"{method_name} called with org_id=AUTO_ORG but no tenant context is bound; "
-                "bind a TenantContext via bind_tenant_context at the trusted entry point, "
-                "or opt out with org_id=None for migration/CLI/system-admin paths."
+                f"{method_name} called with org_id=AUTO_ORG but no tenant context is bound; bind a TenantContext via bind_tenant_context at the trusted entry point, or opt out with org_id=None for migration/CLI/system-admin paths."
             )
         return context.org_id
     return value

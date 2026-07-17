@@ -213,5 +213,3 @@ async def seed_test_default_org() -> None:
             )
         )
         await session.commit()
-
-

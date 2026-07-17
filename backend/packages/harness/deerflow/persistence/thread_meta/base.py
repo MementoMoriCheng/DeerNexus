@@ -146,4 +146,3 @@ class ThreadMetaStore(abc.ABC):
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         pass
-

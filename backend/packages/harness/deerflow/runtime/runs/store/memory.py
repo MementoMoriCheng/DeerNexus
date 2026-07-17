@@ -65,13 +65,7 @@ class MemoryRunStore(RunStore):
         return run
 
     async def list_by_thread(self, thread_id, *, user_id=None, org_id=None, limit=100):
-        results = [
-            r
-            for r in self._runs.values()
-            if r["thread_id"] == thread_id
-            and (org_id is None or r.get("org_id") == org_id)
-            and (user_id is None or r.get("user_id") == user_id)
-        ]
+        results = [r for r in self._runs.values() if r["thread_id"] == thread_id and (org_id is None or r.get("org_id") == org_id) and (user_id is None or r.get("user_id") == user_id)]
         results.sort(key=lambda r: r["created_at"], reverse=True)
         return results[:limit]
 
