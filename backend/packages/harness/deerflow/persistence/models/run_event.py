@@ -20,10 +20,11 @@ class RunEventRow(Base):
     # created before auth was introduced; populated by auth middleware on
     # new writes and by the boot-time orphan migration on existing rows.
     user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    # Tenant boundary for this event (PR-021 Expand: nullable so legacy rows
-    # remain NULL until PR-023 backfill; NOT NULL enforced in PR-025A). FK
-    # RESTRICT keeps event history intact if an org is hard-deleted.
-    org_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    # Tenant boundary for this event. Enforce NOT NULL landed in PR-025A
+    # (revision 0006): the column is non-nullable after PR-023 backfill filled
+    # every legacy row. FK RESTRICT keeps event history intact if an org is
+    # hard-deleted.
+    org_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     category: Mapped[str] = mapped_column(String(16), nullable=False)
     # "message" | "trace" | "lifecycle"

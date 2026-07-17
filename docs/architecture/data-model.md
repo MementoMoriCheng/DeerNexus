@@ -384,10 +384,10 @@ created_by_principal_id uuid
 
 约束：
 
-- contract 阶段 `org_id NOT NULL`；
-- `UNIQUE(org_id, thread_id)`；
-- 列表索引 `INDEX(org_id, workspace_id, updated_at DESC)`。
-- 应用仓储按 `org_id` 强制过滤（Expand 期可空列 + PR-023 backfill + PR-024 仓储硬过滤 + fail-closed，详见 §11.2 与 runtime-contracts §16.13）。
+- ~~contract 阶段 `org_id NOT NULL`~~ → **Enforce 已落地（PR-025A / 迁移 `0006`）**：4 表 `org_id` 现为 NOT NULL；
+- `UNIQUE(org_id, thread_id)` → **已落地（PR-025A，命名 `uq_threads_meta_org_thread`）**；
+- 列表索引 `INDEX(org_id, workspace_id, updated_at DESC)`（workspace_id 列尚未引入，留后续 track）；
+- 应用仓储按 `org_id` 强制过滤（Expand 期可空列 + PR-023 backfill + PR-024 仓储硬过滤 + fail-closed，详见 §11.2 与 runtime-contracts §16.13）；数据库层 NOT NULL 兜底见 §16.15。
 
 ### 7.2 `runs`
 
@@ -406,10 +406,11 @@ idempotency_key varchar(200)
 
 约束与索引：
 
-- 新生产 Run 的 `release_digest NOT NULL`；
+- `org_id NOT NULL`（**Enforce 已落地，PR-025A / 迁移 `0006`**）；
+- 新生产 Run 的 `release_digest NOT NULL`（ReleaseRef track，未落地）；
 - 兼容迁移期的旧 Run 可空，但必须标记 `legacy_unpinned=true`；
 - `legacy_unpinned=true` 的 Run 在 prod 只允许读取、取消和归档，不允许 admit、resume 或继续执行；启用该门禁前必须排空或安全终止旧运行；
-- `UNIQUE(org_id, idempotency_key)`；
+- `UNIQUE(org_id, idempotency_key)`（`idempotency_key` 列尚未引入，ReleaseRef track）；
 - `INDEX(org_id, status, created_at DESC)`；
 - `INDEX(org_id, thread_id, created_at)`；
 - 状态转换使用 compare-and-set 或 row version，禁止无条件覆盖 terminal 状态。

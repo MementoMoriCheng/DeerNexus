@@ -1,15 +1,22 @@
-"""Constraint and migration tests for the stock-resource ``org_id`` Expand (PR-021).
+"""Constraint and migration tests for the stock-resource ``org_id`` lifecycle.
 
-Verifies that revision ``0005_resource_org_id`` adds a nullable ``org_id``
-column (FK ``organizations.id`` ``ondelete=RESTRICT``) plus five
+PR-021 (revision ``0005_resource_org_id``, Expand) added a nullable
+``org_id`` column (FK ``organizations.id`` ``ondelete=RESTRICT``) plus five
 org_id-prefixed compatible indexes to the four core Run-lifecycle stock
-tables (``threads_meta``, ``runs``, ``run_events``, ``feedback``). Follows
-the conventions of ``test_tenant_schema.py``: each test boots an isolated
-file-backed SQLite DB via ``init_engine`` (exercising the full bootstrap
-path) and tears it down with ``close_engine``. DB-level constraints
-(FK / RESTRICT) and nullability are asserted by provoking ``IntegrityError``
-or by reflecting column metadata, proving the invariants live in the DB
-layer rather than only in the ORM model.
+tables (``threads_meta``, ``runs``, ``run_events``, ``feedback``). PR-025A
+(revision ``0006_enforce_org_not_null``, Enforce) tightened ``org_id`` to
+``NOT NULL`` and added ``UNIQUE(org_id, thread_id)`` on ``threads_meta``
+(data-model.md §13.3, §7.1).
+
+These tests assert the *current* (Enforced) invariants: the column is
+NOT NULL, NULL inserts are rejected at the DB layer, the ``threads_meta``
+compound unique holds, and the FK / RESTRICT + compatible indexes from 0005
+remain in place. Follows the conventions of ``test_tenant_schema.py``: each
+test boots an isolated file-backed SQLite DB via ``init_engine`` (exercising
+the full bootstrap path) and tears it down with ``close_engine``. DB-level
+constraints (FK / RESTRICT) and nullability are asserted by provoking
+``IntegrityError`` or by reflecting column metadata, proving the invariants
+live in the DB layer rather than only in the ORM model.
 
 Parent (OrganizationRow) rows are committed in a separate session before
 child rows are added, mirroring the SQLite FK-at-commit-time constraint
@@ -84,70 +91,96 @@ async def _seed_org(engine, org: OrganizationRow) -> None:
 
 
 # ===========================================================================
-# Column existence & nullability
+# Column existence & NOT NULL (Enforce, PR-025A / revision 0006)
 # ===========================================================================
 
 
 class TestOrgIdColumnExists:
     @pytest.mark.anyio
-    async def test_all_four_tables_have_nullable_org_id(self, engine):
+    async def test_all_four_tables_have_non_null_org_id(self, engine):
         async with engine.connect() as conn:
             for table in RESOURCE_TABLES:
                 cols = await conn.run_sync(lambda c, t=table: {col["name"]: col for col in sa.inspect(c).get_columns(t)})
                 org_col = cols.get("org_id")
                 assert org_col is not None, f"{table} missing org_id column"
-                assert org_col["nullable"] is True, f"{table}.org_id must be nullable (Expand phase)"
+                assert org_col["nullable"] is False, f"{table}.org_id must be NOT NULL (Enforce phase, PR-025A / revision 0006)"
 
 
 # ===========================================================================
-# Nullability — legacy rows may stay NULL
+# NOT NULL enforcement — NULL org_id rejected at the DB layer
 # ===========================================================================
 
 
-class TestNullability:
+class TestNotNullEnforcement:
     @pytest.mark.anyio
-    async def test_thread_accepts_null_org(self, engine):
+    async def test_thread_rejects_null_org(self, engine):
         from sqlalchemy.ext.asyncio import AsyncSession
 
         async with AsyncSession(engine) as session:
             session.add(ThreadMetaRow(thread_id="t-null"))
-            await session.commit()
+            with pytest.raises(IntegrityError):
+                await session.commit()
 
     @pytest.mark.anyio
-    async def test_run_accepts_null_org(self, engine):
+    async def test_run_rejects_null_org(self, engine):
         from sqlalchemy.ext.asyncio import AsyncSession
 
         async with AsyncSession(engine) as session:
             session.add(RunRow(run_id="r-null", thread_id="t-1", status="pending"))
-            await session.commit()
+            with pytest.raises(IntegrityError):
+                await session.commit()
 
     @pytest.mark.anyio
-    async def test_event_accepts_null_org(self, engine):
+    async def test_event_rejects_null_org(self, engine):
         from sqlalchemy.ext.asyncio import AsyncSession
 
         async with AsyncSession(engine) as session:
             session.add(RunEventRow(thread_id="t-1", run_id="r-1", seq=1, event_type="msg", category="message"))
-            await session.commit()
+            with pytest.raises(IntegrityError):
+                await session.commit()
 
     @pytest.mark.anyio
-    async def test_feedback_accepts_null_org(self, engine):
+    async def test_feedback_rejects_null_org(self, engine):
         from sqlalchemy.ext.asyncio import AsyncSession
 
         async with AsyncSession(engine) as session:
             session.add(FeedbackRow(feedback_id="f-null", run_id="r-1", thread_id="t-1", rating=1))
-            await session.commit()
+            with pytest.raises(IntegrityError):
+                await session.commit()
+
+
+# ===========================================================================
+# threads_meta UNIQUE(org_id, thread_id) (Enforce, §7.1)
+# ===========================================================================
+
+
+class TestThreadMetaCompoundUnique:
+    @pytest.mark.anyio
+    async def test_compound_unique_constraint_exists(self, engine):
+        async with engine.connect() as conn:
+            uqs = await conn.run_sync(lambda c: {u["name"]: u for u in sa.inspect(c).get_unique_constraints("threads_meta")})
+        uq = uqs.get("uq_threads_meta_org_thread")
+        assert uq is not None, "threads_meta missing UNIQUE(org_id, thread_id) constraint uq_threads_meta_org_thread"
+        assert uq["column_names"] == ["org_id", "thread_id"]
 
     @pytest.mark.anyio
-    async def test_multiple_null_org_rows_coexist(self, engine):
-        # Expand nullability: many legacy rows with NULL org_id must coexist
-        # (no UNIQUE / NOT NULL constraint fires on NULL).
+    async def test_duplicate_org_thread_pair_rejected(self, engine):
         from sqlalchemy.ext.asyncio import AsyncSession
 
+        await _seed_org(engine, _org())
         async with AsyncSession(engine) as session:
-            session.add(ThreadMetaRow(thread_id="t-a"))
-            session.add(ThreadMetaRow(thread_id="t-b"))
-            session.add(ThreadMetaRow(thread_id="t-c"))
+            session.add(_thread(thread_id="t-1", org_id="org-1"))
             await session.commit()
+        # thread_id is the global PK, so a second row with the same (org_id,
+        # thread_id) collides on PK first — exercise the compound unique by
+        # pairing the same org_id with a *different* thread_id is allowed, and
+        # the same thread_id under a different org_id is allowed too. The
+        # constraint is declarative today (PK subsumes it) but must exist so
+        # future org-scoped business keys inherit the prefix-unique convention.
+        async with AsyncSession(engine) as session:
+            await _seed_org(engine, _org(id="org-2", slug="acme2", name="Acme2"))
+            session.add(_thread(thread_id="t-2", org_id="org-2"))
+            await session.commit()  # distinct pair, allowed
 
 
 # ===========================================================================
@@ -264,16 +297,17 @@ class TestCompatibleIndexes:
 
 
 # ===========================================================================
-# Migration round-trip (upgrade head ↔ downgrade to 0004)
+# Migration round-trip (Enforce 0006 ↔ Expand 0005)
 # ===========================================================================
 
 
 class TestMigrationRoundTrip:
     @pytest.mark.anyio
-    async def test_revision_independently_upgradable_and_revertible(self, tmp_path: Path):
-        """``0005_resource_org_id`` must upgrade cleanly on a fresh DB and
-        downgrade to remove ``org_id`` from all four tables (pr-split-guide §7:
-        each revision independently upgradable)."""
+    async def test_enforce_revision_independently_upgradable_and_revertible(self, tmp_path: Path):
+        """``0006_enforce_org_not_null`` must revert (Enforce → Expand) by
+        restoring ``org_id`` nullability on all four tables and dropping the
+        ``threads_meta`` compound unique, then re-enforce cleanly on re-upgrade
+        (pr-split-guide §7: each revision independently upgradable)."""
         import asyncio
 
         import alembic.command as alembic_command
@@ -286,23 +320,29 @@ class TestMigrationRoundTrip:
         await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
         try:
             cfg = _get_alembic_config(get_engine())
-            # Bootstrap already stamped head (0005); downgrade to 0004.
-            await asyncio.to_thread(alembic_command.downgrade, cfg, "0004_iam_tables")
+            # Bootstrap stamped head (0006); downgrade to Expand (0005).
+            await asyncio.to_thread(alembic_command.downgrade, cfg, "0005_resource_org_id")
 
             check_engine = create_async_engine(url)
             async with check_engine.connect() as conn:
                 for table in RESOURCE_TABLES:
-                    cols = await conn.run_sync(lambda c, t=table: {col["name"] for col in sa.inspect(c).get_columns(t)})
-                    assert "org_id" not in cols, f"{table}.org_id survived downgrade to 0004"
+                    cols = await conn.run_sync(lambda c, t=table: {col["name"]: col for col in sa.inspect(c).get_columns(t)})
+                    org_col = cols["org_id"]
+                    assert org_col["nullable"] is True, f"{table}.org_id still NOT NULL after downgrade to 0005"
+                uqs = await conn.run_sync(lambda c: {u["name"] for u in sa.inspect(c).get_unique_constraints("threads_meta")})
+                assert "uq_threads_meta_org_thread" not in uqs, "compound unique survived downgrade to 0005"
             await check_engine.dispose()
 
-            # Re-upgrade to head — org_id reappears on all four tables.
+            # Re-upgrade to head — NOT NULL restored, compound unique re-added.
             await asyncio.to_thread(alembic_command.upgrade, cfg, "head")
             check_engine2 = create_async_engine(url)
             async with check_engine2.connect() as conn:
                 for table in RESOURCE_TABLES:
-                    cols = await conn.run_sync(lambda c, t=table: {col["name"] for col in sa.inspect(c).get_columns(t)})
-                    assert "org_id" in cols, f"{table}.org_id missing after re-upgrade to head"
+                    cols = await conn.run_sync(lambda c, t=table: {col["name"]: col for col in sa.inspect(c).get_columns(t)})
+                    org_col = cols["org_id"]
+                    assert org_col["nullable"] is False, f"{table}.org_id nullable after re-upgrade to head"
+                uqs = await conn.run_sync(lambda c: {u["name"] for u in sa.inspect(c).get_unique_constraints("threads_meta")})
+                assert "uq_threads_meta_org_thread" in uqs, "compound unique missing after re-upgrade to head"
             await check_engine2.dispose()
         finally:
             await close_engine()

@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0005_resource_org_id"
+HEAD = "0006_enforce_org_not_null"
 BASELINE = "0001_baseline"
 
 
@@ -615,7 +615,7 @@ class TestDecideState:
 # ---------------------------------------------------------------------------
 
 
-def test_head_revision_is_resource_org_id_revision() -> None:
+def test_head_revision_matches_expected_constant() -> None:
     assert _get_head_revision() == HEAD
 
 

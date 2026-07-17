@@ -177,6 +177,54 @@ def safe_add_column(table: str, column: sa.Column) -> None:
         batch.add_column(column)
 
 
+def safe_set_column_nullable(
+    table: str,
+    column_name: str,
+    *,
+    nullable: bool,
+    existing_type: sa.TypeEngine,
+) -> None:
+    """``op.alter_column`` that flips nullability only when needed.
+
+    Companion to :func:`safe_add_column` for the *Enforce* phase
+    (data-model.md §13.3): tightening a column from nullable to NOT NULL (or
+    relaxing it back) must be idempotent so the revision is safe to re-run
+    against a DB that is already in the desired state, and against the legacy
+    bootstrap branch whose restricted ``create_all`` already provisions the
+    column in the target nullability.
+
+    - Missing table or column => nothing to alter. Skip silently.
+    - Column already has the target nullability => no-op. Before returning,
+      :func:`_check_column_drift` compares the existing column's reflected type
+      against ``existing_type`` (nullability is by definition already aligned,
+      so only type drift is surfaced) and ``logger.warning``\\ s on mismatch —
+      the same posture as :func:`safe_add_column` for manual-ALTER drift.
+    - Otherwise => ``batch_alter_table`` rebuilds the table and re-applies the
+      column with the new nullability. SQLite batch mode reflects and re-applies
+      every named constraint (e.g. the ``fk_<table>_org_id`` RESTRICT FK from
+      revision 0005), so the FK survives the rebuild unscathed. Postgres takes a
+      direct ``ALTER COLUMN ... DROP/SET NOT NULL``.
+
+    ``existing_type`` is required because ``batch_alter_table.alter_column``
+    needs the column type to render the rebuilt DDL on SQLite (it cannot infer
+    the type from the batch context alone). Callers pass the model-declared type
+    (e.g. ``sa.String(36)`` for ``org_id``); the drift check then catches a
+    manual ALTER that changed the type out from under the model.
+    """
+    insp = _inspector()
+    if table not in insp.get_table_names():
+        return
+    existing = {c["name"]: c for c in insp.get_columns(table)}
+    if column_name not in existing:
+        return
+    actual = existing[column_name]
+    if bool(actual.get("nullable", True)) == nullable:
+        _check_column_drift(table, sa.Column(column_name, existing_type, nullable=nullable), actual)
+        return
+    with op.batch_alter_table(table) as batch:
+        batch.alter_column(column_name, existing_type=existing_type, nullable=nullable)
+
+
 def safe_drop_column(table: str, column_name: str) -> None:
     """``op.drop_column`` that no-ops when the table or column is already gone."""
     insp = _inspector()
@@ -249,6 +297,56 @@ def safe_create_index(
     if index_name in existing:
         return
     op.create_index(index_name, table_name, columns, unique=unique, **dialect_kwargs)
+
+
+def safe_create_unique_constraint(
+    constraint_name: str,
+    table_name: str,
+    columns: list[str],
+) -> None:
+    """``batch_op.create_unique_constraint`` that no-ops when it already exists.
+
+    Companion to :func:`safe_create_index` for the case where the ORM declares
+    a table-level ``UniqueConstraint`` (e.g. ``uq_threads_meta_org_thread``).
+    A unique *constraint* and a unique *index* are physically identical on
+    SQLite/Postgres, but SQLAlchemy reflects them through different inspectors
+    (``get_unique_constraints`` vs ``get_indexes``), so the migration must
+    create the artifact that matches the ORM declaration — otherwise a fresh DB
+    (built from ``Base.metadata.create_all``) and a migrated DB reflect the
+    constraint under different names/inspectors and diverge.
+
+    SQLite batch mode (used here) reflects and re-applies existing named
+    constraints during the table rebuild, so adding a new named constraint via
+    ``batch_op.create_unique_constraint`` lands cleanly alongside the existing
+    ``fk_<table>_org_id`` RESTRICT FK.
+    """
+    insp = _inspector()
+    if table_name not in insp.get_table_names():
+        return
+    existing = {c.get("name") for c in insp.get_unique_constraints(table_name)}
+    if constraint_name in existing:
+        return
+    with op.batch_alter_table(table_name) as batch:
+        batch.create_unique_constraint(constraint_name, columns)
+
+
+def safe_drop_unique_constraint(constraint_name: str, table_name: str) -> None:
+    """``batch_op.drop_unique_constraint`` that no-ops when it is already gone.
+
+    Companion to :func:`safe_drop_index` / :func:`safe_create_unique_constraint`.
+    On SQLite, dropping a constraint forces a ``batch_alter_table`` table
+    rebuild that reflects and re-creates every surviving constraint and index —
+    dropping by name first keeps that rebuild from re-adding the one we want
+    gone. Idempotent for re-runs / partial states.
+    """
+    insp = _inspector()
+    if table_name not in insp.get_table_names():
+        return
+    existing = {c.get("name") for c in insp.get_unique_constraints(table_name)}
+    if constraint_name not in existing:
+        return
+    with op.batch_alter_table(table_name) as batch:
+        batch.drop_constraint(constraint_name, type_="unique")
 
 
 def safe_drop_index(index_name: str, table_name: str) -> None:

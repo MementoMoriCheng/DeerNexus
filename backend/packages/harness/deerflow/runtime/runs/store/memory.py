@@ -66,7 +66,12 @@ class MemoryRunStore(RunStore):
 
     async def list_by_thread(self, thread_id, *, user_id=None, org_id=None, limit=100):
         results = [r for r in self._runs.values() if r["thread_id"] == thread_id and (org_id is None or r.get("org_id") == org_id) and (user_id is None or r.get("user_id") == user_id)]
-        results.sort(key=lambda r: r["created_at"], reverse=True)
+        # Sort newest-first by created_at; break ties by run_id descending so
+        # two runs stamped in the same millisecond (common in tests and in fast
+        # back-to-back retries) have a deterministic order — the later-inserted
+        # run wins. Without the tiebreaker, Python's stable sort preserves dict
+        # insertion order on ties, which surfaces as a flaky "latest run" result.
+        results.sort(key=lambda r: (r["created_at"], r["run_id"]), reverse=True)
         return results[:limit]
 
     async def update_status(self, run_id, status, *, error=None):
