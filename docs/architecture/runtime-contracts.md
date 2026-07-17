@@ -826,3 +826,34 @@ org scope 语义（与 §11.2 一致）：
 - `org_id NOT NULL` + 复合唯一约束（Enforce，PR-025A）、multi-org Feature Flag（PR-025B）、移除 `user_id` 分支与清理临时兼容索引（Contract，PR-025D）；
 - 内存事件 store（`MemoryRunEventStore`）org 过滤：该 store 为 dev/test stub，`RunEventStore` ABC 本身不含过滤参数（与 `RunStore`/`ThreadMetaStore` 不同）；隔离矩阵在 SQL 后端（生产强制点）验证；
 - RLS（§11.1 spike）、Audit 接入（Track D）。
+
+### 16.15 PR-025A：Enforce `org_id` NOT NULL（已交付）
+
+data-model.md §13.3 **Enforce** 阶段的 schema 部分。把 PR-024 已在应用层强制的 `org_id` 约束升级到数据库层：即便绕过应用（直连脚本、误操作、旧版本应用连接），也无法写入 NULL `org_id`，从数据侧兜底 §5.2 rule 6 fail-closed 不变量。
+
+落地：
+
+- 迁移 `0006_enforce_org_not_null`（链自 `0005_resource_org_id`）：4 张 Run-lifecycle 资源表（`threads_meta` / `runs` / `run_events` / `feedback`）`org_id` `nullable=True → False`；`threads_meta` 增 `UNIQUE(org_id, thread_id)`（§7.1，命名 `uq_threads_meta_org_thread`）。SQLite 经 `batch_alter_table` 重建，命名 FK `fk_<table>_org_id` RESTRICT 由 batch 反射重新应用，无损。
+- 新增幂等 helper：`migrations/_helpers.py` `safe_set_column_nullable`（镜像 `safe_add_column` 的 inspect→drift-warn→batch-alter 哲学）、`safe_create_unique_constraint` / `safe_drop_unique_constraint`（与 ORM `UniqueConstraint` 声明对齐，而非 unique index——二者物理同构但 SQLAlchemy 经不同 inspector 反射，必须匹配 ORM 才能保 schema-parity）。
+- ORM 模型同步：4 个模型 `org_id` 改 `nullable=False`；`ThreadMetaRow.__table_args__` 增 `UniqueConstraint("org_id","thread_id",name="uq_threads_meta_org_thread")`。`test_create_all_and_alembic_upgrade_produce_same_schema` 守护 parity。
+
+语义与边界：
+
+- **不可逆（生产语义）**：Enforce 后生产 DB 不容忍 NULL `org_id`；pr-split-guide §7 禁止把 Enforce 与 multi-org Feature（PR-025B）合成一次发布。本 PR 只做 schema 收紧，不动 Feature Flag、不动应用过滤逻辑（PR-024 已就位）。
+- **零数据风险**：PR-023 backfill 已让存量全非空（空 `org_id=0`），PR-024 保证新写必 stamp → NOT NULL ALTER 零数据丢失；残留 NULL 会让 ALTER fail-loud（正确、surface 行为），doctor（PR-025C）后续补友好预检。
+- **downgrade 安全**：re-nullable + drop unique；因 PR-024 持续 stamp，回滚不产生新 NULL。
+- **`UNIQUE(org_id, thread_id)` 当前为声明性**：`thread_id` 已全局 PK，约束恒满足；确立 §1 #9 org 前缀唯一范式，为后续 org-scoped 业务键铺路。
+
+测试：`test_resource_org_schema.py`（NOT NULL 矩阵 + 复合唯一 + 0006↔0005 round-trip）、`test_persistence_bootstrap.py`（HEAD=`0006`、parity）、`test_backfill_default_org.py`（schema 钉到 0005 验证 backfill job）、既有持久化/隔离套件零改动即绿。
+
+### 16.16 PR-025A 不包含
+
+显式排除（后续 PR 交付）：
+
+- multi-org Feature Flag + 不对外开放验证 Org（PR-025B）：Feature Flag 机制本仓库尚不存在，PR-025B 从零引入；ci-cd §10.3 把 Flag 启用硬性门禁在本 PR（Enforce）上线且双 Org 矩阵全绿、空 `org_id=0` 之后；
+- doctor 启用流程与迁移阶段探测（PR-025C）：production-runbook §5.2 doctor 必须读明确迁移阶段（不得只凭 Flag 猜测），并对「Feature ON + 残留 NULL `org_id`」「租户过滤关闭但存在多 Org」两态判 FAIL；
+- 移除 `user_id` 隔离分支 + 清理 5 个临时兼容索引 + `uq_events_thread_seq`/`uq_feedback_thread_run_user` 的 org-scoping（Contract，PR-025D）：ci-cd §10.2 要求 Contract 至少晚一个稳定窗口；
+- `runs.UNIQUE(org_id, idempotency_key)`（§7.2）：`idempotency_key` 列尚不存在，属 ReleaseRef 强制执行 track；
+- `release_digest NOT NULL` / `legacy_unpinned` 门禁（§7.2，ReleaseRef track）；
+- 迁移内数据守卫（COUNT NULL 断言）：留给 doctor（PR-025C）做友好检查；迁移本身 fail-loud 已正确；
+- RLS（§11.1 spike）、Audit 接入（Track D）。

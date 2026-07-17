@@ -15,6 +15,7 @@ FK-at-commit hygiene).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -35,11 +36,34 @@ ALT_ORG_ID = "org-other"
 
 @pytest.fixture
 async def sf(tmp_path: Path):
-    """Boot an isolated SQLite DB; yield its session factory."""
-    from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+    """Boot an isolated SQLite DB pinned to the pre-Enforce (0005) schema.
+
+    The backfill job fills legacy NULL ``org_id`` rows — that only makes sense
+    against a schema where ``org_id`` is still nullable, i.e. the Expand-phase
+    shape (revision ``0005_resource_org_id``). PR-025A Enforce (revision
+    ``0006_enforce_org_not_null``) makes the column NOT NULL, so a head-schema
+    DB refuses the NULL-org seed rows this suite relies on. We therefore
+    bootstrap to head (NOT NULL) and then downgrade to 0005 (nullable) before
+    seeding. This pins the DB to the exact schema the backfill job targets,
+    and as a side effect exercises the 0006 downgrade round-trip.
+
+    Post-Enforce, no freshly-provisioned DB can hold NULL ``org_id`` (``create_all``
+    builds NOT NULL, head migration enforces it); the backfill job remains useful
+    only for the deployment-transition case of a DB provisioned before 0006 ran.
+    """
+    from alembic import command as alembic_command
+
+    from deerflow.persistence.bootstrap import _get_alembic_config
+    from deerflow.persistence.engine import close_engine, get_engine, get_session_factory, init_engine
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'backfill.db'}"
     await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+    # Roll the freshly-bootstrapped (head) schema back to the pre-Enforce
+    # shape so NULL org_id rows can be seeded. init_engine has already stamped
+    # alembic_version to head, so a plain downgrade lands at 0005 cleanly.
+    # ``get_engine()`` reads the module-global live (post-init_engine) instead
+    # of a snapshot taken at import time.
+    await asyncio.to_thread(alembic_command.downgrade, _get_alembic_config(get_engine()), "0005_resource_org_id")
     try:
         yield get_session_factory()
     finally:

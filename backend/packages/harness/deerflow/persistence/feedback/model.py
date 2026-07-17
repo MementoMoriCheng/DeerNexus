@@ -24,10 +24,11 @@ class FeedbackRow(Base):
     feedback_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     run_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     thread_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    # Tenant boundary for this feedback (PR-021 Expand: nullable so legacy
-    # rows remain NULL until PR-023 backfill; NOT NULL enforced in PR-025A).
-    # FK RESTRICT keeps feedback intact if an org is hard-deleted.
-    org_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    # Tenant boundary for this feedback. Enforce NOT NULL landed in PR-025A
+    # (revision 0006): the column is non-nullable after PR-023 backfill filled
+    # every legacy row. FK RESTRICT keeps feedback intact if an org is
+    # hard-deleted.
+    org_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
     user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     message_id: Mapped[str | None] = mapped_column(String(64))
     # message_id is an optional RunEventStore event identifier —

@@ -15,11 +15,11 @@ class RunRow(Base):
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     thread_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    # Tenant boundary for this run (PR-021 Expand: nullable so legacy rows
-    # remain NULL until PR-023 backfill; NOT NULL enforced in PR-025A). FK
-    # RESTRICT keeps run history intact if an org is hard-deleted (orgs
-    # normally soft-delete via deleted_at).
-    org_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=True)
+    # Tenant boundary for this run. Enforce NOT NULL landed in PR-025A
+    # (revision 0006): the column is non-nullable after PR-023 backfill filled
+    # every legacy row. FK RESTRICT keeps run history intact if an org is
+    # hard-deleted (orgs normally soft-delete via deleted_at).
+    org_id: Mapped[str] = mapped_column(String(36), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False)
     assistant_id: Mapped[str | None] = mapped_column(String(128))
     user_id: Mapped[str | None] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
