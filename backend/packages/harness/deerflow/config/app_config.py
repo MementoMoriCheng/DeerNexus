@@ -32,6 +32,7 @@ from deerflow.config.stream_bridge_config import StreamBridgeConfig, load_stream
 from deerflow.config.subagents_config import SubagentsAppConfig, load_subagents_config_from_dict
 from deerflow.config.suggestions_config import SuggestionsConfig
 from deerflow.config.summarization_config import SummarizationConfig, load_summarization_config_from_dict
+from deerflow.config.tenancy_config import TenancyConfig
 from deerflow.config.title_config import TitleConfig, load_title_config_from_dict
 from deerflow.config.token_usage_config import TokenUsageConfig
 from deerflow.config.tool_config import ToolConfig, ToolGroupConfig
@@ -148,6 +149,10 @@ class AppConfig(BaseModel):
     production: ProductionConfig = Field(
         default_factory=ProductionConfig,
         description="Production deployment declarations consumed by the preflight doctor.",
+    )
+    tenancy: TenancyConfig = Field(
+        default_factory=TenancyConfig,
+        description="Tenant / multi-org Feature Flag + validation Org (PR-025B). Additive; phase=disabled by default.",
     )
     checkpointer: CheckpointerConfig | None = Field(
         default=None,

@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 15
+config_version: 16
 
 # ============================================================================
 # Logging
@@ -1457,3 +1457,31 @@ production:
 #   failure_threshold: 5
 #   # Time in seconds before attempting to recover (default: 60)
 #   recovery_timeout_sec: 60
+
+# ============================================================================
+# Tenancy / Multi-org Feature Flag (PR-025B)
+# ============================================================================
+# Tri-state flag gating the multi-org rollout (data-model §13.3, ci-cd §10.3/§11).
+#
+# phase: disabled | validation | active
+#   disabled  (default) — single-Org mode; today's behaviour. The default Org
+#               (default_org_id) is the only Org; the request-path tenant
+#               resolver maps everyone to it. validation_org is FORBIDDEN here.
+#   validation        — operator has confirmed the Enforce prerequisites and
+#               wants a non-public second Org created so the validation cohort
+#               can exercise the isolation boundary. The resolver is still
+#               single-Org in PR-025B; the validation Org receives no traffic
+#               yet. validation_org is REQUIRED.
+#   active            — multi-org open to real tenants. Reached ONLY by an
+#               explicit operator action after the CD gate in ci-cd §10.3
+#               (dual-Org isolation matrix green + zero NULL org_id rows +
+#               enforce constraints live). validation_org is REQUIRED.
+#
+# PR-025B lands the mechanism only; it never sets phase beyond the default.
+tenancy:
+  multi_org:
+    phase: disabled
+    # validation_org:   # REQUIRED when phase is validation/active, FORBIDDEN when disabled
+    #   id: validation
+    #   slug: validation   # platform-unique among non-deleted orgs; must differ from the default org slug
+    #   name: Validation Org

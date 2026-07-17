@@ -90,6 +90,63 @@ async def ensure_default_org(
     return row
 
 
+async def ensure_validation_org(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    slug: str,
+    name: str,
+) -> OrganizationRow:
+    """Idempotently create the non-public validation Organization row (PR-025B).
+
+    Sister of :func:`ensure_default_org` for the validation phase of the
+    multi-org rollout (data-model §13.3, ci-cd §10.3 "create non-public
+    validation Org"). Probes by ``id``; if present returns the existing row
+    unchanged. Otherwise inserts ``status="active"`` and commits.
+
+    PR-025B scope — what this deliberately does NOT do:
+
+    * It does **not** create any ``OrgMembership`` or ``RoleBinding`` for the
+      validation Org. The validation cohort's principal binding is a later,
+      deliberate operator step, so the validation Org is inert until then:
+      it exists as an FK-valid target and an audited milestone, but cannot
+      receive traffic (the single-Org resolver still maps every request to
+      ``default_org_id``).
+    * It does **not** gate itself on the Feature Flag. The caller
+      (``app.gateway.app._ensure_validation_org``) decides whether to call at
+      all based on ``tenancy.multi_org.phase``, keeping this helper a pure
+      data primitive reusable by CLI / tests / doctor.
+
+    The caller is responsible for ensuring ``slug`` does not collide with the
+    default Org's slug (``OrganizationRow.uq_organizations_slug_active`` would
+    reject it at commit otherwise); this is a deployment-misconfiguration, not
+    a runtime default.
+    """
+    async with sf() as session:
+        existing = await session.get(OrganizationRow, org_id)
+        if existing is not None:
+            emit_tenant_event(
+                "validation_org_exists",
+                org_id=org_id,
+                principal_id=None,
+                payload={"slug": existing.slug, "name": existing.name},
+            )
+            return existing
+
+        row = OrganizationRow(id=org_id, slug=slug, name=name, status="active")
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+
+    emit_tenant_event(
+        "validation_org_created",
+        org_id=org_id,
+        principal_id=None,
+        payload={"slug": slug, "name": name},
+    )
+    return row
+
+
 async def ensure_system_admin_role(
     sf: async_sessionmaker[AsyncSession],
     *,
@@ -210,4 +267,5 @@ __all__ = [
     "ensure_admin_role_binding",
     "ensure_default_org",
     "ensure_system_admin_role",
+    "ensure_validation_org",
 ]

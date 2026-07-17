@@ -653,6 +653,10 @@ cancelling → cancelled | failed
 - 把租户列改为非空并增加复合唯一约束；
 - 开启多组织 Feature Flag。
 
+> **进度**：
+> - 「把租户列改为非空并增加复合唯一约束」已落地（PR-025A / 迁移 `0006_enforce_org_not_null`，详见 runtime-contracts §16.15）。
+> - 「开启多组织 Feature Flag」机制已落地（PR-025B）：`tenancy.multi_org.phase` 三态 Feature Flag（ci-cd §11 八字段 registry 于 `deerflow/tenancy/feature_flags.py`）+ 不对外开放验证 Org bootstrap（`ensure_validation_org`，lifespan 仅在 `phase=validation` 种子）。请求路径解析器在 B 中仍单 Org，`phase` 翻 `active` 为操作者 CD 动作（门禁见 ci-cd §10.3）。详见 runtime-contracts §16.17。
+
 ### 13.4 Contract
 
 - 删除旧的仅 `user_id` 隔离分支；

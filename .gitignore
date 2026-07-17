@@ -2,6 +2,8 @@
 docker/.cache/
 # oh-my-claudecode state
 .omc/
+# ZCode session artifacts (plans, logs)
+.zcode/
 # OS generated files
 .DS_Store
 *.local
