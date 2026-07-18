@@ -1,4 +1,4 @@
-"""Tenant bootstrap + backfill + Feature Flag helpers (PR-022 / PR-023 / PR-025B).
+"""Tenant bootstrap + backfill + Feature Flag + membership helpers (PR-022 / PR-023 / PR-025B / PR-025C+).
 
 Idempotent seeding of the default Organization and the initial admin tenant
 relationships (OrgMembership + system-template ``org:admin`` Role +
@@ -6,6 +6,8 @@ RoleBinding) — see :mod:`deerflow.tenancy.bootstrap`. Default-Org backfill
 of legacy NULL ``org_id`` resource rows — see
 :mod:`deerflow.tenancy.backfill`. High-risk Feature Flag registry + live
 ``multi_org`` phase accessor — see :mod:`deerflow.tenancy.feature_flags`.
+Read-side membership lookup for request-path tenant resolution — see
+:mod:`deerflow.tenancy.membership`.
 """
 
 from deerflow.tenancy.audit_events import emit_tenant_event
@@ -25,11 +27,13 @@ from deerflow.tenancy.feature_flags import (
     get_feature_flag,
     get_feature_flags,
 )
+from deerflow.tenancy.membership import MultiMembershipError, get_active_membership
 
 __all__ = [
     "BackfillReport",
     "FeatureFlag",
     "MULTI_ORG_FLAG",
+    "MultiMembershipError",
     "SYSTEM_ADMIN_ROLE_NAME",
     "backfill_resource_org",
     "current_multi_org_phase",
@@ -39,6 +43,7 @@ __all__ = [
     "ensure_default_org",
     "ensure_system_admin_role",
     "ensure_validation_org",
+    "get_active_membership",
     "get_feature_flag",
     "get_feature_flags",
 ]
