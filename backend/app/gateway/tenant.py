@@ -268,7 +268,11 @@ class TenantResolutionMiddleware(BaseHTTPMiddleware):
         if _is_public(request.url.path):
             return await call_next(request)
 
-        request_id = _resolve_request_id(request)
+        # CorrelationMiddleware (outermost) sets request.state.request_id and
+        # validates the inbound header (§2 anti-log-injection). We prefer it
+        # so every middleware shares the same id; the legacy _resolve_request_id
+        # remains as a defensive fallback for misordered stacks / direct calls.
+        request_id = getattr(request.state, "request_id", None) or _resolve_request_id(request)
         request.state.request_id = request_id
 
         user = getattr(request.state, "user", None)

@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.gateway.auth_disabled import warn_if_auth_disabled_enabled
 from app.gateway.auth_middleware import AuthMiddleware
 from app.gateway.config import DEFAULT_ORG_NAME, DEFAULT_ORG_SLUG, get_gateway_config
+from app.gateway.correlation_middleware import CorrelationMiddleware
 from app.gateway.csrf_middleware import CSRFMiddleware, get_configured_cors_origins
 from app.gateway.deps import langgraph_runtime
 from app.gateway.routers import (
@@ -32,16 +33,19 @@ from app.gateway.routers import (
 from app.gateway.tenant import TenantResolutionMiddleware
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.config.app_config import apply_logging_level
+from deerflow.config.observability_config import ObservabilityConfig
+from deerflow.observability import configure_logging, init_tracing
 
 AppConfig = deerflow_app_config.AppConfig
 get_app_config = deerflow_app_config.get_app_config
 
-# Default logging; lifespan overrides from config.yaml log_level.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Install a formatter as early as possible so import-time log lines from
+# gateway submodules hit a configured handler. The lifespan re-runs
+# ``configure_logging`` with the operator's real ``observability`` config
+# (which may switch to JSON), so this initial call only needs to match
+# today's text behaviour. Defaults are explicit so a failure to read
+# config at import time still produces a deterministic formatter.
+configure_logging(ObservabilityConfig())
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +262,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         startup_config = get_app_config()
         apply_logging_level(startup_config.log_level)
+        # Re-run the formatter selection now that the real observability
+        # config is loaded: the import-time ``configure_logging`` call above
+        # used the safe default (text format); if the operator set
+        # ``observability.log_format=json`` this is where it takes effect.
+        configure_logging(startup_config.observability)
         logger.info("Configuration loaded successfully")
         warn_if_auth_disabled_enabled()
     except Exception as e:
@@ -266,6 +275,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         raise RuntimeError(error_msg) from e
     config = get_gateway_config()
     logger.info(f"Starting API Gateway on {config.host}:{config.port}")
+
+    # Initialise OpenTelemetry SDK + OTLP exporter when the operator has set
+    # ``observability.otel.exporter_endpoint``. Returns ``None`` (no-op
+    # tracer) when the endpoint is unset, which is today's default. The
+    # shutdown callable flushes the BatchSpanProcessor on exit; we keep it on
+    # the stack so it runs even if a later lifespan step raises.
+    tracing_shutdown = init_tracing(startup_config.observability)
 
     # Pre-warm tiktoken encoding cache so the first memory-injection request
     # never blocks on the BPE data download (which hits an OpenAI/Azure URL
@@ -337,6 +353,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         except Exception:
             logger.exception("Failed to stop channel service")
+
+    # Flush any in-flight spans before exit so they reach the collector.
+    # No-op when tracing was never initialised (init_tracing returned None).
+    if tracing_shutdown is not None:
+        try:
+            tracing_shutdown()
+        except Exception:
+            logger.warning("Tracing shutdown hook raised; continuing with gateway shutdown", exc_info=True)
 
     logger.info("Shutting down API Gateway")
 
@@ -458,6 +482,13 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    # Correlation: outermost middleware (added last → runs first). Binds the
+    # per-request correlation id, opens the HTTP root span (§5.1) and emits
+    # ``gateway.request.completed`` (§3.4). Fail-open — observability is never
+    # a correctness gate; TenantResolutionMiddleware stays the fail-closed gate.
+    # See app/gateway/correlation_middleware.py for the full contract.
+    app.add_middleware(CorrelationMiddleware)
 
     # Include routers
     # Models API is mounted at /api/models

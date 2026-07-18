@@ -213,3 +213,56 @@ async def seed_test_default_org() -> None:
             )
         )
         await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry test isolation (PR-062)
+# ---------------------------------------------------------------------------
+#
+# OTel's public ``trace.set_tracer_provider`` and the private
+# ``_set_tracer_provider`` are both gated by a ``Once`` whose ``do_once``
+# semantics mean the provider can be set at most ONCE per process — the
+# ``log=False`` argument only silences the warning, it does not enable
+# override. So once any test (or the gateway lifespan) installs a provider,
+# every later fixture's ``set_tracer_provider`` call is a silent no-op and
+# the in-memory exporter never receives spans.
+#
+# The fixture below does the hard reset required for real per-test isolation:
+# it directly assigns the ``_TRACER_PROVIDER`` module global, resets the
+# ``Once._done`` flag so the next legitimate ``set_tracer_provider`` call
+# works, and yields the in-memory exporter for assertions. Tests that need
+# to capture spans should depend on this fixture instead of calling
+# ``set_tracer_provider`` themselves.
+
+
+@pytest.fixture()
+def otel_in_memory():
+    """Install an in-memory OTel provider that captures every span.
+
+    Yields the :class:`InMemorySpanExporter`; on teardown the provider is
+    shut down and a fresh default provider re-installed so the next test
+    starts from a clean slate. Uses the hard-reset path (direct global
+    assignment + ``Once`` flag reset) because OTel offers no public API for
+    per-test provider swap.
+    """
+    import opentelemetry.trace as otel_trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    # Hard reset: bypass the Once guard by assigning the global directly and
+    # clearing the Once flag so a future set_tracer_provider can take effect.
+    otel_trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    otel_trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
+
+    try:
+        yield exporter
+    finally:
+        provider.shutdown()
+        fresh = TracerProvider()
+        otel_trace._TRACER_PROVIDER = fresh  # type: ignore[attr-defined]
+        otel_trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]

@@ -176,6 +176,31 @@ async def run_agent(
     if ctx.tenant is not None and get_tenant_context() is None:
         tenant_token = bind_tenant_context(ctx.tenant)
 
+    # Open the Run root span (observability-and-slo §5.1 ``run <run_id>``).
+    # Uses explicit ``__enter__`` / ``__exit__`` rather than a ``with`` block
+    # so the existing try/except/finally body below does not have to be
+    # re-indented; the span is closed in the ``finally`` branch. The §5.2
+    # deeper hierarchy (graph node / model call / tool-mcp call / sandbox)
+    # lands in follow-up PRs as each layer is instrumented; PR-062 wires only
+    # this root span plus the §5.3 allow-listed attributes. ``record_exception``
+    # is called explicitly in the except branches below so §5.4 error sampling
+    # has signal even though the exceptions are caught (and thus would not
+    # auto-record on ``__exit__``).
+    from deerflow.observability import get_tracer, set_span_attributes
+
+    _run_tracer = get_tracer("deerflow.runtime.runs")
+    _run_span_cm = _run_tracer.start_as_current_span(f"run {run_id}")
+    _run_span = _run_span_cm.__enter__()
+    set_span_attributes(
+        _run_span,
+        **{
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "org_id": ctx.tenant.org_id if ctx.tenant is not None else None,
+            "model": record.model_name,
+        },
+    )
+
     try:
         # Initialize RunJournal + write human_message event.
         # These are inside the try block so any exception (e.g. a DB
@@ -402,6 +427,10 @@ async def run_agent(
     except Exception as exc:
         error_msg = f"{exc}"
         logger.exception("Run %s failed: %s", run_id, error_msg)
+        # Record on the Run span so §5.4 error sampling has signal. Caught
+        # exceptions do not auto-record via ``__exit__`` (we pass
+        # ``None, None, None`` below), so this explicit call is required.
+        _run_span.record_exception(exc)
         await run_manager.set_status(run_id, RunStatus.error, error=error_msg)
         await bridge.publish(
             run_id,
@@ -454,6 +483,12 @@ async def run_agent(
 
         await bridge.publish_end(run_id)
         asyncio.create_task(bridge.cleanup(run_id, delay=60))
+
+        # Close the Run root span. Pass ``None, None, None`` so OTel does not
+        # re-record an exception — we already recorded explicitly in the
+        # ``except Exception`` branch above, and cancellation is intentionally
+        # not recorded (expected per §3.2, not an error).
+        _run_span_cm.__exit__(None, None, None)
 
 
 # ---------------------------------------------------------------------------
