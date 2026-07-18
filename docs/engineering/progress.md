@@ -116,7 +116,7 @@
 | --- | --- | --- | --- | --- |
 | PR-060 | Org Console API | — | 阻塞 → Track B/C | stats / runs / usage |
 | PR-061 | Admin Console UI | — | 阻塞 → PR-060 | 不扩审批/市场/KB |
-| PR-062 | 结构化日志与 Trace | — | 未开始 | 可与 Track A 并行 |
+| PR-062 | 结构化日志与 Trace | #37 | 已交付 | 从零建立观测基础层（仓库此前无结构化日志/OTel/prometheus）：新建 `deerflow/observability/` 包 7 模块（命名避开已占用的 `deerflow/tracing/`——那是 Langfuse/LangSmith LLM callback）——`correlation.py`（§2 关联 ID ContextVar 镜像 tenant 模式 + inbound `X-Request-Id` 防日志注入校验）、`scrubbing.py`（§3.3 禁止字段 token-aware 清洗：抓 `bearer_token`/`httpx_authorization` 不误杀 `tokens`/`responses`）、`logging_setup.py`（`JsonFormatter` §3.1 19 字段 + `TextFormatter` 今天形状 + 幂等 `configure_logging`）、`tracing.py`（`init_tracing` no-op/wired + §5.3 allow-list + TODO §5.4 tail sampler）、`events.py`（`emit_event` 单一 choke-point）；新建 `CorrelationMiddleware`（最外层，HTTP 根 span §5.1 + `gateway.request.completed` §3.4）；`worker.py::run_agent` 包 Run 根 span；**Tracer 不缓存到模块级**——`ProxyTracer._tracer` 首次 non-None provider 后缓存不再刷新，模块级缓存会钉死首次 provider（破坏测试隔离/热重载）；**默认即今天行为**（text + no-op tracer，可回滚）；零调用点改动（135 个 `getLogger(__name__)` 不动）；CorrelationMiddleware fail-open 与 tenant fail-closed 正交；OTel 测试隔离用 `conftest.py::otel_in_memory`（硬重置 `_TRACER_PROVIDER` + `Once._done`）；14 命名事件中 13 个调用点/span 层级深度/tail sampling/发布标记/metrics-dashboard-alerts(→PR-063)延后，详见 runtime-contracts §16.23 | `61e16941` |
 | PR-063 | Metrics / Dashboard / Alerts | — | 未开始 | 可并行 |
 | PR-064 | Doctor 完整检查 | — | 阻塞 → 各 Track | 接入真实依赖 |
 | PR-065 | Backup / Restore Automation | — | 未开始 | 不混业务迁移 |
