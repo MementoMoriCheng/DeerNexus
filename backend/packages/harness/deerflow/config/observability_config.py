@@ -72,6 +72,36 @@ class OtelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class MetricsConfig(BaseModel):
+    """Prometheus metrics endpoint configuration (observability-and-slo §4).
+
+    Unlike OTel tracing (no-op by default because export has non-trivial cost),
+    metrics are **enabled by default**: the cost of in-process counter/histogram
+    bumps is negligible compared to traces, and every §6 SLO is computed from
+    the full-counters §4.2–§4.6 metrics (§6 "所有 SLI 分子和分母来自 §4 的全量
+    计数 Metrics … 不得用采样 Trace / 日志替代"). Disabling metrics therefore
+    blinds the SLO dashboards and is an operator opt-out, not the safe default.
+
+    ``route`` is public (no auth) — industry convention; §4.1 already forbids
+    high-cardinality id labels (org_id / user_id / run_id / …) so the endpoint
+    carries no sensitive data. Deployments that want to restrict it should use
+    an ingress rule rather than auth (which would make Prometheus scrapes
+    fiddlier). Setting ``enabled=false`` 404s the route and short-circuits the
+    bump call sites.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Expose /metrics and bump counters/histograms/gauges. Default true — metrics are cheap and every SLO depends on them.",
+    )
+    route: str = Field(
+        default="/metrics",
+        description="HTTP path for the Prometheus scrape endpoint. Public (no auth); restrict via ingress if needed.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ObservabilityConfig(BaseModel):
     """Top-level ``observability:`` config section. Additive; defaults are safe.
 
@@ -102,6 +132,10 @@ class ObservabilityConfig(BaseModel):
     otel: OtelConfig = Field(
         default_factory=OtelConfig,
         description="OpenTelemetry SDK / Collector configuration (PR-062). No-op by default.",
+    )
+    metrics: MetricsConfig = Field(
+        default_factory=MetricsConfig,
+        description="Prometheus metrics endpoint (PR-063). Enabled by default — metrics are cheap and every SLO depends on them.",
     )
 
     model_config = ConfigDict(extra="forbid")

@@ -201,6 +201,12 @@ async def run_agent(
         },
     )
 
+    # PR-063: run_duration_seconds (§4.3) timing anchor — measured at the run
+    # body boundary, observed in the ``finally`` block when the span closes.
+    import time as _time
+
+    _run_started_perf = _time.perf_counter()
+
     try:
         # Initialize RunJournal + write human_message event.
         # These are inside the try block so any exception (e.g. a DB
@@ -221,6 +227,18 @@ async def run_agent(
 
         # 1. Mark running
         await run_manager.set_status(run_id, RunStatus.running)
+
+        # PR-063: observe §4.3 run_admission_duration_seconds (§6.3 SLO P95<3s).
+        # Admission = body-entry (≈ create-accept) → running-mark, which is what
+        # §6.3 wants. ``_run_started_perf`` was captured at the run body entry
+        # above; sub-second precision is fine for a 3s SLO.
+        try:
+            from deerflow.observability.metrics import observe_run_admission_duration
+
+            admission_s = _time.perf_counter() - _run_started_perf
+            observe_run_admission_duration(max(0.0, admission_s))
+        except Exception:  # noqa: BLE001 — metrics are best-effort
+            pass
 
         # Snapshot the latest pre-run checkpoint so rollback can restore it.
         if checkpointer is not None:
@@ -483,6 +501,17 @@ async def run_agent(
 
         await bridge.publish_end(run_id)
         asyncio.create_task(bridge.cleanup(run_id, delay=60))
+
+        # PR-063: observe §4.3 run_duration_seconds by terminal status. The
+        # label is the final RunStatus (success / error / interrupted), giving
+        # dashboards a per-outcome latency breakdown.
+        try:
+            from deerflow.observability.metrics import observe_run_duration
+
+            duration_s = _time.perf_counter() - _run_started_perf
+            observe_run_duration(terminal_status=record.status.value, seconds=max(0.0, duration_s))
+        except Exception:  # noqa: BLE001 — metrics are best-effort
+            pass
 
         # Close the Run root span. Pass ``None, None, None`` so OTel does not
         # re-record an exception — we already recorded explicitly in the

@@ -336,6 +336,21 @@ class TokenUsageMiddleware(AgentMiddleware):
                 usage.get("total_tokens", "?"),
                 detail_suffix,
             )
+            # PR-063: §4.4 model_tokens_total by direction. Model name is not
+            # directly available in this middleware's state; labelled
+            # "unknown" here and resolved by dashboard joins on
+            # model_calls_total once a richer label source lands. Best-effort.
+            try:
+                from deerflow.observability.metrics import inc_model_tokens
+
+                in_tokens = usage.get("input_tokens") or 0
+                out_tokens = usage.get("output_tokens") or 0
+                if in_tokens:
+                    inc_model_tokens(model="unknown", direction="in", tokens=int(in_tokens))
+                if out_tokens:
+                    inc_model_tokens(model="unknown", direction="out", tokens=int(out_tokens))
+            except Exception:  # noqa: BLE001 — metrics never break token tracking
+                pass
 
         todos = state.get("todos") or []
         attribution = _build_attribution(last, todos if isinstance(todos, list) else [])

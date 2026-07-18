@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
@@ -463,8 +464,23 @@ async def sse_consumer(
     The ``finally`` block implements ``on_disconnect`` semantics:
     - ``cancel``: abort the background task on client disconnect.
     - ``continue``: let the task run; events are discarded.
+
+    Observability (PR-063): bumps ``active_sse_connections`` on entry / dec
+    on exit, and observes ``sse_first_business_event_seconds`` for the first
+    non-heartbeat business event relative to run creation (§4.2 / §6.4).
     """
+    from deerflow.observability.metrics import (
+        dec_active_sse_connections,
+        inc_active_sse_connections,
+        observe_sse_first_business_event,
+    )
+
     last_event_id = request.headers.get("Last-Event-ID")
+    # Track first-business-event timing (§6.4). Reconnect (last_event_id set)
+    # skips the timer — §6.4 says "重连场景单独统计".
+    first_business_event_recorded = bool(last_event_id)
+    run_created_epoch = _record_created_epoch(record)
+    inc_active_sse_connections()
     try:
         async for entry in bridge.subscribe(record.run_id, last_event_id=last_event_id):
             if await request.is_disconnected():
@@ -478,12 +494,47 @@ async def sse_consumer(
                 yield format_sse("end", None, event_id=entry.id or None)
                 return
 
+            if not first_business_event_recorded and run_created_epoch is not None:
+                observe_sse_first_business_event(time.perf_counter() - run_created_epoch)
+                first_business_event_recorded = True
+
             yield format_sse(entry.event, entry.data, event_id=entry.id or None)
 
     finally:
+        dec_active_sse_connections()
         if record.status in (RunStatus.pending, RunStatus.running):
             if record.on_disconnect == DisconnectMode.cancel:
                 await run_mgr.cancel(record.run_id)
+
+
+def _record_created_epoch(record: RunRecord) -> float | None:
+    """Return ``record.created_at`` as a ``perf_counter``-comparable epoch.
+
+    ``sse_first_business_event_seconds`` measures from run creation to first
+    business event. We compute it against ``time.perf_counter()`` at first
+    event, but ``record.created_at`` is a wall-clock ISO string. The honest
+    comparison is wall-clock-creation → wall-clock-first-event, so we parse
+    the ISO and subtract a process-start perf_counter anchor. When the
+    created_at is unparseable or missing, return None and skip the timer
+    rather than emit a bogus value.
+    """
+    import time
+    from datetime import datetime
+
+    raw = getattr(record, "created_at", None)
+    if not raw:
+        return None
+    try:
+        # created_at is an ISO 8601 string (RunRecord stores _now_iso()).
+        dt = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+    # Anchor: perf_counter at process start maps to wall-clock start. We use
+    # the simpler approximation of converting the ISO timestamp to a relative
+    # offset from "now" so perf_counter arithmetic stays consistent within
+    # the same process. For sub-second SSE first-event SLOs this is fine.
+    now_iso = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    return time.perf_counter() - (now_iso - dt).total_seconds()
 
 
 async def wait_for_run_completion(

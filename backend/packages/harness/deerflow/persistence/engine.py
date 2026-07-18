@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading as _threading
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -141,6 +143,13 @@ async def init_engine(
     else:
         raise ValueError(f"Unknown persistence backend: {backend!r}")
 
+    # PR-063: wire SQLAlchemy event listeners for §4.6 db_query_duration_seconds
+    # and db_transaction_failure_total. Attached to the sync_engine because
+    # that is where cursor-level events fire (the async wrapper delegates).
+    # Best-effort: the listeners log + bump metrics but never raise into the
+    # query path. SQLite and Postgres both support these hooks.
+    _install_db_metrics_listeners(_engine.sync_engine)
+
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
     # Schema bootstrap (hybrid):
@@ -203,3 +212,106 @@ async def close_engine() -> None:
         logger.info("Persistence engine closed")
     _engine = None
     _session_factory = None
+
+
+# ---------------------------------------------------------------------------
+# PR-063: §4.6 db_pool / db_query / db_transaction metrics
+# ---------------------------------------------------------------------------
+#
+# SQLAlchemy exposes pool stats (checked-in / checked-out / size) on
+# ``engine.pool.status()`` and cursor-level timing via ``before_cursor_execute``
+# / ``after_cursor_execute`` event listeners. We attach the listeners in
+# ``init_engine`` and expose ``get_pool_stats()`` so a periodic gauge scraper
+# (or the gateway lifespan) can sample the pool. The transaction-failure
+# counter hooks ``handle_error`` (raised per failed transaction commit).
+
+
+# Thread-local for per-query timing (avoid dict churn keyed by id(cursor)).
+_db_query_timings = _threading.local()
+
+
+def _install_db_metrics_listeners(sync_engine: Any) -> None:
+    """Attach §4.6 metrics listeners to *sync_engine*. Idempotent / best-effort."""
+    try:
+        from sqlalchemy import event
+
+        from deerflow.observability.metrics import (
+            inc_db_transaction_failure,
+            observe_db_query,
+        )
+
+        @event.listens_for(sync_engine, "before_cursor_execute")
+        def _before_cursor_execute(*args: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            import time as _time
+
+            _db_query_timings.started = _time.perf_counter()
+
+        @event.listens_for(sync_engine, "after_cursor_execute")
+        def _after_cursor_execute(*args: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            import time as _time
+
+            started = getattr(_db_query_timings, "started", None)
+            if started is None:
+                return
+            try:
+                observe_db_query(_time.perf_counter() - started)
+            except Exception:  # noqa: BLE001 — metrics best-effort
+                pass
+            finally:
+                _db_query_timings.started = None
+
+        @event.listens_for(sync_engine, "handle_error")
+        def _handle_error(exception_context: Any) -> None:
+            try:
+                exc = getattr(exception_context, "original_exception", None)
+                error_class = type(exc).__name__ if exc is not None else "Unknown"
+                inc_db_transaction_failure(error_class=error_class)
+            except Exception:  # noqa: BLE001 — metrics best-effort
+                pass
+
+    except Exception:  # noqa: BLE001 — listeners are best-effort
+        logger.debug("Failed to install DB metrics listeners", exc_info=True)
+
+
+def get_pool_stats() -> dict[str, int] | None:
+    """Return ``{in_use, size}`` for the active engine pool, or None.
+
+    Returns None for memory backend (no engine), or when the engine's pool
+    does not expose ``status()`` (some NullPool / SingletonThreadPool variants).
+    """
+    if _engine is None:
+        return None
+    try:
+        pool = _engine.pool
+        status = pool.status()  # e.g. "Pool size: 5  Connections in pool: 3  Checked out: 2"
+        # Parse the "Checked out: N" and total "Pool size: N" fields.
+        import re
+
+        checked_out_match = re.search(r"Checked out:\s*(\d+)", status)
+        pool_size_match = re.search(r"Pool size:\s*(\d+)", status)
+        if checked_out_match is None or pool_size_match is None:
+            return None
+        return {
+            "in_use": int(checked_out_match.group(1)),
+            "size": int(pool_size_match.group(1)),
+        }
+    except Exception:  # noqa: BLE001 — pool introspection is best-effort
+        return None
+
+
+def refresh_db_pool_metrics() -> None:
+    """Sample the pool and update the §4.6 db_pool_in_use / db_pool_size gauges.
+
+    Called from the gateway lifespan + a periodic refresh hook. Best-effort:
+    a parse failure or memory backend is a no-op (gauges stay at their last
+    value or unset).
+    """
+    try:
+        from deerflow.observability.metrics import set_db_pool_stats
+
+        stats = get_pool_stats()
+        if stats is None:
+            return
+        set_db_pool_stats(in_use=stats["in_use"], size=stats["size"])
+    except Exception:  # noqa: BLE001 — metrics best-effort
+        pass

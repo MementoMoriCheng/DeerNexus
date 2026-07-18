@@ -1,0 +1,200 @@
+# PrometheusRule for DeerNexus (PR-063).
+#
+# Each rule below carries the eight annotation fields mandated by
+# docs/ops/observability-and-slo.md §9: owner / severity / summary / impact /
+# dashboard / runbook / silence_rule / escalation.
+#
+# ONLY metrics with wired code paths today get alerts. The §9 spec lists more
+# conditions (Redis unreachable / Audit outbox >X / Audit dead letter / Audit
+# archive >24h / Backup over RPO / Object digest mismatch / Profile H Redis
+# Stream lag / Profile W dispatch backlog / Sandbox OOM / Sandbox quarantine /
+# Sandbox escape / Certificate/Secret expiry); those code paths do not exist
+# yet (see runtime-contracts.md §16.26) and a forever-pending alert adds noise
+# without value. They land with their owning PRs.
+#
+# Severity follows §9: P1 = page now (incident), P2 = handle on-call.
+# ``for:`` windows match the §9 spec where given; 5m is the default floor.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: deernexus-alerts
+  namespace: deernexus
+  labels:
+    app.kubernetes.io/name: deernexus
+    app.kubernetes.io/part-of: deernexus
+spec:
+  groups:
+    - name: deernexus.gateway
+      interval: 30s
+      rules:
+        - alert: DeerNexusGatewayHighErrorRateP1
+          expr: |
+            (
+              sum(rate(http_requests_total{status_class="5xx"}[5m]))
+              / clamp_min(sum(rate(http_requests_total[5m])), 1)
+            ) > 0.05
+          for: 5m
+          labels:
+            severity: p1
+          annotations:
+            owner: "platform-backend"
+            severity: "P1"
+            summary: "Gateway 5xx ratio >5% sustained 5m"
+            impact: "User requests failing at platform level; investigate before more users hit it."
+            dashboard: "/d/deernexus-platform-overview"
+            runbook: "docs/ops/production-runbook.md#gateway-5xx"
+            silence_rule: "silence if a known deploy is in progress"
+            escalation: "page platform on-call"
+
+        - alert: DeerNexusGatewayElevatedErrorRateP2
+          expr: |
+            (
+              sum(rate(http_requests_total{status_class="5xx"}[5m]))
+              / clamp_min(sum(rate(http_requests_total[5m])), 1)
+            ) > 0.01
+          for: 5m
+          labels:
+            severity: p2
+          annotations:
+            owner: "platform-backend"
+            severity: "P2"
+            summary: "Gateway 5xx ratio >1% sustained 5m"
+            impact: "Early-warning; not yet user-visible at scale."
+            dashboard: "/d/deernexus-platform-overview"
+            runbook: "docs/ops/production-runbook.md#gateway-5xx"
+            silence_rule: "silence during deploy windows"
+            escalation: "handle on shift"
+
+    - name: deernexus.run
+      interval: 30s
+      rules:
+        - alert: DeerNexusRunAdmissionLatencyP2
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(run_admission_duration_seconds_bucket[15m]))
+            ) > 5
+          for: 15m
+          labels:
+            severity: p2
+          annotations:
+            owner: "runtime"
+            severity: "P2"
+            summary: "Run admission P95 >5s sustained 15m (§6.3 SLO is P95<3s)"
+            impact: "Runs slow to start; user-perceived latency on new turns."
+            dashboard: "/d/deernexus-runtime"
+            runbook: "docs/ops/production-runbook.md#run-admission-latency"
+            silence_rule: "silence during scheduled DB maintenance"
+            escalation: "handle on shift"
+
+        - alert: DeerNexusReconcileBacklogP2
+          expr: run_reconcile_backlog > 100
+          for: 5m
+          labels:
+            severity: p2
+          annotations:
+            owner: "runtime"
+            severity: "P2"
+            summary: "Run reconcile backlog >100 sustained 5m"
+            impact: "Orphaned inflight runs accumulating after restart; §6.7 says convergence ≤300s."
+            dashboard: "/d/deernexus-runtime"
+            runbook: "docs/ops/production-runbook.md#reconcile-backlog"
+            silence_rule: "silence during rolling restart"
+            escalation: "handle on shift"
+
+    - name: deernexus.sse
+      interval: 30s
+      rules:
+        - alert: DeerNexusSSEFirstEventLatencyP2
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(sse_first_business_event_seconds_bucket[15m]))
+            ) > 5
+          for: 15m
+          labels:
+            severity: p2
+          annotations:
+            owner: "runtime"
+            severity: "P2"
+            summary: "SSE first business event P95 >5s sustained 15m (§6.4 SLO)"
+            impact: "Users wait too long for the first token after run create."
+            dashboard: "/d/deernexus-platform-overview"
+            runbook: "docs/ops/production-runbook.md#sse-first-event-latency"
+            silence_rule: "silence during model-provider incidents"
+            escalation: "handle on shift"
+
+    - name: deernexus.sandbox
+      interval: 30s
+      rules:
+        - alert: DeerNexusSandboxPoolExhaustedP2
+          expr: sandbox_active > 0 and on() (sandbox_acquire_duration_seconds_count offset 10m) - sandbox_acquire_duration_seconds_count > 0
+          # Simple proxy: if acquire is non-zero and active is pegged for 10m,
+          # the pool is likely exhausted. A real pool-size gauge lands with
+          # the sandbox-hardening PR (Track E).
+          for: 10m
+          labels:
+            severity: p2
+          annotations:
+            owner: "platform + sandbox"
+            severity: "P2"
+            summary: "Sandbox pool appears exhausted for >10m"
+            impact: "New tool calls cannot acquire a sandbox; runs stall."
+            dashboard: "/d/deernexus-runtime"
+            runbook: "docs/ops/production-runbook.md#sandbox-pool-exhausted"
+            silence_rule: "silence during load tests"
+            escalation: "handle on shift"
+
+    - name: deernexus.db
+      interval: 30s
+      rules:
+        - alert: DeerNexusPostgresUnreachableP1
+          # db_transaction_failure_total bumps on every failed transaction
+          # (including connect failures). A spike means the DB is unreachable
+          # or returning errors at scale.
+          expr: rate(db_transaction_failure_total[1m]) > 1
+          for: 1m
+          labels:
+            severity: p1
+          annotations:
+            owner: "sre/dba"
+            severity: "P1"
+            summary: "PostgreSQL transaction failures spiking (likely unreachable)"
+            impact: "Run persistence, auth, and Console all failing."
+            dashboard: "/d/deernexus-platform-overview"
+            runbook: "docs/ops/production-runbook.md#postgres-unreachable"
+            silence_rule: "silence during scheduled DB maintenance"
+            escalation: "page sre/dba on-call"
+
+        - alert: DeerNexusDBPoolSaturationP2
+          expr: db_pool_in_use / clamp_min(db_pool_size, 1) > 0.9
+          for: 5m
+          labels:
+            severity: p2
+          annotations:
+            owner: "sre/dba"
+            severity: "P2"
+            summary: "DB pool >90% saturated for 5m"
+            impact: "Requests waiting on connections; latency will rise."
+            dashboard: "/d/deernexus-platform-overview"
+            runbook: "docs/ops/production-runbook.md#db-pool-saturation"
+            silence_rule: "silence during load tests"
+            escalation: "handle on shift"
+
+# ---------------------------------------------------------------------------
+# DEFERRED alerts (§9 spec) — code paths do not exist yet (runtime-contracts
+# §16.26). Add them when the owning PR lands. Listed here so an auditor can
+# see what's intentionally omitted.
+# ---------------------------------------------------------------------------
+# - prod digest 错误/缺失 (P1) → blocked on release-pipeline + digest metric
+# - 跨 Org 泄露证据 (P1) → blocked on isolation-violation detector
+# - Audit Class A outbox 不可写 (P1) → blocked on PR-041 Audit outbox
+# - Audit 归档 >24h 无成功 (P2) → blocked on PR-041
+# - Audit 归档摘要校验失败 (P1) → blocked on PR-041
+# - Audit dead letter >0 (P2) → blocked on PR-041
+# - Sandbox 逃逸迹象 (P1) → blocked on Track E sandbox hardening
+# - Redis 不可达且 Profile H (P1) → blocked on Redis/stream consumer
+# - Console 默认查询 P95 >500ms (P2) → blocked on PR-060 Console API
+# - Redis Stream lag P95 >2s (P2) → blocked on Redis
+# - Audit outbox oldest >5m (P2) → blocked on PR-041
+# - Backup 超声明 RPO (P1) → blocked on backup job
+# - Object digest mismatch >0 (P1) → blocked on content-addressed store
+# - Certificate / Secret ≤14/≤7/≤1 天到期 (P2/P2/P1) → blocked on cert manager

@@ -437,96 +437,33 @@ def _make_session_pool_tool(
         runtime: Runtime | None = None,
         **arguments: Any,
     ) -> Any:
-        thread_id = _extract_thread_id(runtime)
-        user_id = resolve_runtime_user_id(runtime)
-        # Scope the pooled session by user *and* thread. Filesystem isolation is
-        # per-(user_id, thread_id), so a thread_id alone could otherwise let two
-        # users with a colliding thread_id share one stateful MCP session.
-        scope_key = f"{user_id}:{thread_id}"
-        session_connection = dict(connection)
-        # cwd/temp pinning and the workspace snapshot only matter for stdio
-        # servers, which run as local subprocesses writing to a real filesystem.
-        # SSE/HTTP servers have no local cwd to pin, so skip the filesystem work
-        # entirely for them (avoids needless dir creation and recursive walks).
-        is_stdio = session_connection.get("transport", "stdio") == "stdio"
-        source_base_dir: Path | None = None
-        process_cwd: Path | None = None
-        before_files: _FILE_SNAPSHOT | None = None
-        if is_stdio:
-            paths = get_paths()
-            # Bundle the synchronous filesystem prep (dir creation, temp-dir
-            # setup, pre-call snapshot) and run it off the event loop — the
-            # snapshot walks the whole workspace and would otherwise block.
-            source_base_dir, tmp_dir, before_files = await asyncio.to_thread(_prepare_stdio_workspace, paths, thread_id=thread_id, user_id=user_id)
-            # Stdio MCP servers resolve relative output links against their
-            # process cwd. Keep that cwd inside the thread's mounted user-data
-            # tree so files produced by tools like Playwright land where the
-            # sandbox/artifact API can serve them and their references can be
-            # translated to virtual paths.
-            configured_cwd = session_connection.get("cwd", str(source_base_dir))
-            session_connection["cwd"] = str(configured_cwd)
-            process_cwd = Path(configured_cwd)
-            # Pin the subprocess temp dir under the same mounted tree. Tools that
-            # default to the OS temp dir (Node's os.tmpdir(), Python's tempfile,
-            # many CLIs) then write inside user-data instead of an unreachable
-            # host path — the tool-agnostic counterpart to fixing the cwd. Merge
-            # rather than replace any operator-provided env.
-            session_env = dict(session_connection.get("env") or {})
-            session_env.setdefault("TMPDIR", str(tmp_dir))
-            session_env.setdefault("TMP", str(tmp_dir))
-            session_env.setdefault("TEMP", str(tmp_dir))
-            session_connection["env"] = session_env
-        session = await pool.get_session(server_name, scope_key, session_connection)
+        # PR-063: §4.4 mcp_calls_total + mcp_call_duration_seconds. Tool name
+        # is the stripped MCP tool name (``original_name``); normalized via
+        # the §4.4 "unknown → other" rule by record_mcp_call. Best-effort:
+        # metrics never break the MCP call.
+        import time as _time
 
-        if tool_interceptors:
-            from langchain_mcp_adapters.interceptors import MCPToolCallRequest
+        from deerflow.observability.metrics import record_mcp_call
 
-            async def base_handler(request: MCPToolCallRequest) -> Any:
-                # Preserve interceptor-injected headers for stdio MCP calls by
-                # forwarding them through MCP call meta.
-                call_kwargs: dict[str, Any] = {}
-                if request.headers:
-                    if isinstance(request.headers, Mapping):
-                        call_kwargs["meta"] = {"headers": dict(request.headers)}
-                    else:
-                        logger.warning("Ignoring MCP interceptor headers with unsupported type: %s", type(request.headers).__name__)
-                return await session.call_tool(request.name, request.args, **call_kwargs)
-
-            handler = base_handler
-            for interceptor in reversed(tool_interceptors):
-                outer = handler
-
-                async def wrapped(req: Any, _i: Any = interceptor, _h: Any = outer) -> Any:
-                    return await _i(req, _h)
-
-                handler = wrapped
-
-            request = MCPToolCallRequest(
-                name=original_name,
-                args=arguments,
-                server_name=server_name,
+        _mcp_started = _time.perf_counter()
+        try:
+            return await _call_with_persistent_session_inner(
                 runtime=runtime,
+                arguments=arguments,
+                original_name=original_name,
+                server_name=server_name,
+                connection=connection,
+                pool=pool,
+                tool_interceptors=tool_interceptors,
             )
-            call_tool_result = await handler(request)
-        else:
-            call_tool_result = await session.call_tool(original_name, arguments)
-
-        # The after-call snapshot diff only feeds bare-filename correlation in
-        # free text, so skip the second recursive walk when there is no text
-        # content to rewrite. Both the diff and the per-token path resolution
-        # inside _convert_call_tool_result touch the filesystem, so run them off
-        # the event loop.
-        changed_files: list[Path] | None = None
-        if is_stdio and before_files is not None and _result_has_text_content(call_tool_result):
-            changed_files = await asyncio.to_thread(_changed_workspace_files, source_base_dir, before_files)
-        return await asyncio.to_thread(
-            _convert_call_tool_result,
-            call_tool_result,
-            thread_id=thread_id,
-            user_id=user_id,
-            source_base_dir=process_cwd,
-            changed_files=changed_files,
-        )
+        finally:
+            try:
+                record_mcp_call(
+                    tool_name=original_name,
+                    duration_seconds=_time.perf_counter() - _mcp_started,
+                )
+            except Exception:  # noqa: BLE001 — metrics best-effort
+                pass
 
     return StructuredTool(
         name=tool.name,
@@ -535,6 +472,113 @@ def _make_session_pool_tool(
         coroutine=call_with_persistent_session,
         response_format="content_and_artifact",
         metadata=tool.metadata,
+    )
+
+
+async def _call_with_persistent_session_inner(
+    *,
+    runtime: Runtime | None,
+    arguments: dict[str, Any],
+    original_name: str,
+    server_name: str,
+    connection: dict[str, Any],
+    pool: Any,
+    tool_interceptors: list[Any] | None,
+) -> Any:
+    """Body of the pooled MCP tool call, extracted for §4.4 timing (PR-063).
+
+    Pure refactor of the pre-PR-063 coroutine body — no behaviour change — so
+    the timer wrapper above can bracket the whole call without a deep nest.
+    """
+    thread_id = _extract_thread_id(runtime)
+    user_id = resolve_runtime_user_id(runtime)
+    # Scope the pooled session by user *and* thread. Filesystem isolation is
+    # per-(user_id, thread_id), so a thread_id alone could otherwise let two
+    # users with a colliding thread_id share one stateful MCP session.
+    scope_key = f"{user_id}:{thread_id}"
+    session_connection = dict(connection)
+    # cwd/temp pinning and the workspace snapshot only matter for stdio
+    # servers, which run as local subprocesses writing to a real filesystem.
+    # SSE/HTTP servers have no local cwd to pin, so skip the filesystem work
+    # entirely for them (avoids needless dir creation and recursive walks).
+    is_stdio = session_connection.get("transport", "stdio") == "stdio"
+    source_base_dir: Path | None = None
+    process_cwd: Path | None = None
+    before_files: _FILE_SNAPSHOT | None = None
+    if is_stdio:
+        paths = get_paths()
+        # Bundle the synchronous filesystem prep (dir creation, temp-dir
+        # setup, pre-call snapshot) and run it off the event loop — the
+        # snapshot walks the whole workspace and would otherwise block.
+        source_base_dir, tmp_dir, before_files = await asyncio.to_thread(_prepare_stdio_workspace, paths, thread_id=thread_id, user_id=user_id)
+        # Stdio MCP servers resolve relative output links against their
+        # process cwd. Keep that cwd inside the thread's mounted user-data
+        # tree so files produced by tools like Playwright land where the
+        # sandbox/artifact API can serve them and their references can be
+        # translated to virtual paths.
+        configured_cwd = session_connection.get("cwd", str(source_base_dir))
+        session_connection["cwd"] = str(configured_cwd)
+        process_cwd = Path(configured_cwd)
+        # Pin the subprocess temp dir under the same mounted tree. Tools that
+        # default to the OS temp dir (Node's os.tmpdir(), Python's tempfile,
+        # many CLIs) then write inside user-data instead of an unreachable
+        # host path — the tool-agnostic counterpart to fixing the cwd. Merge
+        # rather than replace any operator-provided env.
+        session_env = dict(session_connection.get("env") or {})
+        session_env.setdefault("TMPDIR", str(tmp_dir))
+        session_env.setdefault("TMP", str(tmp_dir))
+        session_env.setdefault("TEMP", str(tmp_dir))
+        session_connection["env"] = session_env
+    session = await pool.get_session(server_name, scope_key, session_connection)
+
+    if tool_interceptors:
+        from langchain_mcp_adapters.interceptors import MCPToolCallRequest
+
+        async def base_handler(request: MCPToolCallRequest) -> Any:
+            # Preserve interceptor-injected headers for stdio MCP calls by
+            # forwarding them through MCP call meta.
+            call_kwargs: dict[str, Any] = {}
+            if request.headers:
+                if isinstance(request.headers, Mapping):
+                    call_kwargs["meta"] = {"headers": dict(request.headers)}
+                else:
+                    logger.warning("Ignoring MCP interceptor headers with unsupported type: %s", type(request.headers).__name__)
+            return await session.call_tool(request.name, request.args, **call_kwargs)
+
+        handler = base_handler
+        for interceptor in reversed(tool_interceptors):
+            outer = handler
+
+            async def wrapped(req: Any, _i: Any = interceptor, _h: Any = outer) -> Any:
+                return await _i(req, _h)
+
+            handler = wrapped
+
+        request = MCPToolCallRequest(
+            name=original_name,
+            args=arguments,
+            server_name=server_name,
+            runtime=runtime,
+        )
+        call_tool_result = await handler(request)
+    else:
+        call_tool_result = await session.call_tool(original_name, arguments)
+
+    # The after-call snapshot diff only feeds bare-filename correlation in
+    # free text, so skip the second recursive walk when there is no text
+    # content to rewrite. Both the diff and the per-token path resolution
+    # inside _convert_call_tool_result touch the filesystem, so run them off
+    # the event loop.
+    changed_files: list[Path] | None = None
+    if is_stdio and before_files is not None and _result_has_text_content(call_tool_result):
+        changed_files = await asyncio.to_thread(_changed_workspace_files, source_base_dir, before_files)
+    return await asyncio.to_thread(
+        _convert_call_tool_result,
+        call_tool_result,
+        thread_id=thread_id,
+        user_id=user_id,
+        source_base_dir=process_cwd,
+        changed_files=changed_files,
     )
 
 

@@ -500,6 +500,16 @@ class RunManager:
             if error is not None:
                 record.error = error
         await self._persist_status(record, status, error=error)
+        # PR-063: bump §4.3 runs_status_total on every transition. The counter
+        # is the §6 SLO numerator/denominator source; fail-open (metrics never
+        # break the run). Also recompute worker_active (pending+running count)
+        # so the gauge tracks reality without a separate scraper task.
+        from deerflow.observability.metrics import inc_runs_status, set_worker_active
+
+        inc_runs_status(run_status=status.value)
+        async with self._lock:
+            active = sum(1 for r in self._runs.values() if r.status in (RunStatus.pending, RunStatus.running))
+        set_worker_active(active)
         logger.info("Run %s -> %s", run_id, status.value)
 
     async def _persist_model_name(self, run_id: str, model_name: str | None) -> None:
@@ -556,6 +566,11 @@ class RunManager:
             record.updated_at = _now_iso()
         await self._persist_status(record, RunStatus.interrupted)
         logger.info("Run %s cancelled (action=%s)", run_id, action)
+        # PR-063: bump §4.3 run_cancel_total when a real cancellation is
+        # initiated (not the idempotent already-interrupted path above).
+        from deerflow.observability.metrics import inc_run_cancel
+
+        inc_run_cancel()
         return True
 
     async def create_or_reject(
@@ -646,6 +661,12 @@ class RunManager:
         for interrupted_record in interrupted_records:
             await self._persist_status(interrupted_record, RunStatus.interrupted)
         logger.info("Run created: run_id=%s thread_id=%s", run_id, thread_id)
+        # PR-063: bump §4.3 runs_created_total. The §6.2 run-create SLO
+        # denominator counts runs that pass auth/authz/basic validation, i.e.
+        # runs that actually got created — this is that count.
+        from deerflow.observability.metrics import inc_runs_created
+
+        inc_runs_created()
         return record
 
     async def reconcile_orphaned_inflight_runs(
@@ -677,16 +698,24 @@ class RunManager:
 
         recovered: list[RunRecord] = []
         now = _now_iso()
+        # PR-063: §4.3 run_reconcile_backlog — the count of inflight rows the
+        # reconciler is iterating. Set once up-front (before the per-row
+        # loop) so a dashboard sees the backlog even if the loop is slow.
+        from deerflow.observability.metrics import inc_run_reconcile, set_run_reconcile_backlog
+
+        set_run_reconcile_backlog(len(rows))
         for row in rows:
             try:
                 record = self._record_from_store(row)
             except Exception:
                 logger.warning("Failed to map orphaned run row during reconciliation", exc_info=True)
+                inc_run_reconcile(outcome="row_map_failed")
                 continue
 
             async with self._lock:
                 live_record = self._runs.get(record.run_id)
                 if live_record is not None and live_record.status in (RunStatus.pending, RunStatus.running):
+                    inc_run_reconcile(outcome="skipped_live")
                     continue
 
             record.status = RunStatus.error
@@ -695,8 +724,10 @@ class RunManager:
             persisted = await self._persist_status(record, RunStatus.error, error=error)
             if not persisted:
                 logger.warning("Skipped orphaned run %s recovery because error status was not persisted", record.run_id)
+                inc_run_reconcile(outcome="persist_failed")
                 continue
             recovered.append(record)
+            inc_run_reconcile(outcome="recovered")
 
         if recovered:
             logger.warning("Recovered %d orphaned inflight run(s) as error", len(recovered))

@@ -49,19 +49,57 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         self._lazy_init = lazy_init
 
     def _acquire_sandbox(self, thread_id: str) -> str:
+        import time as _time
+
+        from deerflow.observability.metrics import (
+            observe_sandbox_acquire,
+            set_sandbox_active,
+            set_sandbox_pending,
+        )
+
         provider = get_sandbox_provider()
-        sandbox_id = provider.acquire(thread_id)
+        started = _time.perf_counter()
+        set_sandbox_pending(1)
+        try:
+            sandbox_id = provider.acquire(thread_id)
+        finally:
+            set_sandbox_pending(0)
+        observe_sandbox_acquire(_time.perf_counter() - started)
+        set_sandbox_active(1)
         logger.info(f"Acquiring sandbox {sandbox_id}")
         return sandbox_id
 
     async def _acquire_sandbox_async(self, thread_id: str) -> str:
+        import time as _time
+
+        from deerflow.observability.metrics import (
+            observe_sandbox_acquire,
+            set_sandbox_active,
+            set_sandbox_pending,
+        )
+
         provider = get_sandbox_provider()
-        sandbox_id = await provider.acquire_async(thread_id)
+        started = _time.perf_counter()
+        set_sandbox_pending(1)
+        try:
+            sandbox_id = await provider.acquire_async(thread_id)
+        finally:
+            set_sandbox_pending(0)
+        observe_sandbox_acquire(_time.perf_counter() - started)
+        set_sandbox_active(1)
         logger.info(f"Acquiring sandbox {sandbox_id}")
         return sandbox_id
 
     async def _release_sandbox_async(self, sandbox_id: str) -> None:
+        from deerflow.observability.metrics import set_sandbox_active
+
         await asyncio.to_thread(get_sandbox_provider().release, sandbox_id)
+        # PR-063: §4.5 sandbox_active gauge dec on release. Best-effort:
+        # provider.release is idempotent so an unmatched dec is the worst case.
+        try:
+            set_sandbox_active(0)
+        except Exception:  # noqa: BLE001
+            pass
 
     @override
     def before_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:
@@ -207,11 +245,38 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        prev_sandbox_id = self._read_sandbox_id_from_request(request)
-        result = await handler(request)
-        if prev_sandbox_id is not None:
-            return result
-        curr_sandbox_id = self._read_sandbox_id_from_request(request)
-        if curr_sandbox_id is None:
-            return result
-        return self._attach_sandbox_update(result, curr_sandbox_id)
+        # PR-063: §4.4 tool_calls_total + tool_call_duration_seconds. Tool
+        # name from ``request.tool_call["name"]``; normalized via the §4.4
+        # "unknown → other" rule. Best-effort; metrics never break the call.
+        import time as _time
+
+        from deerflow.observability.metrics import record_tool_call
+
+        _tool_started = _time.perf_counter()
+        tool_name = ""
+        try:
+            tc = getattr(request, "tool_call", None)
+            if isinstance(tc, dict):
+                raw_name = tc.get("name")
+                if isinstance(raw_name, str):
+                    tool_name = raw_name
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            prev_sandbox_id = self._read_sandbox_id_from_request(request)
+            result = await handler(request)
+            if prev_sandbox_id is not None:
+                return result
+            curr_sandbox_id = self._read_sandbox_id_from_request(request)
+            if curr_sandbox_id is None:
+                return result
+            return self._attach_sandbox_update(result, curr_sandbox_id)
+        finally:
+            try:
+                record_tool_call(
+                    tool_name=tool_name,
+                    duration_seconds=_time.perf_counter() - _tool_started,
+                )
+            except Exception:  # noqa: BLE001 — metrics best-effort
+                pass

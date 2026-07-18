@@ -231,6 +231,12 @@ def _check_rate_limit(ip: str) -> None:
     fail_count, lock_until = record
     if fail_count >= _MAX_LOGIN_ATTEMPTS:
         if time.time() < lock_until:
+            # PR-063: bump rate_limit_total for §4.2 (auth login lockout — the
+            # only rate-limiter that exists today; a general API rate-limiter
+            # would emit reason="api" here too).
+            from deerflow.observability.metrics import inc_rate_limit
+
+            inc_rate_limit(reason="auth_login_lockout")
             raise HTTPException(
                 status_code=429,
                 detail="Too many login attempts. Try again later.",

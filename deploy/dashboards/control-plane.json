@@ -1,0 +1,81 @@
+{
+  "annotations": {"list": []},
+  "description": "DeerNexus Control Plane — Auth/RBAC failures, Console query, DB transaction failures. observability-and-slo.md §8.3 (PR-063). Audit outbox / Release / API-Key panels are TODO until PR-041 (Audit outbox) and the Release-promote / API-Key surfaces land.",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Auth login rate-limit rejections",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "sum by (reason) (rate(rate_limit_total[5m]))", "legendFormat": "{{reason}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "4xx on auth endpoints (proxy for authz failures)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "sum by (route_template) (rate(http_requests_total{status_class=\"4xx\",route_template=~\"/api/v1/auth.*\"}[5m]))", "legendFormat": "{{route_template}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "DB transaction failures by error class",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "sum by (error_class) (rate(db_transaction_failure_total[5m]))", "legendFormat": "{{error_class}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Console default-query latency P95 (s) (§6.5, SLO <0.5s) — TODO: needs Console API (PR-060)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{route_template=~\"/api/(stats|runs|usage).*\"}[5m])))", "legendFormat": "P95 console query", "refId": "A", "editorMode": "code"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "TODO: Audit outbox pending + oldest age (blocked on PR-041)",
+      "type": "text",
+      "gridPos": {"h": 4, "w": 24, "x": 0, "y": 16},
+      "options": {
+        "content": "Audit outbox panels are deferred until PR-041 (AuditEvent outbox) lands.\nMetrics to wire then: audit_outbox_pending, audit_outbox_oldest_age_seconds,\naudit_publish_failure_total, audit_archive_lag_seconds.",
+        "mode": "markdown"
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["deernexus", "control-plane"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Prometheus datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "",
+  "title": "DeerNexus — Control Plane",
+  "uid": "deernexus-control-plane",
+  "version": 1
+}
