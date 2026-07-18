@@ -1076,3 +1076,38 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
 - **`audit.outbox`** → Track D（PR-041 Audit outbox）：`emit_tenant_event` 仍是 logger.info sink。
 
 每条 deferred 的 remediation 在 `production.py::DEFERRED_LIVE_CHECKS` 明文标注 Track / PR，doctor 报告直接展示给操作者。各 Track 落地后，把对应 deferred 行改为真实 probe（镜像本 PR 5 probe 模式）并从 `DEFERRED_LIVE_CHECKS` 移除。
+
+### 16.29 PR-060：Org Console API（已交付）
+
+PR-063 §16.25/§16.26 明确：按 Org 数据走 `UsageRecord / Tenant Console (PR-060/061)`，**不**进共享 Grafana dashboard（§8.4/§4.1 不在共享 dashboard 暴露 org 标签）。本 PR 交付 Tenant Console 的后端只读 API 半边（PR-061 交付 UI）。
+
+**3 endpoints**（`backend/app/gateway/routers/admin.py`，前缀 `/api/v1/admin`，全 org-scoped）：
+- `GET /stats` → `OrgStatsResponse`：`total_runs`、`runs_by_status`（status→count）、`failure_rate`（`(error+timeout+interrupted)/total`）、`recent_runs_24h`、`recent_failures_24h`（独立于窗口的「现在」信号）、`window_start/window_end`。默认窗口 7 天。
+- `GET /runs` → `OrgRunListResponse`：keyset 分页 on `(created_at DESC, run_id DESC)`，`{data, has_more, next_cursor}` 信封。status/model/time-window 过滤。`OrgRunSummary.error` 截断 200 字符 + §3.3 禁词 substring 清洗（命中 → `<redacted>`，不截断输出避免首字节泄漏）。
+- `GET /usage` → `OrgTokenUsageResponse`：org 级 token 聚合，shape 镜像 `ThreadTokenUsageResponse`（`by_model`/`by_caller` 复用既有子模型），`org_id` 替换 `thread_id` + 加 `window_start/window_end`。`include_active` 控制是否含 running。
+
+**门控——临时 `system_role`**：复用 `deps.require_admin_user`（既有 helper，mcp/channels/channel_connections 已用），**不**触碰 `authz.py` stub（Track C PR-030/031 整体替换 authz 时一并迁移）。原因：`authz._authenticate` 给所有认证用户 `_ALL_PERMISSIONS`，`require_permission` 不是真实门控；`require_admin_user` 读 `request.state.user.system_role == "admin"` 是今天唯一的真实角色判断（ADR-0003 §15 line 436「Router 无手写角色判断」——门控集中在 authz 层，不在 router 内联）。Track C 落地后 admin.py 把 `require_admin_user(request, detail=...)` 换成 `@require_permission("admin", "console:read")`，零 router 业务逻辑改动。
+
+**org_id 解析**：`_require_org_id(request)` 从 bound `TenantContext`（`TenantResolutionMiddleware` 绑定）取 `ctx.org_id`，未绑定 → 400（Org Console 无 tenant 上下文无意义）。Admin 在 Org A 不能看 Org B——per-Org 隔离。
+
+**3 新 RunRepository 方法**（`persistence/run/sql.py` + `runtime/runs/store/base.py` ABC + `runtime/runs/store/memory.py` 三后端对称）：
+- `aggregate_tokens_by_org(org_id, *, since=None, until=None, include_active=False)`：镜像 `aggregate_tokens_by_thread`，filter 从 `thread_id` 换 `org_id` + 时间窗，走 `ix_runs_org_status_created` 索引。同 return shape。
+- `aggregate_stats_by_org(org_id, *, since=None, until=None)`：3 查询（status GROUP BY + COUNT 24h + COUNT 24h failures），全走 org 索引。
+- `list_runs_by_org(org_id, *, status, model, since, until, limit, cursor)`：keyset 分页 `(created_at DESC, run_id DESC)`，`limit+1` has_more，cursor 是 `(created_at, run_id)` tuple。返回 `(rows, has_more)`，rows 经 `_row_to_dict`。
+
+**cursor 编码**（`pagination.py`）：`encode_cursor(created_at, run_id)` → base64 url-safe `<iso>|<run_id>`；`decode_cursor` 反向 + rsplit("|", 1) 防 isoform 含 `|`。malformed cursor → 400。
+
+**注册**：`app.py` import + `include_router`（auth.router 旁），openapi_tags 加 `admin`。
+
+**测试**：`test_admin_console_api.py` 26 测试——mock 单测（200 shape / 401 / 403 非 admin / 400 malformed cursor / 503 store=None / since+until 转发 / cursor round-trip / error scrubbing secret-substring / error 截断 200 / 3 endpoint × 门控矩阵）+ memory store 3 方法 + cursor codec + **DB-backed 生产规模测试**（pr-split-guide §11 要求）：seed 1000 runs（6 status × 3 model × 4 user × 14d 分布），断言 stats total==1000 + failure_rate 正确、tokens 求和正确、keyset 翻页 20 页遍历 1000 行无重复、status filter 收窄、跨 org 隔离。
+
+### 16.30 PR-060 不包含
+
+**不交付空壳**（§7.1）——以下代码路径今天不存在，本 PR 不伪造：
+
+- **UsageRecord 持久化**：契约（`contracts/events.py:124-198`）是 Pydantic DTO + Protocol，无 ORM 实现。契约要求 `release_digest`（非空），耦合未交付的 Track E PR-054 Release Resolver。本 PR 用 `RunRow` token 列 + `token_usage_by_model` JSON 作数据源——usage 端点今天返回 token 聚合，**不返回 cost 字段**（无价格表，§7.1 不伪造）。等 PR-054 + UsageRecorder 实现 PR 落地后，usage 端点可切到 metering-grade 数据源（含 attempt/cached_tokens/cost）。
+- **真实 RBAC**：Track C（PR-030 permission registry + PR-031 Authorize Service + PR-033 router RBAC）全未交付，本 PR 用 `require_admin_user` 临时 `system_role` 门控。ADR-0003 §4.1 `org:admin` 携带 `admin:console:read`，等 Track C 落地后 router 换 `@require_permission("admin", "console:read")`。
+- **跨 Org super-admin 视图**：admin 只能看自己 active Org 的数据，无「看所有 Org」视图（需 super-admin 角色 + 多 org 查询，今天无此角色）。
+- **AuditSink-backed audit query**：`AuditSink` Protocol 存在但 `emit_tenant_event` 仍是 logger.info sink（PR-041 未交付），Failure/Audit 入口今天基于 `RunRow.status IN ('error','timeout','interrupted')` 而非独立 audit log。等 PR-041 落地后可加 `/audit` 端点查 AuditEvent 流。
+- **`error_code` 结构化失败分类**：RunRow 只有 `error: str|None`（free text）+ `status`，无 `error_code` 列；`recent_failures_24h` 靠 status 计数，不能按 error_code 分组。`run_events.content/event_metadata` 有更丰富失败细节但 free text，需独立结构化 PR。
+- **结构化 cost / price table**：无价格表 → `/usage` 不返回 cost；Cost attribution 需独立 PR（依赖 provider price config + release_digest → UsageRecord cost_amount）。

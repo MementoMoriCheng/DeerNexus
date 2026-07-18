@@ -8,10 +8,10 @@ minutes -- we don't hold connections across long execution.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from deerflow.contracts import AUTO_ORG, _OrgIdSentinel, resolve_org_id
@@ -397,3 +397,210 @@ class RunRepository(RunStore):
                 "middleware": middleware,
             },
         }
+
+    # ------------------------------------------------------------------
+    # PR-060: Org Console API aggregations. These mirror the thread-scoped
+    # methods above but scope by org_id and add an optional time window on
+    # created_at (covered by ix_runs_org_status_created). No new index needed.
+    # ------------------------------------------------------------------
+
+    async def aggregate_tokens_by_org(
+        self,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        include_active: bool = False,
+    ) -> dict[str, Any]:
+        """Org-level mirror of :meth:`aggregate_tokens_by_thread`.
+
+        Same return shape (``total_tokens`` / ``total_input_tokens`` /
+        ``total_output_tokens`` / ``total_runs`` / ``by_model`` / ``by_caller``)
+        so the Org Console usage view is a drop-in generalisation of the
+        existing thread usage view.
+        """
+        resolved_org_id = resolve_org_id(org_id, method_name="RunRepository.aggregate_tokens_by_org")
+        statuses = ("success", "error", "running") if include_active else ("success", "error")
+        conditions: list[Any] = [RunRow.org_id == resolved_org_id, RunRow.status.in_(statuses)]
+        if since is not None:
+            conditions.append(RunRow.created_at >= since)
+        if until is not None:
+            conditions.append(RunRow.created_at <= until)
+
+        stmt = select(
+            RunRow.model_name,
+            RunRow.total_tokens,
+            RunRow.total_input_tokens,
+            RunRow.total_output_tokens,
+            RunRow.lead_agent_tokens,
+            RunRow.subagent_tokens,
+            RunRow.middleware_tokens,
+            RunRow.token_usage_by_model,
+        ).where(*conditions)
+
+        async with self._sf() as session:
+            rows = (await session.execute(stmt)).all()
+
+        total_tokens = total_input = total_output = total_runs = 0
+        lead_agent = subagent = middleware = 0
+        by_model: dict[str, dict] = {}
+        for r in rows:
+            total_runs += 1
+            total_tokens += r.total_tokens
+            total_input += r.total_input_tokens
+            total_output += r.total_output_tokens
+            lead_agent += r.lead_agent_tokens
+            subagent += r.subagent_tokens
+            middleware += r.middleware_tokens
+
+            usage_by_model = r.token_usage_by_model or {}
+            if usage_by_model:
+                for model, usage in usage_by_model.items():
+                    entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
+                    entry["tokens"] += usage.get("total_tokens", 0)
+                    entry["runs"] += 1
+            else:
+                model = r.model_name or "unknown"
+                entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
+                entry["tokens"] += r.total_tokens
+                entry["runs"] += 1
+
+        return {
+            "total_tokens": total_tokens,
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "total_runs": total_runs,
+            "by_model": by_model,
+            "by_caller": {
+                "lead_agent": lead_agent,
+                "subagent": subagent,
+                "middleware": middleware,
+            },
+        }
+
+    async def aggregate_stats_by_org(
+        self,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Org-level run status rollup for the Console stats view.
+
+        Returns: ``total_runs`` (sum of ``runs_by_status``), ``runs_by_status``
+        (status → count, windowed), ``failure_rate`` (failures / total in the
+        window, 0.0 when empty), ``recent_runs_24h`` and ``recent_failures_24h``
+        (independent of the window — a live "right now" signal), and
+        ``window_start`` / ``window_end`` echoing the effective bounds.
+        """
+        resolved_org_id = resolve_org_id(org_id, method_name="RunRepository.aggregate_stats_by_org")
+        now = datetime.now(UTC)
+        effective_since = since or (now - timedelta(days=7))
+        effective_until = until or now
+        failure_statuses = ("error", "timeout", "interrupted")
+
+        base_by_status = (
+            select(RunRow.status, func.count())
+            .where(
+                RunRow.org_id == resolved_org_id,
+                RunRow.created_at >= effective_since,
+                RunRow.created_at <= effective_until,
+            )
+            .group_by(RunRow.status)
+        )
+
+        cutoff_24h = now - timedelta(hours=24)
+        recent_runs_stmt = (
+            select(func.count())
+            .select_from(RunRow)
+            .where(
+                RunRow.org_id == resolved_org_id,
+                RunRow.created_at >= cutoff_24h,
+            )
+        )
+        recent_failures_stmt = (
+            select(func.count())
+            .select_from(RunRow)
+            .where(
+                RunRow.org_id == resolved_org_id,
+                RunRow.status.in_(failure_statuses),
+                RunRow.created_at >= cutoff_24h,
+            )
+        )
+
+        async with self._sf() as session:
+            by_status_rows = (await session.execute(base_by_status)).all()
+            recent_runs_24h = (await session.execute(recent_runs_stmt)).scalar_one()
+            recent_failures_24h = (await session.execute(recent_failures_stmt)).scalar_one()
+
+        runs_by_status = {status: count for status, count in by_status_rows}
+        total_runs = sum(runs_by_status.values())
+        failures_in_window = sum(count for status, count in runs_by_status.items() if status in failure_statuses)
+        failure_rate = (failures_in_window / total_runs) if total_runs else 0.0
+        return {
+            "total_runs": total_runs,
+            "runs_by_status": runs_by_status,
+            "failure_rate": failure_rate,
+            "recent_runs_24h": int(recent_runs_24h or 0),
+            "recent_failures_24h": int(recent_failures_24h or 0),
+            "window_start": effective_since,
+            "window_end": effective_until,
+        }
+
+    async def list_runs_by_org(
+        self,
+        org_id: str | None | _OrgIdSentinel = AUTO_ORG,
+        *,
+        status: str | None = None,
+        model: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 50,
+        cursor: tuple[datetime, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Org-scoped keyset-paginated listing for the Console runs view.
+
+        Keyset on ``(created_at DESC, run_id DESC)`` so pagination is stable
+        under concurrent inserts. Returns ``(rows, has_more)`` where rows carry
+        the same dict shape as :meth:`list_by_thread`.
+        """
+        resolved_org_id = resolve_org_id(org_id, method_name="RunRepository.list_runs_by_org")
+        conditions: list[Any] = [RunRow.org_id == resolved_org_id]
+        if status is not None:
+            conditions.append(RunRow.status == status)
+        if model is not None:
+            conditions.append(RunRow.model_name == model)
+        if since is not None:
+            conditions.append(RunRow.created_at >= since)
+        if until is not None:
+            conditions.append(RunRow.created_at <= until)
+        if cursor is not None:
+            cursor_at, cursor_id = cursor
+            # Strictly-below the cursor row on the (created_at DESC, run_id DESC)
+            # ordering — either an older created_at, or the same created_at
+            # with a smaller run_id.
+            conditions.append(
+                or_(
+                    RunRow.created_at < cursor_at,
+                    and_(RunRow.created_at == cursor_at, RunRow.run_id < cursor_id),
+                )
+            )
+
+        stmt = (
+            select(RunRow)
+            .where(*conditions)
+            .order_by(
+                RunRow.created_at.desc(),
+                RunRow.run_id.desc(),
+            )
+            .limit(limit + 1)
+        )
+
+        async with self._sf() as session:
+            result = await session.execute(stmt)
+            rows = [self._row_to_dict(r) for r in result.scalars()]
+
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+        return rows, has_more

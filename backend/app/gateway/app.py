@@ -12,6 +12,7 @@ from app.gateway.config import DEFAULT_ORG_NAME, DEFAULT_ORG_SLUG, get_gateway_c
 from app.gateway.correlation_middleware import CorrelationMiddleware
 from app.gateway.csrf_middleware import CSRFMiddleware, get_configured_cors_origins
 from app.gateway.deps import langgraph_runtime
+from app.gateway.routers import admin as admin_router
 from app.gateway.routers import (
     agents,
     artifacts,
@@ -482,6 +483,10 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
                 "description": "LangGraph Platform-compatible runs lifecycle (create, stream, cancel)",
             },
             {
+                "name": "admin",
+                "description": "Org Console API: per-Org stats, runs listing, and token usage for the Admin Console UI (PR-060).",
+            },
+            {
                 "name": "health",
                 "description": "Health check and system status endpoints",
             },
@@ -559,6 +564,11 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Auth API is mounted at /api/v1/auth
     app.include_router(auth.router)
+
+    # Org Console API (PR-060) is mounted at /api/v1/admin. Read-only stats /
+    # runs / usage endpoints scoped to the caller's active Org; gated by the
+    # temporary ``require_admin_user`` helper until Track C RBAC lands.
+    app.include_router(admin_router.router)
 
     # Feedback API is mounted at /api/threads/{thread_id}/runs/{run_id}/feedback
     app.include_router(feedback.router)
