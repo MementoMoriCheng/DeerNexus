@@ -1111,3 +1111,51 @@ PR-063 §16.25/§16.26 明确：按 Org 数据走 `UsageRecord / Tenant Console 
 - **AuditSink-backed audit query**：`AuditSink` Protocol 存在但 `emit_tenant_event` 仍是 logger.info sink（PR-041 未交付），Failure/Audit 入口今天基于 `RunRow.status IN ('error','timeout','interrupted')` 而非独立 audit log。等 PR-041 落地后可加 `/audit` 端点查 AuditEvent 流。
 - **`error_code` 结构化失败分类**：RunRow 只有 `error: str|None`（free text）+ `status`，无 `error_code` 列；`recent_failures_24h` 靠 status 计数，不能按 error_code 分组。`run_events.content/event_metadata` 有更丰富失败细节但 free text，需独立结构化 PR。
 - **结构化 cost / price table**：无价格表 → `/usage` 不返回 cost；Cost attribution 需独立 PR（依赖 provider price config + release_digest → UsageRecord cost_amount）。
+
+### 16.31 PR-061：Admin Console UI（已交付）
+
+消费 PR-060 的 3 个 endpoints，交付 3 个 Console 页面。pr-split-guide §11 明确「只做 Runs、Usage、Failure/Audit 入口；不扩审批、市场、KB」。
+
+**路由结构**：新建 `frontend/src/app/admin/` 独立 segment（不混 workspace sidebar——admin 上下文与 chat 语义错配）。
+- `layout.tsx`：`export const dynamic = "force-dynamic"` + SSR admin 门控（镜像 `workspace/layout.tsx` 的 `getServerSideUser` tagged-union switch），`authenticated` 分支检查 `result.user.system_role !== "admin"` → redirect `/workspace`（零客户端闪烁）；挂 `AuthProvider` + `QueryClientProvider` + `AdminShell` + `<Toaster />`（admin layout 自带 toaster 不复用 workspace）。
+- `page.tsx`：`redirect("/admin/runs")`（默认入口）。
+- `runs/page.tsx`、`usage/page.tsx`、`audit/page.tsx`：3 个 `"use client"` 页面。
+
+**`AdminShell`**（`src/components/admin/admin-shell.tsx`）：顶部 sticky nav bar（Admin Console 标题 + Runs/Usage/Failure-Audit 三 link），`usePathname()` 高亮 active，`max-w-(--container-width-lg)` 内容区。复用 design tokens，不复用 workspace sidebar。
+
+**Admin API client**（`src/core/admin/{types,api,hooks,index}.ts`，镜像 `core/mcp/api.ts` + `core/memory/api.ts` 模式）：
+- `AdminRequestError`（`get isAdminRequired() → status === 403`，镜像 `MCPConfigRequestError`）+ FastAPI `{"detail": ...}` envelope 解析。
+- 3 fetch 函数 `fetchAdminStats/fetchAdminRuns/fetchAdminUsage`，全用 `import { fetch } from "@/core/api/fetcher"`（CSRF + credentials + 401→login 免费）；URL prefix `${getBackendBaseURL()}/api/v1/admin/*`（`getBackendBaseURL` 返回 "" → relative → 走 `next.config.js:71` catch-all rewrite → gateway）。
+- TanStack Query hooks：`useAdminStats`（`useQuery`）、`useAdminRuns`（`useInfiniteQuery`，`getNextPageParam: lastPage => lastPage.next_cursor`，消费 PR-060 keyset）、`useAdminUsage`（`useQuery`）。QueryKey `["admin","stats",params]` 等。
+
+**新依赖**：`recharts@3.9.2`（React 19 兼容，零 peer dep 冲突）。Usage 页 by-model BarChart，颜色映射 `var(--chart-1..5)` token（已在 `globals.css` 定义）；超 5 个 model 取 top 5 + "other" 桶。
+
+**Table primitive**（`src/components/ui/table.tsx`）：手写 shadcn new-york table（~80 行，标准 `<table>` + Tailwind + `data-slot` 属性），避免 `pnpm dlx shadcn add` 在 CI 跑网络。
+
+**Runs 页**（`src/app/admin/runs/page.tsx`）：
+- `RunsFilterBar`（status `Select` + 24h/7d/30d/All `Tabs`，`useState` 不引表单库，镜像 settings page）。
+- `RunsTable`（`useAdminRuns` infinite，keyset 翻页 `next_cursor`）—— 7 列（run_id 截断+Tooltip / status Badge 按 variant 映射 / model / total_tokens `formatTokenCount` / user / created_at `formatTimeAgo` / error 截断 200 字符）+ 底部 `Load more` 按钮（`fetchNextPage`，disabled 当 `isFetchingNextPage`）。
+- Loading → `<Skeleton>` 占位行；Error → `<Empty>` + error message；空列表 → `<Empty>`（icon + "No runs in this window"）。
+
+**Usage 页**（`src/app/admin/usage/page.tsx`）：24h/7d/30d/All Tabs + `UsageCharts` 组件（4 KPI Card：Total tokens / Total runs / Avg per run / Output:Input ratio + by-model BarChart + by-caller breakdown 3 Progress 条 lead_agent/subagent/middleware）。
+
+**Failure/Audit 页**（`src/app/admin/audit/page.tsx`）：3 KPI Card（Failures 24h / Failure rate / Total runs 24h，`useAdminStats`）+ failure-status `Select`（pinned error/timeout/interrupted，PR-060 单 status 过滤）+ `RunsFilterBar`（hideStatus）+ `RunsTable` 预过滤。**诚实文案**：「Structured audit events require PR-041」——不伪造独立 audit log。
+
+**导航入口**（`src/components/workspace/workspace-nav-menu.tsx`）：footer DropdownMenu Settings 项后加 `{user?.system_role === "admin" && (<><DropdownMenuSeparator/><DropdownMenuItem asChild><Link href="/admin/runs"><ShieldCheckIcon/> Admin Console</Link></DropdownMenuItem></>)}`。`useAuth()` 取 `user`，零新 store（复用既有 `AuthProvider`）。
+
+**复用既有**（不重复造轮子）：`AuthProvider`/`getServerSideUser`/`QueryClientProvider`/`fetcher`/`formatTokenCount`/`formatTimeAgo`/`Badge`/`Card`/`Tabs`/`Select`/`Empty`/`Skeleton`/`Toaster`/design tokens（`--chart-1..5`）。
+
+**门禁**：typecheck + lint + 337 tests + build 全绿。零新失败（input-box.tsx 1 个 pre-existing exhaustive-deps warning，非本 PR 代码）。
+
+### 16.32 PR-061 不包含
+
+**不交付空壳**（§7.1）——以下今天不存在或后端未返回，本 PR 不伪造：
+
+- **cost / 价格表渲染**：后端 `/usage` 不返回 cost（PR-060 §16.30），UI 不渲染 cost 列/卡片。等价格表 + UsageRecorder cost_amount 落地后加。
+- **独立 audit log 查询**：Failure/Audit 页基于 `RunRow.status IN (error,timeout,interrupted)`（PR-060 已支持 status 过滤），**不**伪造 AuditSink-backed AuditEvent 流。等 PR-041（Audit outbox）落地后可加真实 `/audit` 端点 + UI。
+- **per-user / per-thread 聚合**：后端 `/stats`/`/usage` 是 org 级，无 per-user 或 per-thread 维度（RunRow 有 user_id 列但 PR-060 未加此聚合）。UI 不提供按 user/thread 拆分视图。
+- **error_code 结构化分类**：RunRow 只有 free text `error`，UI 列只能截断展示原文 + Tooltip，不能按 error_code 分组统计。等 `error_code` 列 PR 落地后加分类筛选。
+- **跨 Org super-admin 视图**：admin 只看 active Org（后端 `_require_org_id` 从 TenantContext 解析），UI 无 Org 切换器 / 全 Org 汇总。等 super-admin 角色 + 多 org 查询 PR 落地后加。
+- **multi-status OR 过滤**：PR-060 `/runs` 单次只接受 1 个 status，audit 页用 failure-status Select（默认 error）让用户切换而非一次看全部 failure status。等后端支持 status 列表 OR 过滤后改 multi-select。
+- **command palette admin 入口**：本 PR 只加 sidebar nav menu 入口；command palette（`Ctrl+K`）admin 命令是后续 polish。
+- **numbered pagination**：PR-060 是 keyset（无总页数），UI 用 Load more 按钮消费 `next_cursor`，不强行套 numbered（会语义错）。

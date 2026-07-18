@@ -8,7 +8,9 @@ import {
   MailIcon,
   Settings2Icon,
   SettingsIcon,
+  ShieldCheckIcon,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import {
@@ -25,6 +27,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useAuth } from "@/core/auth/AuthProvider";
 import { useI18n } from "@/core/i18n/hooks";
 
 import { GithubIcon } from "./github-icon";
@@ -58,6 +61,8 @@ export function WorkspaceNavMenu() {
   const [mounted, setMounted] = useState(false);
   const { open: isSidebarOpen } = useSidebar();
   const { t } = useI18n();
+  const { user } = useAuth();
+  const isAdmin = user?.system_role === "admin";
 
   useEffect(() => {
     setMounted(true);
@@ -97,6 +102,17 @@ export function WorkspaceNavMenu() {
                     <Settings2Icon />
                     {t.common.settings}
                   </DropdownMenuItem>
+                  {isAdmin && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem asChild>
+                        <Link href="/admin/runs">
+                          <ShieldCheckIcon />
+                          Admin Console
+                        </Link>
+                      </DropdownMenuItem>
+                    </>
+                  )}
                   <DropdownMenuSeparator />
                   <a
                     href="https://deerflow.tech/"
