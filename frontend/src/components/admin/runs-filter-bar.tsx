@@ -1,7 +1,7 @@
 "use client";
 
 import { subDays } from "date-fns";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import {
   Select,
@@ -25,10 +25,32 @@ export const TIME_WINDOWS: { value: TimeWindow; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
+/**
+ * Convert a time-window preset to a stable `since` ISO string for query keys.
+ *
+ * Truncates to the start of the current hour so two renders inside the same
+ * window selection produce the SAME string. Without this truncation, each
+ * render calls `new Date()` and emits a fresh millisecond-precision ISO,
+ * which changes the TanStack Query `queryKey` on every tick and triggers
+ * an infinite refetch loop (visible as the page "flickering" between
+ * loading and data states).
+ *
+ * The 1-hour truncation is acceptable because the window presets are
+ * coarse (1d / 7d / 30d) — a sub-hour drift is immaterial.
+ */
 export function windowToSince(window: TimeWindow): string | undefined {
   if (window === "all") return undefined;
   const days = window === "24h" ? 1 : window === "7d" ? 7 : 30;
-  return subDays(new Date(), days).toISOString();
+  const now = new Date();
+  // Truncate current time to the top of the hour so the resulting ISO is
+  // stable across renders within the same hour.
+  const truncated = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    now.getHours(),
+  );
+  return subDays(truncated, days).toISOString();
 }
 
 export const RUN_STATUSES = [
@@ -65,7 +87,6 @@ export function RunsFilterBar({
   hideStatus?: boolean;
   extraControls?: ReactNode;
 }) {
-  const [, force] = useState(0);
   return (
     <div className="flex flex-wrap items-center gap-3">
       {!hideStatus && (
@@ -93,10 +114,9 @@ export function RunsFilterBar({
       )}
       <Tabs
         value={filter.window}
-        onValueChange={(value) => {
-          onChange({ ...filter, window: value as TimeWindow });
-          force((n) => n + 1); // ensure re-render
-        }}
+        onValueChange={(value) =>
+          onChange({ ...filter, window: value as TimeWindow })
+        }
       >
         <TabsList>
           {TIME_WINDOWS.map((w) => (
