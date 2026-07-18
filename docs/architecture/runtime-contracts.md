@@ -1032,3 +1032,47 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
 - **§4.2 `oidc_login_total`**（无 OIDC 代码路径——只有 local login；OIDC/OAuth PR）。本 PR 的 `rate_limit_total` 只覆盖现有 auth login lockout。
 - **§8.4 Tenant Ops dashboard 按 Org 面板**：按 §8.4 / §4.1 不在共享 dashboard 暴露 org 标签——按 Org 数据走 UsageRecord / Tenant Console（PR-060 Org Console API + PR-061 Admin Console UI）。
 - **§9 延后告警**：prod digest 错误/缺失（P1）、跨 Org 泄露证据（P1）、Audit Class A outbox 不可写（P1）、Audit 归档/摘要/dead letter、Sandbox 逃逸（P1）、Redis 不可达 Profile H（P1）、Console 默认查询 P95>500ms（P2）、Redis Stream lag（P2）、Audit outbox oldest>5m（P2）、Backup 超 RPO（P1）、Object digest mismatch（P1）、Certificate/Secret 到期——各自代码路径不存在，YAML 注释列出。
+
+### 16.27 PR-064：Doctor 完整检查（已交付）
+
+把 production doctor 从「config-only + 1 live probe（PR-025C 的 tenant_probe）+ 12 个通用 FAIL 占位」升级为**真正的发布门禁**：5 个今天可连线的新 live probe + 8 个仍 FAIL 但按 Track 阻塞精确分类的 deferred check（不再是通用 "PR-064" 文案）。pr-split-guide §11「把骨架接入真实配置与依赖，生产 FAIL 条件进入发布门禁」；runbook §5.1 列出 ~20 个必检项，本 PR 让其中能做的真正可执行，不能做的精确标注阻塞源。
+
+落地（一致于 PR-062/063「不交付空壳」护栏——不伪造不能做的 probe）：
+
+- **新建 `app/doctor/probes/` 包（5 probe 模块 + `__init__.py`）**，每个 probe `async def probe_xxx(config) -> DoctorCheckResult`，镜像 `tenant_probe.py` 模式（throwaway / 进程内资源，所有失败容错为 FAIL 不抛，无 secret 泄漏——result message 只带 host 标签不带完整 URL/密码）：
+  - **`postgres_probe.py::probe_postgres_connectivity`**（`postgres.connectivity`）：throwaway `create_async_engine`（不复用全局 engine，镜像 tenant_probe 隔离契约）→ `SELECT 1` + `SELECT version()` 校验版本 ≥15（runbook §5.1 FAIL 阈值）+ pool 配置信息性报告。backend=sqlite/memory → WARN 跳过（postgres probe 仅对 backend=postgres 有意义）。DB 错误 → FAIL 含 host 不含密码。
+  - **`metrics_probe.py::probe_metrics_presence`**（`metrics.presence`，新 check_id）：进程内调 `generate_metrics_payload()`（**不**做 HTTP `/metrics` 抓取——doctor 是 preflight 门禁常在 gateway 起之前跑），断言 29 个 wired §4 metric 名（`EXPECTED_METRIC_NAMES` tuple 显式列出，pin rename 回归）全在 payload。`observability.metrics.enabled=false` → WARN。缺 wired metric 但只有 `python_*`/`process_*`（doctor 跑在 gateway pod 外）→ WARN（环境条件非 wiring 回归）。缺部分 wired metric（至少有 `http_requests_total`）→ FAIL（rename/调用点回归）。
+  - **`deployment_evidence_probe.py::probe_deployment_evidence`**（`deployment.evidence_validation`）：纯 config 校验。Profile S → PASS（无额外证据要求）；Profile H 缺 `profile_h_evidence` → FAIL；Profile W 缺 `profile_w_evidence` / `profile_w_rollback_evidence` / `profile_w_soak_hours(>0)` 任一 → FAIL（runbook §5.1 Profile W 最复杂、未记录 dispatch/rollback 是已知事故源）。不做 HTTP 可达性（那是发布流程的事）。
+  - **`gateway_security_probe.py::probe_gateway_security`**（`gateway.security_validation`）：读 `DEER_FLOW_GATEWAY_URL` 环境变量（未设 → WARN 跳过，doctor 可独立验证 DB+观测层）。配置了 URL 时用 httpx 探测：`tls_enabled=true` 但 URL 是 `http://` → FAIL（声明与运行时不符）；CORS 声明但响应无 `Access-Control-Allow-Origin` → WARN（preflight 可能仍工作）；CSRF 启用但无 csrf cookie → WARN。httpx 失败 → FAIL 含 host 不含 auth。
+  - **`rate_limit_probe.py::probe_rate_limit_retry_after`**（`gateway.rate_limit_retry_after`）：同样依赖 `DEER_FLOW_GATEWAY_URL`（未设或 `rate_limit_enabled=false` → WARN 跳过）。触发 auth login lockout：对 `/api/v1/auth/login/local` 连发 `threshold + 2` 次坏密码（fake user 不可命中真实账号），期望 429 + `Retry-After` 头 → PASS；429 无 Retry-After → WARN；无 429 → FAIL（rate-limit 运行时未生效）。
+- **`app/doctor/production.py` 改造**：`DEFERRED_LIVE_CHECKS` 从 12 项缩为 8 项（移除 5 个已实现为 probe 的 + `metrics.presence` 从来不在 deferred），每项第 5 字段（remediation）从通用 `'Implement and verify this live probe in PR-064...'` 改为**精确 Track 阻塞文案**（`'Blocked on Track X (PR-XXX): <具体原因>'`，让操作者知道等什么、谁能解锁）。新增 `LIVE_PROBE_REGISTRY`（lazy-imported，5 probe 各带 check_id/component/config_source）+ `_live_probe_registry()` 访问器（lazy 避免 config-only 测试拖入 httpx/sqlalchemy）。`run_production_checks` 签名不变（仍同步，extra_checks 接收预 await 的 probe 结果），deferred 渲染改用每条自带 remediation（不再硬编码通用文案）。
+- **`scripts/doctor.py::_run_production_doctor` 改造**：在 await `probe_tenant_migration_phase` 之后，**并发 await 5 个新 probe**（`asyncio.gather(..., return_exceptions=True)` per-probe try/except），全部作为 `extra_checks` 传入。顺序：STATIC_CHECKS → secret_references → tenant_probe（既有）→ 5 新 probe → DEFERRED_LIVE_CHECKS。probe 抛非预期异常（违反 containment 契约）→ 渲染为 FAIL（含异常类型不含 str(exc) 防 secret 泄漏）+ 提示「file a bug」。
+- **`config.example.yaml` `config_version` 18→19**（纯文档变更——`DEER_FLOW_GATEWAY_URL` 是环境变量不是 config 字段，按 release-pipeline 设置不按 deployment）。
+
+语义与边界：
+
+- **不交付空壳**（§7.1 精神）：5 个 probe 都有真实代码路径；8 个 deferred 保持 FAIL 但精确标注 Track 阻塞。这是本 PR 的核心护栏——不伪造不能做的 probe 让操作者误以为已验证。
+- **probe 失败容错**：每个 probe 的所有外部交互（DB/httpx/metrics）包 try/except，失败 → FAIL result（不抛），doctor 永不崩溃。镜像 tenant_probe 契约。
+- **无 secret 泄漏**：每个 probe 的 result message 不含 URL 密码 / 完整 DSN——`_host_of` 只返回 host 标签。测试 pin（`test_doctor_probes.py` 每个 probe 的 `test_no_secret_leak` + 既有 `test_report_json_never_contains_configured_secret_values`）。
+- **不改 `run_production_checks` 同步签名**：probe 是 async，在 CLI 层 `asyncio.gather` await 后作为 `extra_checks` 传入（既有模式）。
+- **不依赖 gateway 运行**：postgres/metrics 进程内做；gateway security/rate-limit 仅在配置了 `DEER_FLOW_GATEWAY_URL` 时跑，否则 WARN 跳过。doctor 可独立验证 DB + 观测层。
+- **测试可离线跑**：httpx probe 单元测试 monkeypatch `_httpx_get`/`_httpx_post`（不打真网）；postgres probe 用隔离 SQLite（backend=sqlite 走 WARN skip 路径）+ 不可达 postgres URL（走 FAIL 容错路径）；metrics probe monkeypatch `generate_metrics_payload`。
+
+测试（64 个 doctor 相关，全绿）：`test_doctor_probes.py`（33 新——postgres 版本解析 6 case + backend skip + 不可达 FAIL + 无 secret 泄漏；metrics 5 case 含 disabled/outside-pod-WARN/all-present-PASS/partial-missing-FAIL + EXPECTED_METRIC_NAMES 非空唯一；deployment_evidence Profile S/H/W 全分支 + partial；gateway_security 5 case 含 no-URL-skip + tls-mismatch-FAIL + unreachable-FAIL + reachable-PASS + no-secret-leak；rate_limit 6 case 含 skip + 429+Retry-After-PASS + 429-no-Retry-WARN + no-429-FAIL + httpx-fail-FAIL）、`test_production_doctor.py` 更新（`test_static_declarations_pass_but_deferred_live_probes_block` 的 `fail_count == len(DEFERRED_LIVE_CHECKS)` 仍成立现在 8；新增 `test_deferred_live_checks_have_track_specific_remediation` pin 无通用 PR-064 占位 + 每条有 'Blocked on'；`test_all_runbook_placeholders_remain_fail_closed` 集合从 4 改 8 移除 `gateway.rate_limit_retry_after` 加 5 新 deferred）。
+
+全套 backend suite：零新失败（52 失败在 main、52 失败在 branch——`comm -23` 对比 main 为空集；52 全为预存 Windows/sandbox/symlink flake；branch 多 34 通过：5287→5321）。
+
+### 16.28 PR-064 不包含
+
+显式排除（后续 PR/Track 交付——保持 FAIL 但精确标注阻塞源）：
+
+- **`redis.connectivity`** → Track G（PR-071/073 Redis stream consumer）：无 redis 客户端。
+- **`oidc.jwks_validation`** → Track C（PR-036 OIDC）：只有 local login。
+- **`sandbox.provisioner_create`** → Track E（sandbox hardening）：LocalSandboxProvider 可用但生产 provisioner（docker/k8s）create/destroy 路径才是本 probe 要 exercise 的；local-mode smoke 会给误导性 PASS。
+- **`backup.freshness`** → PR-065（Backup/Restore Automation）：无 backup job。
+- **`secret_store.access`** → Secret Store provider PR：只有 env_dev_only + reference 解析。
+- **`object_storage.security`** → object-storage config 字段 PR：ProductionConfig 无 `object_storage` 字段。
+- **`agent.release_ref_enforcement`** → Track E（PR-054 Release Resolve）：ReleaseResolver 是 Protocol 无具体实现。
+- **`audit.outbox`** → Track D（PR-041 Audit outbox）：`emit_tenant_event` 仍是 logger.info sink。
+
+每条 deferred 的 remediation 在 `production.py::DEFERRED_LIVE_CHECKS` 明文标注 Track / PR，doctor 报告直接展示给操作者。各 Track 落地后，把对应 deferred 行改为真实 probe（镜像本 PR 5 probe 模式）并从 `DEFERRED_LIVE_CHECKS` 移除。

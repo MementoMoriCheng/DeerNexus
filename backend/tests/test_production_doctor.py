@@ -113,6 +113,25 @@ def test_static_declarations_pass_but_deferred_live_probes_block(monkeypatch):
     assert report.exit_code == 1
 
 
+def test_deferred_live_checks_have_track_specific_remediation():
+    """PR-064: every deferred check must carry a Track-specific remediation,
+    not the pre-PR-064 generic 'Implement and verify this live probe in
+    PR-064' placeholder. An operator reading the report should know exactly
+    which Track / PR is blocking each check."""
+    report = _run_checks(_config())
+    deferred = {c.check_id: c for c in report.checks if c.check_id in {row[0] for row in DEFERRED_LIVE_CHECKS}}
+    assert len(deferred) == len(DEFERRED_LIVE_CHECKS)
+    for check_id, check in deferred.items():
+        # The generic placeholder is gone — every remediation must name a
+        # concrete Track / PR / code-path-missing reason.
+        assert check.remediation is not None
+        assert "Implement and verify this live probe in PR-064" not in check.remediation, f"{check_id} still has the generic PR-064 placeholder remediation"
+        # Each remediation must reference either a Track, a PR number, or
+        # "Blocked on" — the marker that distinguishes PR-064's specific
+        # blocker from a generic stub.
+        assert "Blocked on" in check.remediation, f"{check_id} remediation must explain the specific blocker (expected 'Blocked on …')"
+
+
 def test_host_bash_blocks_production():
     report = _run_checks(_config(lambda data: data["sandbox"].update({"allow_host_bash": True})))
 
@@ -222,11 +241,22 @@ def test_plaintext_production_endpoints_are_rejected(mutator, check_id: str):
 
 
 def test_all_runbook_placeholders_remain_fail_closed():
+    # PR-064 converted 5 former placeholders into real live probes
+    # (postgres.connectivity, metrics.presence, deployment.evidence_validation,
+    # gateway.security_validation, gateway.rate_limit_retry_after) — those are
+    # no longer in DEFERRED_LIVE_CHECKS and are tested in test_doctor_probes.py.
+    # What remains here are the checks whose code paths do not exist yet;
+    # they MUST stay FAIL until their owning Track lands, so an operator
+    # never sees a misleading green on an unverified invariant.
     expected = {
+        "redis.connectivity",
+        "oidc.jwks_validation",
+        "sandbox.provisioner_create",
+        "backup.freshness",
+        "secret_store.access",
         "object_storage.security",
         "agent.release_ref_enforcement",
         "audit.outbox",
-        "gateway.rate_limit_retry_after",
     }
 
     report = _run_checks(_config())
