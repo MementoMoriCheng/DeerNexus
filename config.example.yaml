@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 16
+config_version: 17
 
 # ============================================================================
 # Logging
@@ -1485,3 +1485,35 @@ tenancy:
     #   id: validation
     #   slug: validation   # platform-unique among non-deleted orgs; must differ from the default org slug
     #   name: Validation Org
+
+# ============================================================================
+# Observability — structured logging + correlation ids + OTel spans (PR-062)
+# ============================================================================
+# Implements docs/ops/observability-and-slo.md §2/§3/§5. Defaults keep today's
+# behaviour (plain-text logs, no-op tracer); operators opt in via the two
+# toggles below. Reversible: turning either off is a pure config change.
+#
+# log_format:
+#   text (default) — today's human-readable format with a [request_id=… …] suffix.
+#   json            — one JSON object per line per §3.1 (recommended for prod).
+#
+# service_name / environment / deployment_version: constant correlation fields
+# on every log line (§2) and OTel resource attributes. deployment_version is
+# CI-injected; an empty string suppresses the field rather than emitting a
+# placeholder.
+#
+# otel.exporter_endpoint: OTLP/HTTP URL for span export. None (default) keeps
+# the tracer a no-op so call sites pay zero SDK cost; setting it enables
+# BatchSpanProcessor export to a collector.
+# otel.sampler_ratio: head-sampling ratio for ordinary traffic (0.0–1.0). The
+# §5.4 tail-based "errors/Policy deny/Sandbox violations 100% retained" rule
+# is deferred to a follow-up PR (needs deny/violation code paths from Track C/E).
+observability:
+  log_format: text
+  service_name: deer-flow-gateway
+  environment: development
+  deployment_version: ""
+  otel:
+    exporter_endpoint: null   # e.g. http://otel-collector.observability:4318/v1/traces
+    sampler_ratio: 0.1
+    service_namespace: deernexus

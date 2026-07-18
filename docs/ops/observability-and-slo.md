@@ -677,3 +677,11 @@ Dashboard 和 Trace 可以按版本比较发布前后错误与延迟。应用回
 8. 观测成本基线；
 9. 数据访问权限；
 10. 生产发布标记实现。
+
+### 15.1 PR-062 已交付（基础层 + HTTP + Run span）
+
+- **Item 1（OTel SDK / Collector 配置）**：`deerflow/observability/tracing.py::init_tracing` 装配 `TracerProvider` + OTLP/HTTP exporter（`OTLPSpanExporter(endpoint=observability.otel.exporter_endpoint)`）+ `BatchSpanProcessor`。默认 `exporter_endpoint=None` → API 层 no-op tracer，零 SDK 成本；操作者经 `config.yaml` 的 `observability.otel.exporter_endpoint` 显式开启。Resource attributes：`service.name`（来自 `observability.service_name`）、`service.namespace`（`observability.otel.service_namespace`，默认 `deernexus`）、`deployment.environment`（`observability.environment`）、`service.version`（`observability.deployment_version` 非空时）。
+- **Item 4（实际 span 名）**：HTTP 根 span = `HTTP <method> <route_template>`（如 `HTTP GET /api/threads/{thread_id}`，§5.1）；Run 根 span = `run <run_id>`（§5.1）。span 属性用 §5.3 allow-list（`org_id` / `run_id` / `thread_id` / `release_digest` / `policy_version` / `route` / `model` / `provider` / `tool_registry_name` / `decision` / `error_code`）+ HTTP 语义约定（`http.method` / `http.route` / `http.status_code` / `http.response.status_class` / `http.url`）+ `duration_ms` / `event_name`。
+- **Item 5（Sampling 配置）**：默认 `ParentBased(TraceIdRatioBased(rate=observability.otel.sampler_ratio))` head sampler（默认 ratio 0.1）。**§5.4 tail-based 规则（errors / Policy deny / Sandbox 违规 100% 保留）延后**——需 Track C / Track E 的 deny / violation 代码路径，`tracing.init_tracing` 内 TODO 标注依赖。在 tail sampler 落地前，需要 100% 采样的环境可设 `sampler_ratio: 1.0`。
+
+JSON 日志格式（§3.1）由 `deerflow/observability/logging_setup.py::JsonFormatter` 实现，canonical 19 字段顺序与 §3.1 一致。关联 ID（§2）由 `deerflow/observability/correlation.py` 的 ContextVar 承载，`app/gateway/correlation_middleware.py` 在最外层中间件绑定。命名事件（§3.4）经 `deerflow/observability/events.py::emit_event` 单一 choke-point 发出（便于 PR-063 / 未来 outbox 替换 sink），PR-062 只埋 `gateway.request.completed` 一条，其余 13 条由各自功能 PR 埋点（见 runtime-contracts §16.24）。

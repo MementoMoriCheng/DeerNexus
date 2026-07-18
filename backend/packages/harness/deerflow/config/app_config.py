@@ -20,6 +20,7 @@ from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_
 from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
 from deerflow.config.model_config import ModelConfig
+from deerflow.config.observability_config import ObservabilityConfig
 from deerflow.config.production_config import ProductionConfig
 from deerflow.config.reload_boundary import format_field_description
 from deerflow.config.run_events_config import RunEventsConfig
@@ -153,6 +154,10 @@ class AppConfig(BaseModel):
     tenancy: TenancyConfig = Field(
         default_factory=TenancyConfig,
         description="Tenant / multi-org Feature Flag + validation Org (PR-025B). Additive; phase=disabled by default.",
+    )
+    observability: ObservabilityConfig = Field(
+        default_factory=ObservabilityConfig,
+        description="Structured logging + correlation ids + OTel spans (PR-062). Additive; log_format=text + no-op tracer by default.",
     )
     checkpointer: CheckpointerConfig | None = Field(
         default=None,
