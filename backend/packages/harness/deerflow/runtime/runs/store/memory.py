@@ -5,7 +5,7 @@ Equivalent to the original RunManager._runs dict behavior.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from deerflow.runtime.runs.store.base import RunStore
@@ -159,3 +159,138 @@ class MemoryRunStore(RunStore):
                 "middleware": sum(r.get("middleware_tokens", 0) for r in completed),
             },
         }
+
+    # ------------------------------------------------------------------
+    # PR-060: Org Console API aggregations. SQL-shaped strings are used as
+    # created_at timestamps in the memory store; the parsing below mirrors
+    # how RunRepository._row_to_dict coerces to ISO. Memory store is used in
+    # development / tests; the org methods here keep the contract symmetric.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _run_created_dt(r: dict[str, Any]) -> datetime:
+        raw = r.get("created_at")
+        if isinstance(raw, datetime):
+            return raw
+        if raw is None:
+            return datetime.now(UTC)
+        try:
+            dt = datetime.fromisoformat(str(raw))
+        except ValueError:
+            return datetime.now(UTC)
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+    def _matches_org_scope(
+        self,
+        r: dict[str, Any],
+        *,
+        org_id: str | None,
+        since: datetime | None,
+        until: datetime | None,
+    ) -> bool:
+        if org_id is not None and r.get("org_id") != org_id:
+            return False
+        created = self._run_created_dt(r)
+        if since is not None and created < since:
+            return False
+        if until is not None and created > until:
+            return False
+        return True
+
+    async def aggregate_tokens_by_org(
+        self,
+        org_id: str | None = None,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        include_active: bool = False,
+    ) -> dict[str, Any]:
+        statuses = ("success", "error", "running") if include_active else ("success", "error")
+        completed = [r for r in self._runs.values() if r.get("status") in statuses and self._matches_org_scope(r, org_id=org_id, since=since, until=until)]
+        by_model: dict[str, dict] = {}
+        for r in completed:
+            usage_by_model = r.get("token_usage_by_model") or {}
+            if usage_by_model:
+                for model, usage in usage_by_model.items():
+                    entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
+                    entry["tokens"] += usage.get("total_tokens", 0)
+                    entry["runs"] += 1
+            else:
+                model = r.get("model_name") or "unknown"
+                entry = by_model.setdefault(model, {"tokens": 0, "runs": 0})
+                entry["tokens"] += r.get("total_tokens", 0)
+                entry["runs"] += 1
+        return {
+            "total_tokens": sum(r.get("total_tokens", 0) for r in completed),
+            "total_input_tokens": sum(r.get("total_input_tokens", 0) for r in completed),
+            "total_output_tokens": sum(r.get("total_output_tokens", 0) for r in completed),
+            "total_runs": len(completed),
+            "by_model": by_model,
+            "by_caller": {
+                "lead_agent": sum(r.get("lead_agent_tokens", 0) for r in completed),
+                "subagent": sum(r.get("subagent_tokens", 0) for r in completed),
+                "middleware": sum(r.get("middleware_tokens", 0) for r in completed),
+            },
+        }
+
+    async def aggregate_stats_by_org(
+        self,
+        org_id: str | None = None,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        effective_since = since or (now - timedelta(days=7))
+        effective_until = until or now
+        failure_statuses = ("error", "timeout", "interrupted")
+
+        windowed = [r for r in self._runs.values() if self._matches_org_scope(r, org_id=org_id, since=effective_since, until=effective_until)]
+        runs_by_status: dict[str, int] = {}
+        for r in windowed:
+            status = r.get("status", "unknown")
+            runs_by_status[status] = runs_by_status.get(status, 0) + 1
+        total_runs = sum(runs_by_status.values())
+        failures_in_window = sum(count for status, count in runs_by_status.items() if status in failure_statuses)
+        failure_rate = (failures_in_window / total_runs) if total_runs else 0.0
+
+        cutoff_24h = now - timedelta(hours=24)
+        recent_runs_24h = sum(1 for r in self._runs.values() if self._matches_org_scope(r, org_id=org_id, since=cutoff_24h, until=now))
+        recent_failures_24h = sum(1 for r in self._runs.values() if r.get("status") in failure_statuses and self._matches_org_scope(r, org_id=org_id, since=cutoff_24h, until=now))
+        return {
+            "total_runs": total_runs,
+            "runs_by_status": runs_by_status,
+            "failure_rate": failure_rate,
+            "recent_runs_24h": recent_runs_24h,
+            "recent_failures_24h": recent_failures_24h,
+            "window_start": effective_since,
+            "window_end": effective_until,
+        }
+
+    async def list_runs_by_org(
+        self,
+        org_id: str | None = None,
+        *,
+        status: str | None = None,
+        model: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 50,
+        cursor: tuple[datetime, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        filtered = [
+            r
+            for r in self._runs.values()
+            if (org_id is None or r.get("org_id") == org_id)
+            and (status is None or r.get("status") == status)
+            and (model is None or r.get("model_name") == model)
+            and (since is None or self._run_created_dt(r) >= since)
+            and (until is None or self._run_created_dt(r) <= until)
+        ]
+        if cursor is not None:
+            cursor_at, cursor_id = cursor
+            filtered = [r for r in filtered if (self._run_created_dt(r), r.get("run_id", "")) < (cursor_at, cursor_id)]
+        # Newest-first by (created_at, run_id) descending.
+        filtered.sort(key=lambda r: (self._run_created_dt(r), r.get("run_id", "")), reverse=True)
+        has_more = len(filtered) > limit
+        return filtered[:limit], has_more

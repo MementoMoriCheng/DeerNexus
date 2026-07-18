@@ -13,6 +13,7 @@ filter on that dimension is applied (single-user / migration / CLI mode).
 from __future__ import annotations
 
 import abc
+from datetime import datetime
 from typing import Any
 
 
@@ -145,5 +146,55 @@ class RunStore(abc.ABC):
         Returns a dict with keys: total_tokens, total_input_tokens,
         total_output_tokens, total_runs, by_model (model_name → {tokens, runs}),
         by_caller ({lead_agent, subagent, middleware}).
+        """
+        pass
+
+    @abc.abstractmethod
+    async def aggregate_tokens_by_org(
+        self,
+        org_id: str | None = None,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        include_active: bool = False,
+    ) -> dict[str, Any]:
+        """Org-level token aggregation (PR-060 Org Console API).
+
+        Same return shape as :meth:`aggregate_tokens_by_thread`, plus a
+        time-window filter on ``created_at``. When ``org_id`` is None no
+        org filter is applied (migration / CLI / system-admin path).
+        """
+        pass
+
+    @abc.abstractmethod
+    async def aggregate_stats_by_org(
+        self,
+        org_id: str | None = None,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Org-level run-status rollup (PR-060 Org Console API).
+
+        Returns total_runs, runs_by_status, failure_rate,
+        recent_runs_24h, recent_failures_24h, window_start, window_end.
+        """
+        pass
+
+    @abc.abstractmethod
+    async def list_runs_by_org(
+        self,
+        org_id: str | None = None,
+        *,
+        status: str | None = None,
+        model: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 50,
+        cursor: tuple[datetime, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Org-scoped keyset-paginated listing (PR-060 Org Console API).
+
+        Returns ``(rows, has_more)``. Keyset on ``(created_at DESC, run_id DESC)``.
         """
         pass

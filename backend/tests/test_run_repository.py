@@ -59,6 +59,15 @@ class _CustomRunStoreWithoutProgress(RunStore):
     async def aggregate_tokens_by_thread(self, *args, **kwargs):
         return {}
 
+    async def aggregate_tokens_by_org(self, *args, **kwargs):
+        return {}
+
+    async def aggregate_stats_by_org(self, *args, **kwargs):
+        return {}
+
+    async def list_runs_by_org(self, *args, **kwargs):
+        return [], False
+
 
 @pytest.mark.anyio
 async def test_update_run_progress_defaults_to_noop_for_custom_store():
