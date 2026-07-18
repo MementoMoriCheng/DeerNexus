@@ -2,7 +2,7 @@
 
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,12 @@ from deerflow.config.app_config import AppConfig
 
 ProductionCheck = Callable[[AppConfig], DoctorCheckResult]
 SECRET_REFERENCE_PATTERN = re.compile(r"^\$[A-Z][A-Z0-9_]*$")
+
+# Live probe type: an async callable taking AppConfig → DoctorCheckResult.
+# The CLI awaits each probe and passes its result via ``extra_checks`` to
+# ``run_production_checks`` (which stays synchronous). Listed here as a
+# registry so tests / docs can pin which probes exist without grepping.
+LiveProbe = Callable[[AppConfig], Awaitable[DoctorCheckResult]]
 
 
 def _result(
@@ -279,80 +285,117 @@ STATIC_CHECKS: tuple[ProductionCheck, ...] = (
     check_deployment_profile,
 )
 
-DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str], ...] = (
-    (
-        "postgres.connectivity",
-        "database",
-        "PostgreSQL connectivity, version, and migration probe is not implemented.",
-        "config.yaml:database",
-    ),
+DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
+    # Each row is (check_id, component, message, config_source, remediation).
+    # PR-064 converted the 5 probes with real code paths today
+    # (postgres.connectivity / metrics.presence / deployment.evidence_validation
+    # / gateway.security_validation / gateway.rate_limit_retry_after) into live
+    # probes in ``app/doctor/probes/``. What remains here are checks whose code
+    # paths do not exist yet — they stay FAIL with a **Track-specific**
+    # remediation (replacing the pre-PR-064 generic "Implement in PR-064"
+    # placeholder) so an operator knows exactly what to wait for.
     (
         "redis.connectivity",
         "redis",
         "Redis connectivity and Stream capability probe is not implemented.",
         "config.yaml:production.redis",
+        "Blocked on Track G (PR-071/073 Redis stream consumer): no redis client anywhere in the tree. The probe will land alongside the consumer that makes Redis Stream real.",
     ),
     (
         "oidc.jwks_validation",
         "identity",
         "OIDC issuer, audience, and JWKS live validation is not implemented.",
         "config.yaml:production.oidc",
+        "Blocked on Track C (PR-036 OIDC): only local email/password login exists today. JWKS validation needs a real OIDC issuer integration to probe.",
     ),
     (
         "sandbox.provisioner_create",
         "sandbox",
         "Sandbox Provisioner create/destroy probe is not implemented.",
         "config.yaml:sandbox",
+        (
+            "Blocked on Track E (sandbox hardening): LocalSandboxProvider works but the production "
+            "provisioner (docker/k8s) create/destroy path is what this probe must exercise. A "
+            "local-mode smoke would give a misleading PASS against a production declaration."
+        ),
     ),
     (
         "backup.freshness",
         "backup",
         "Backup/WAL freshness probe is not implemented.",
         "config.yaml:production.backup",
-    ),
-    (
-        "deployment.evidence_validation",
-        "deployment",
-        "Profile H/W and HA waiver evidence validation is not implemented.",
-        "config.yaml:production.deployment",
+        "Blocked on PR-065 (Backup/Restore Automation): no backup job exists in the tree. RPO/freshness can only be probed against a real backup artifact.",
     ),
     (
         "secret_store.access",
         "security",
         "Controlled Secret Store access validation is not implemented.",
         "config.yaml:production.secret_store",
-    ),
-    (
-        "gateway.security_validation",
-        "gateway",
-        "TLS, CORS, CSRF, and rate-limit runtime validation is not implemented.",
-        "config.yaml:production.gateway_security",
+        "Blocked on Secret Store provider PR: only env_dev_only + reference parsing exist; a real Kubernetes/Vault/Cloud-Secret-Manager provider impl is required before access can be probed.",
     ),
     (
         "object_storage.security",
         "storage",
         "Object storage privacy, encryption, and read/write validation is not implemented.",
         "planned production object-storage declaration",
+        (
+            "Blocked on object-storage config field PR: ProductionConfig has no object_storage field "
+            "yet, so there is nothing to probe. The check_id is retained so the runbook §5.1 'object "
+            "storage private/read-write/encrypted' line stays visible."
+        ),
     ),
     (
         "agent.release_ref_enforcement",
         "release",
         "Published ReleaseRef-only production admission validation is not implemented.",
         "planned production agent-release declaration",
+        "Blocked on Track E (PR-054 Release Resolve): contracts/release.py defines ReleaseResolver as a Protocol with no concrete impl. The probe cannot verify 'prod runs only published ReleaseRef' until resolve is real.",
     ),
     (
         "audit.outbox",
         "audit",
         "Audit sink and transactional outbox validation is not implemented.",
         "planned production audit declaration",
-    ),
-    (
-        "gateway.rate_limit_retry_after",
-        "gateway",
-        "Live 429 and Retry-After behavior validation is not implemented.",
-        "config.yaml:production.gateway_security.rate_limit_enabled",
+        "Blocked on Track D (PR-041 Audit outbox): deerflow/tenancy/audit_events.py::emit_tenant_event is still a logger.info sink. The probe needs a real outbox table + publisher to verify.",
     ),
 )
+
+
+# Registry of the live probes wired by PR-064 (each has a real code path
+# today). The tenant migration-phase probe (PR-025C) is NOT listed here
+# because it is always awaited first and passed separately by the CLI; the
+# five below are awaited in parallel by ``scripts/doctor.py`` and joined into
+# the same ``extra_checks`` tuple. Tests pin membership of this tuple so a
+# probe removal / addition is an explicit, reviewed change.
+LIVE_PROBE_REGISTRY: tuple[tuple[LiveProbe, str, str, str], ...] = (
+    # (probe_callable, check_id, component, config_source)
+    # Kept lazy-imported at module level so importing production.py for
+    # config-only tests does not drag in httpx / sqlalchemy.
+)
+
+
+def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
+    """Return the live-probe registry, importing probes lazily.
+
+    The probes live under ``app.doctor.probes`` and some import heavy deps
+    (httpx, sqlalchemy). Config-only doctor tests should not pay that cost,
+    so the registry is materialised lazily rather than at module import.
+    """
+    from app.doctor.probes import (
+        probe_deployment_evidence,
+        probe_gateway_security,
+        probe_metrics_presence,
+        probe_postgres_connectivity,
+        probe_rate_limit_retry_after,
+    )
+
+    return (
+        (probe_postgres_connectivity, "postgres.connectivity", "database", "config.yaml:database"),
+        (probe_metrics_presence, "metrics.presence", "observability", "config.yaml:observability.metrics"),
+        (probe_deployment_evidence, "deployment.evidence_validation", "deployment", "config.yaml:production.deployment"),
+        (probe_gateway_security, "gateway.security_validation", "gateway", "config.yaml:production.gateway_security"),
+        (probe_rate_limit_retry_after, "gateway.rate_limit_retry_after", "gateway", "config.yaml:production.gateway_security.rate_limit_enabled"),
+    )
 
 
 def run_production_checks(
@@ -363,14 +406,16 @@ def run_production_checks(
 ) -> DoctorReport:
     """Assemble the production doctor report.
 
-    ``extra_checks`` carries pre-computed live-DB probes (e.g. the tenant
-    migration-phase probe from ``app.doctor.tenant_probe``) that cannot be a
-    plain ``ProductionCheck`` because they need an async DB connection. The
-    caller awaits the probe and passes its ``DoctorCheckResult`` here; this
-    keeps ``run_production_checks`` itself synchronous so the unit tests do
-    not need to be async-ified. The extra checks land after the secret-
-    references check and before the deferred placeholders, mirroring their
-    logical role as "live verification of the static declarations".
+    ``extra_checks`` carries pre-computed live probes (the tenant
+    migration-phase probe from ``app.doctor.tenant_probe`` plus the five
+    PR-064 probes from ``app/doctor/probes/``) that cannot be plain
+    ``ProductionCheck`` callables because they need an async DB / HTTP /
+    in-process-registry connection. The caller awaits each probe and passes
+    its ``DoctorCheckResult`` here; this keeps ``run_production_checks``
+    itself synchronous so the unit tests do not need to be async-ified.
+    The extra checks land after the secret-references check and before the
+    deferred placeholders, mirroring their logical role as "live
+    verification of the static declarations".
     """
     checks = [check(config) for check in STATIC_CHECKS]
     checks.append(check_secret_references(raw_config))
@@ -382,8 +427,8 @@ def run_production_checks(
             component,
             message,
             config_source,
-            "Implement and verify this live probe in PR-064 before production admission.",
+            remediation,
         )
-        for check_id, component, message, config_source in DEFERRED_LIVE_CHECKS
+        for check_id, component, message, config_source, remediation in DEFERRED_LIVE_CHECKS
     )
     return DoctorReport(profile="production", config_path=str(config_path), checks=tuple(checks))

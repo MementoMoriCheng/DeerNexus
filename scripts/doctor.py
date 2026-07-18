@@ -670,7 +670,7 @@ async def _run_production_doctor(config_path: Path):
         sys.path.insert(0, backend_root_text)
 
     from app.doctor.models import DoctorCheckResult, DoctorReport, DoctorStatus
-    from app.doctor.production import run_production_checks
+    from app.doctor.production import _live_probe_registry, run_production_checks
     from app.doctor.tenant_probe import probe_tenant_migration_phase
     from deerflow.config.app_config import AppConfig
 
@@ -693,7 +693,38 @@ async def _run_production_doctor(config_path: Path):
     # the probe, so this never raises. Passed as a pre-computed check so
     # run_production_checks stays synchronous.
     tenant_probe = await probe_tenant_migration_phase(config)
-    return run_production_checks(config, config_path, raw_config, extra_checks=(tenant_probe,))
+
+    # PR-064 live probes (postgres.connectivity / metrics.presence /
+    # deployment.evidence_validation / gateway.security_validation /
+    # gateway.rate_limit_retry_after). Each probe contains its own failures
+    # into a FAIL result, so the gather never raises; the per-probe
+    # ``return_exceptions=True`` is belt-and-braces against an unexpected
+    # import-time error in a probe module.
+    live_probes = _live_probe_registry()
+    probe_results = await asyncio.gather(
+        *(probe(config) for probe, _id, _comp, _src in live_probes),
+        return_exceptions=True,
+    )
+    extra: list[DoctorCheckResult] = [tenant_probe]
+    for result, (_probe, check_id, component, config_source) in zip(probe_results, live_probes, strict=True):
+        if isinstance(result, Exception):
+            # A probe raised despite its containment contract — surface it
+            # as a FAIL rather than crash the report. Include the type but
+            # never str(exc) (could carry a secret from the failure path).
+            extra.append(
+                DoctorCheckResult(
+                    check_id=check_id,
+                    status=DoctorStatus.FAIL,
+                    component=component,
+                    message=f"Probe raised an unhandled {type(result).__name__} despite its containment contract.",
+                    remediation="File a bug — the probe should contain its own failures. See app/doctor/probes/.",
+                    config_source=config_source,
+                )
+            )
+        else:
+            extra.append(result)
+
+    return run_production_checks(config, config_path, raw_config, extra_checks=tuple(extra))
 
 
 def _print_production_report(report) -> None:
