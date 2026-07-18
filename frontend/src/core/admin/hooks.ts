@@ -18,11 +18,7 @@ import {
   type UseQueryOptions,
 } from "@tanstack/react-query";
 
-import {
-  fetchAdminRuns,
-  fetchAdminStats,
-  fetchAdminUsage,
-} from "./api";
+import { fetchAdminRuns, fetchAdminStats, fetchAdminUsage } from "./api";
 import {
   ADMIN_DEFAULT_PAGE_SIZE,
   type AdminRunList,

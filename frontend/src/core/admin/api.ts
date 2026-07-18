@@ -58,7 +58,9 @@ function buildURL(path: string, params?: object): string {
   const base = `${getBackendBaseURL()}${path}`;
   if (!params) return base;
   const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(
+    params as Record<string, unknown>,
+  )) {
     if (value === undefined || value === null || value === "") continue;
     // Coerce scalars to strings; URLSearchParams.set would otherwise call
     // the default Object stringification for objects. We only ever forward

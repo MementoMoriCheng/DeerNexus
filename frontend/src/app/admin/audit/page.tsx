@@ -42,11 +42,11 @@ export default function AdminAuditPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold">Failure / Audit</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="text-muted-foreground mt-1 text-sm">
           Failures are derived from run status (<code>error</code>,{" "}
           <code>timeout</code>, <code>interrupted</code>). Structured audit
-          events require PR-041 (Audit outbox) — until then this view is
-          the operational failure surface.
+          events require PR-041 (Audit outbox) — until then this view is the
+          operational failure surface.
         </p>
       </div>
 
@@ -66,7 +66,7 @@ export default function AdminAuditPage() {
           <Card>
             <CardHeader>
               <CardDescription>Failures (last 24h)</CardDescription>
-              <CardTitle className="text-2xl tabular-nums text-destructive">
+              <CardTitle className="text-destructive text-2xl tabular-nums">
                 {stats.recent_failures_24h.toLocaleString()}
               </CardTitle>
             </CardHeader>
@@ -89,7 +89,7 @@ export default function AdminAuditPage() {
           </Card>
         </div>
       ) : (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="text-muted-foreground flex items-center gap-2 text-sm">
           <AlertCircleIcon className="size-4" />
           Stats unavailable.
         </div>
@@ -114,11 +114,7 @@ export default function AdminAuditPage() {
             ))}
           </SelectContent>
         </Select>
-        <RunsFilterBar
-          filter={filter}
-          onChange={setFilter}
-          hideStatus
-        />
+        <RunsFilterBar filter={filter} onChange={setFilter} hideStatus />
       </div>
 
       <RunsTable

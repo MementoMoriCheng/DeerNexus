@@ -18,7 +18,7 @@ export default function AdminUsagePage() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Usage</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="text-muted-foreground mt-1 text-sm">
             Token consumption aggregated across all runs in your active Org.
           </p>
         </div>

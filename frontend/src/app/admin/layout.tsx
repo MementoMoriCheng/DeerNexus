@@ -8,7 +8,6 @@ import { AuthProvider } from "@/core/auth/AuthProvider";
 import { getServerSideUser } from "@/core/auth/server";
 import { assertNever } from "@/core/auth/types";
 
-
 export const dynamic = "force-dynamic";
 
 export default async function AdminLayout({

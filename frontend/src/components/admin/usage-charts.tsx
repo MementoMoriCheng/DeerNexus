@@ -64,7 +64,7 @@ export function UsageCharts({ since }: { since?: string }) {
       <Empty>
         <EmptyHeader>
           <EmptyMedia>
-            <AlertCircleIcon className="size-8 text-destructive" />
+            <AlertCircleIcon className="text-destructive size-8" />
           </EmptyMedia>
           <EmptyTitle>Failed to load usage</EmptyTitle>
           <EmptyDescription>
@@ -104,9 +104,15 @@ export function UsageCharts({ since }: { since?: string }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Total tokens" value={formatTokenCount(data.total_tokens)} />
+        <KpiCard
+          label="Total tokens"
+          value={formatTokenCount(data.total_tokens)}
+        />
         <KpiCard label="Total runs" value={data.total_runs.toLocaleString()} />
-        <KpiCard label="Avg tokens / run" value={formatTokenCount(Math.round(avgPerRun))} />
+        <KpiCard
+          label="Avg tokens / run"
+          value={formatTokenCount(Math.round(avgPerRun))}
+        />
         <KpiCard label="Output : Input" value={`${ioRatio.toFixed(2)}×`} />
       </div>
 
@@ -119,7 +125,7 @@ export function UsageCharts({ since }: { since?: string }) {
         </CardHeader>
         <CardContent>
           {top.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">
+            <p className="text-muted-foreground py-8 text-center text-sm">
               No completed runs in this window.
             </p>
           ) : (
@@ -129,7 +135,11 @@ export function UsageCharts({ since }: { since?: string }) {
                   data={top}
                   margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
                 >
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-border" vertical={false} />
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    className="stroke-border"
+                    vertical={false}
+                  />
                   <XAxis
                     dataKey="model"
                     tick={{ fontSize: 11 }}
@@ -232,9 +242,9 @@ function ByCallerBreakdown({
                 {formatTokenCount(row.value)} ({pct.toFixed(1)}%)
               </span>
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+            <div className="bg-muted h-2 w-full overflow-hidden rounded-full">
               <div
-                className="h-full rounded-full bg-primary"
+                className="bg-primary h-full rounded-full"
                 style={{ width: `${pct}%` }}
               />
             </div>

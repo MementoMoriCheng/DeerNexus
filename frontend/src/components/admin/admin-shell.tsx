@@ -43,14 +43,14 @@ const NAV_ITEMS: NavItem[] = [
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   return (
-    <div className="flex min-h-svh flex-col bg-background text-foreground">
-      <header className="sticky top-0 z-30 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
+    <div className="bg-background text-foreground flex min-h-svh flex-col">
+      <header className="bg-card/95 supports-[backdrop-filter]:bg-card/60 sticky top-0 z-30 border-b backdrop-blur">
         <div className="mx-auto flex w-full max-w-(--container-width-lg) items-center gap-6 px-8 py-3">
           <Link
             href="/admin/runs"
             className="flex items-center gap-2 font-semibold"
           >
-            <ShieldCheckIcon className="size-5 text-primary" />
+            <ShieldCheckIcon className="text-primary size-5" />
             <span>Admin Console</span>
           </Link>
           <nav className="flex items-center gap-1">

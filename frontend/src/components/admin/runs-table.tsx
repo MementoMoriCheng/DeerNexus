@@ -19,10 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  useAdminRuns,
-  type AdminRunsInfiniteParams,
-} from "@/core/admin";
+import { useAdminRuns, type AdminRunsInfiniteParams } from "@/core/admin";
 import { formatTokenCount } from "@/core/messages/usage";
 import { formatTimeAgo } from "@/core/utils/datetime";
 
@@ -66,7 +63,7 @@ export function RunsTable({
       <Empty>
         <EmptyHeader>
           <EmptyMedia>
-            <AlertCircleIcon className="size-8 text-destructive" />
+            <AlertCircleIcon className="text-destructive size-8" />
           </EmptyMedia>
           <EmptyTitle>Failed to load runs</EmptyTitle>
           <EmptyDescription>
@@ -84,7 +81,7 @@ export function RunsTable({
       <Empty>
         <EmptyHeader>
           <EmptyMedia>
-            <AlertCircleIcon className="size-8 text-muted-foreground" />
+            <AlertCircleIcon className="text-muted-foreground size-8" />
           </EmptyMedia>
           <EmptyTitle>{emptyTitle}</EmptyTitle>
           <EmptyDescription>{emptyDescription}</EmptyDescription>
@@ -126,13 +123,13 @@ export function RunsTable({
                 <TableCell>
                   <TruncatedCell value={run.user_id} maxLength={16} />
                 </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
+                <TableCell className="text-muted-foreground text-xs">
                   {formatTimeAgo(run.created_at)}
                 </TableCell>
                 <TableCell className="max-w-[240px]">
                   {run.error ? (
                     <span
-                      className="line-clamp-2 text-xs text-destructive"
+                      className="text-destructive line-clamp-2 text-xs"
                       title={run.error}
                     >
                       {run.error.slice(0, 200)}
