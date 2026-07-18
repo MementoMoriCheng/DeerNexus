@@ -72,6 +72,7 @@ _BOOTSTRAP_AUTH_METHOD_MAP: dict[str, AuthMethod] = {
 # Paths that never require a tenant context (mirror AuthMiddleware public set).
 _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
     "/health",
+    "/metrics",
     "/docs",
     "/redoc",
     "/openapi.json",

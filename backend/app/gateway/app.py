@@ -30,11 +30,13 @@ from app.gateway.routers import (
     threads,
     uploads,
 )
+from app.gateway.routers import metrics as metrics_router
 from app.gateway.tenant import TenantResolutionMiddleware
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.config.app_config import apply_logging_level
 from deerflow.config.observability_config import ObservabilityConfig
 from deerflow.observability import configure_logging, init_tracing
+from deerflow.observability.metrics import _set_constant_labels
 
 AppConfig = deerflow_app_config.AppConfig
 get_app_config = deerflow_app_config.get_app_config
@@ -267,6 +269,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # used the safe default (text format); if the operator set
         # ``observability.log_format=json`` this is where it takes effect.
         configure_logging(startup_config.observability)
+        # Seed the constant labels stamped on every Prometheus metric
+        # (PR-063) — must happen before the first request so the registry
+        # reflects the operator's service_name / environment / deployment_version.
+        # Mirrors the OTel Resource attributes set by ``init_tracing`` below.
+        _set_constant_labels(
+            startup_config.observability.service_name,
+            startup_config.observability.environment,
+            startup_config.observability.deployment_version,
+        )
         logger.info("Configuration loaded successfully")
         warn_if_auth_disabled_enabled()
     except Exception as e:
@@ -282,6 +293,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # shutdown callable flushes the BatchSpanProcessor on exit; we keep it on
     # the stack so it runs even if a later lifespan step raises.
     tracing_shutdown = init_tracing(startup_config.observability)
+
+    # PR-063: seed the §4.6 db_pool gauges once the engine is up. The langgraph
+    # runtime context below initialises the engine; we refresh again there. A
+    # periodic refresh is intentionally not wired here (gauge staleness is
+    # bounded by pool churn, which is frequent in any real workload).
+    try:
+        from deerflow.persistence.engine import refresh_db_pool_metrics
+
+        refresh_db_pool_metrics()
+    except Exception:
+        logger.debug("db pool metric refresh skipped at startup", exc_info=True)
 
     # Pre-warm tiktoken encoding cache so the first memory-injection request
     # never blocks on the BPE data download (which hits an OpenAI/Azure URL
@@ -311,6 +333,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize LangGraph runtime components (StreamBridge, RunManager, checkpointer, store)
     async with langgraph_runtime(app, startup_config):
         logger.info("LangGraph runtime initialised")
+        # PR-063: engine is now up — refresh the §4.6 db_pool gauges so they
+        # reflect the real pool size before the first request.
+        try:
+            from deerflow.persistence.engine import refresh_db_pool_metrics
+
+            refresh_db_pool_metrics()
+        except Exception:
+            logger.debug("db pool metric refresh after runtime init skipped", exc_info=True)
 
         # Materialise the default Organization + system admin role (PR-022).
         # Must run BEFORE _ensure_admin_user so the Org row exists for any
@@ -538,6 +568,17 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Stateless Runs API (stream/wait without a pre-existing thread)
     app.include_router(runs.router)
+
+    # Prometheus scrape endpoint (PR-063). Public (no auth) — §4.1 forbids
+    # high-cardinality id labels so the payload carries no sensitive data.
+    # Gated on observability.metrics.enabled; disabled 404s the route.
+    try:
+        observability_cfg = get_app_config().observability
+        metrics_enabled = observability_cfg.metrics.enabled
+    except Exception:
+        metrics_enabled = True  # safe default — metrics are cheap, every SLO depends on them
+    if metrics_enabled:
+        app.include_router(metrics_router.router)
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict[str, str]:

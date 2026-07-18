@@ -89,6 +89,23 @@ def _status_class(status_code: int) -> str:
     return f"{status_code // 100}xx"
 
 
+# Paths that bypass correlation + HTTP span + http_requests_total so they
+# don't pollute the operator's request graphs or pay OTel span cost. Matches
+# the AuthMiddleware / TenantResolutionMiddleware public sets so the three
+# middleware agree on what "infrastructure, not business" means.
+_OBSERVABILITY_PUBLIC_PREFIXES: tuple[str, ...] = (
+    "/health",
+    "/metrics",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+)
+
+
+def _is_observability_public(path: str) -> bool:
+    return any(path.startswith(prefix) for prefix in _OBSERVABILITY_PUBLIC_PREFIXES)
+
+
 class CorrelationMiddleware(BaseHTTPMiddleware):
     """Bind correlation id + open HTTP root span + emit completion event."""
 
@@ -96,6 +113,15 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # 0. Public paths (health / metrics / docs) bypass correlation + span
+        # + http_requests_total entirely so they don't pollute the operator's
+        # request graphs (a Prometheus scrape every 15s would otherwise dwarf
+        # real traffic) and don't pay the OTel span cost. These paths carry
+        # no tenant / principal and are not user-facing business endpoints.
+        path = request.url.path
+        if _is_observability_public(path):
+            return await call_next(request)
+
         # 1. Resolve request_id (validate inbound or generate).
         inbound = request.headers.get(_REQUEST_ID_HEADER)
         request_id = validate_inbound_request_id(inbound) or new_request_id()
@@ -174,11 +200,19 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
                 # §3.4 first event — only one PR-062 wires. Level mapping
                 # follows §3.2: 5xx = ERROR, 4xx = INFO (expected; §3.2
                 # forbids logging ordinary 4xx as ERROR), else INFO.
+                # The event's fields also drive the §4.2 http_requests_total
+                # / http_request_duration_seconds counters via
+                # ``_EVENT_METRIC_FANOUT`` in events.py (PR-063), so we do
+                # NOT call ``record_http_request`` directly here — that would
+                # double-count. Method / route_template / outcome are passed
+                # as fields so the fan-out can build the counter labels.
                 level = logging.ERROR if status_code >= 500 else logging.INFO
                 emit_event(
                     "gateway.request.completed",
                     level=level,
                     message=f"HTTP {request.method} {route_template} → {status_code}",
+                    method=request.method,
+                    route_template=route_template,
                     duration_ms=duration_ms,
                     outcome=_status_class(status_code),
                     error_code=error_code,

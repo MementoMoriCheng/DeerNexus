@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 17
+config_version: 18
 
 # ============================================================================
 # Logging
@@ -1517,3 +1517,11 @@ observability:
     exporter_endpoint: null   # e.g. http://otel-collector.observability:4318/v1/traces
     sampler_ratio: 0.1
     service_namespace: deernexus
+  # Metrics (PR-063): Prometheus scrape endpoint + counter/histogram/gauge
+  # registry. Enabled by default — metrics are cheap and every §6 SLO depends
+  # on them. Set enabled=false to 404 /metrics and short-circuit the bump call
+  # sites (an operator opt-out; restricting scrapes is better done via ingress
+  # than auth since §4.1 forbids high-cardinality id labels on public metrics).
+  metrics:
+    enabled: true
+    route: /metrics

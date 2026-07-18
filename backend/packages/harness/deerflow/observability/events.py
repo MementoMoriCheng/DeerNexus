@@ -1,4 +1,4 @@
-"""Named observability events — single choke-point for §3.4 events (PR-062).
+"""Named observability events — single choke-point for §3.4 events (PR-062 / PR-063).
 
 ``observability-and-slo.md`` §3.4 names 14 stable event identifiers
 (``gateway.request.completed``, ``run.created``, ``run.status.changed``,
@@ -19,11 +19,11 @@ Every call site should go through :func:`emit_event` rather than ad-hoc
   audit bus) without touching call sites, mirroring
   ``deerflow.tenancy.audit_events.emit_tenant_event``.
 
-PR-062 ships the helper plus the ``gateway.request.completed`` emit (done by
-:class:`CorrelationMiddleware`). The remaining 13 events are emitted by the
-PRs that own the relevant code path (``policy.evaluated`` → Track C,
-``run.owner.changed`` → ownership PR, ``sandbox.lease.changed`` → Track E,
-…) — see runtime-contracts §16.24 for the deferred list.
+PR-063 adds an ``event_name → counter`` fan-out (:data:`_EVENT_METRIC_FANOUT`)
+so a §3.4 event also drives the matching §4 metric increment without the call
+site knowing about prometheus. Today only the events PR-062/063 wire are
+mapped; future PRs that emit a §3.4 event get the metric bump for free once
+they add their event name here.
 
 Contract (mirrors ``tenancy/audit_events.py``):
 
@@ -36,6 +36,7 @@ Contract (mirrors ``tenancy/audit_events.py``):
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from deerflow.observability.scrubbing import scrub_extra
@@ -44,6 +45,49 @@ from deerflow.observability.scrubbing import scrub_extra
 # of generic application logging (e.g. ship all ``observability.events`` to a
 # dedicated index). The JSON formatter still enriches it with correlation.
 _event_logger = logging.getLogger("observability.events")
+
+
+# ---------------------------------------------------------------------------
+# §3.4 event → §4 metric fan-out (PR-063)
+# ---------------------------------------------------------------------------
+#
+# Maps a §3.4 event name to a callable that bumps the matching §4 metric,
+# given the event's scrubbed fields. A future PR that emits ``run.created``
+# via emit_event gets ``runs_created_total`` incremented for free once its
+# name is added here. Unmapped event names incur no metric bump (the log /
+# span side still fires) — this is intentional so an event without a natural
+# counter (e.g. ``tenant.context.bound``) doesn't force one.
+#
+# The callable takes the scrubbed ``fields`` dict and is wrapped in try/except
+# by ``emit_event`` so a registry error can never break the event path.
+
+
+def _fanout_gateway_request_completed(fields: dict[str, Any]) -> None:
+    """Bump §4.2 http_requests_total + http_request_duration_seconds.
+
+    The CorrelationMiddleware is the sole emitter of
+    ``gateway.request.completed`` today and passes the structured labels
+    (method / route_template / outcome=status_class / error_code /
+    duration_ms) as event fields. This fan-out reads them and drives the
+    counters, so the middleware does NOT call ``record_http_request``
+    directly — that would double-count. Future callers of
+    ``emit_event("gateway.request.completed", ...)`` get the counter bump
+    for free as long as they pass the same fields.
+    """
+    from deerflow.observability import metrics
+
+    metrics.record_http_request(
+        method=fields.get("method", "") or "",
+        route_template=fields.get("route_template", "") or "",
+        status_class=fields.get("outcome", "") or "",
+        error_code=fields.get("error_code"),
+        duration_seconds=float(fields.get("duration_ms", 0) or 0) / 1000.0,
+    )
+
+
+_EVENT_METRIC_FANOUT: dict[str, Callable[[dict[str, Any]], None]] = {
+    "gateway.request.completed": _fanout_gateway_request_completed,
+}
 
 
 def emit_event(
@@ -59,6 +103,8 @@ def emit_event(
         event_name: Stable event identifier from §3.4 (e.g.
             ``"gateway.request.completed"``). Lands as the top-level
             ``event_name`` log field and as an ``event_name`` span attribute.
+            Drives the matching §4 metric increment via
+            :data:`_EVENT_METRIC_FANOUT` when mapped.
         level: stdlib logging level (default INFO). §3.2 level guidance
             applies — do not log expected Policy deny / 404 as ERROR.
         message: Human-readable message. Defaults to ``event_name``.
@@ -101,6 +147,16 @@ def emit_event(
                 set_span_attributes(span, **{key: value})
     except Exception:  # noqa: BLE001 — observability must never raise
         pass
+
+    # §3.4 → §4 metric fan-out (PR-063). The handler is wrapped in try/except
+    # so a registry error (e.g. label cardinality bug) never breaks the log /
+    # span side. Unmapped event names skip this (no natural counter).
+    fanout = _EVENT_METRIC_FANOUT.get(event_name)
+    if fanout is not None:
+        try:
+            fanout(scrubbed)
+        except Exception:  # noqa: BLE001 — best-effort; never break the caller
+            pass
 
     # ``correlation`` is read by the formatter via ``get_correlation()`` — we
     # do not duplicate it into ``extra`` to avoid the formatter seeing it

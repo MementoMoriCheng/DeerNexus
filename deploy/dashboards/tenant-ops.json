@@ -1,0 +1,63 @@
+{
+  "annotations": {"list": []},
+  "description": "DeerNexus Tenant Ops — per-Org usage is intentionally NOT a public dashboard (observability-and-slo.md §8.4 / §4.1 forbid org_id as a public metric label). Per-Org views come from UsageRecord aggregation in the Tenant Console (PR-060/061). This dashboard surfaces only the operator-side platform-wide totals that do not break tenant isolation.",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Platform-wide Run volume by terminal status",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "sum by (run_status) (rate(runs_status_total[5m]))", "legendFormat": "{{run_status}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Platform-wide model tokens (in + out)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "sum by (direction) (rate(model_tokens_total[5m]))", "legendFormat": "{{direction}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Per-Org breakdown is NOT here — see Tenant Console (TODO: PR-060/061)",
+      "type": "text",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 8},
+      "options": {
+        "content": "Per-Org Run / token / cost / failure views come from UsageRecord aggregation\nin the Tenant Console (PR-060 Org Console API + PR-061 Admin Console UI),\nNOT from a shared Grafana dashboard. This is deliberate: §4.1 forbids org_id\nas a public metric label to avoid unbounded cardinality in the shared\ntime-series store. §8.4: \"按 Org 的 Run、token、cost、failure 使用受控\nConsole / Usage 聚合，不在共享 Metrics Dashboard 暴露 Org 标签。\"",
+        "mode": "markdown"
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["deernexus", "tenant-ops"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Prometheus datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "",
+  "title": "DeerNexus — Tenant Ops (platform-wide only)",
+  "uid": "deernexus-tenant-ops",
+  "version": 1
+}

@@ -359,11 +359,32 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 detail="LLM circuit breaker is open",
             )
 
+        # PR-063: §4.4 model_calls_total + model_call_duration_seconds. Best-
+        # effort label extraction — model name from the chat model's ``.name``
+        # / ``.model`` attrs, provider from the class's module. Fail-open:
+        # any attribute quirk falls back to "unknown" labels.
+        from deerflow.observability.metrics import record_model_call
+
+        model_name, provider_name = _extract_model_labels(request)
+        _model_call_started = time.perf_counter()
+
+        def _record_model_outcome(outcome: str) -> None:
+            try:
+                record_model_call(
+                    model=model_name,
+                    provider=provider_name,
+                    outcome=outcome,
+                    duration_seconds=time.perf_counter() - _model_call_started,
+                )
+            except Exception:  # noqa: BLE001 — metrics never break the model call
+                pass
+
         attempt = 1
         while True:
             try:
                 response = await handler(request)
                 self._record_success()
+                _record_model_outcome("success")
                 return response
             except GraphBubbleUp:
                 # Preserve LangGraph control-flow signals (interrupt/pause/resume).
@@ -395,11 +416,38 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
                 )
                 if retriable:
                     self._record_failure()
+                _record_model_outcome("error")
                 return self._build_user_fallback_message(exc, reason)
 
 
 def _matches_any(detail: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in detail for pattern in patterns)
+
+
+def _extract_model_labels(request: ModelRequest) -> tuple[str, str]:
+    """Best-effort ``(model_name, provider_name)`` extraction for §4.4 labels.
+
+    LangChain chat models expose the model id under varying attrs (``.model``,
+    ``.model_name``, ``.deployment_name``); the provider is the class's
+    package (``langchain_openai`` → ``openai``). Anything missing falls back
+    to ``"unknown"`` so the counter still records a labelled series.
+    """
+    model_name = "unknown"
+    provider_name = "unknown"
+    chat_model = getattr(request, "model", None)
+    if chat_model is not None:
+        for attr in ("model", "model_name", "deployment_name"):
+            value = getattr(chat_model, attr, None)
+            if isinstance(value, str) and value:
+                model_name = value
+                break
+        module = type(chat_model).__module__ or ""
+        # ``langchain_openai.chat_models.base.ChatOpenAI`` → ``openai``
+        if module.startswith("langchain_"):
+            provider_name = module.split("_", 1)[1].split(".", 1)[0]
+        elif module:
+            provider_name = module.split(".", 1)[0]
+    return model_name, provider_name
 
 
 def _extract_error_code(exc: BaseException) -> Any:

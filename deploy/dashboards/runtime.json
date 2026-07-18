@@ -1,0 +1,139 @@
+{
+  "annotations": {"list": []},
+  "description": "DeerNexus Runtime — pending/running/interrupted/terminal counts, model/tool/MCP calls, reconcile/cancel, sandbox. observability-and-slo.md §8.2 (PR-063). Profile-H/W-specific panels (lease/heartbeat/claim/dead_letter/dispatch backlog) are TODO until the ownership + worker-queue PRs land.",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "worker_active (pending + running)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "worker_active", "legendFormat": "active", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Run status transitions by terminal status",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 0},
+      "targets": [
+        {"expr": "sum by (run_status) (rate(runs_status_total[5m]))", "legendFormat": "{{run_status}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Run duration P50/P95/P99 (s) by terminal status",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le, terminal_status) (rate(run_duration_seconds_bucket[5m])))", "legendFormat": "P50 {{terminal_status}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le, terminal_status) (rate(run_duration_seconds_bucket[5m])))", "legendFormat": "P95 {{terminal_status}}", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le, terminal_status) (rate(run_duration_seconds_bucket[5m])))", "legendFormat": "P99 {{terminal_status}}", "refId": "C"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Run cancels",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "sum(rate(run_cancel_total[5m]))", "legendFormat": "cancel", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Model calls by outcome",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 16},
+      "targets": [
+        {"expr": "sum by (model, outcome) (rate(model_calls_total[5m]))", "legendFormat": "{{model}}/{{outcome}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Model call latency P95 (s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 16},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le, model) (rate(model_call_duration_seconds_bucket[5m])))", "legendFormat": "{{model}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Model tokens by direction",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 16},
+      "targets": [
+        {"expr": "sum by (direction) (rate(model_tokens_total[5m]))", "legendFormat": "{{direction}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Tool calls by name",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "targets": [
+        {"expr": "sum by (tool_name) (rate(tool_calls_total[5m]))", "legendFormat": "{{tool_name}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "MCP calls by name",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "targets": [
+        {"expr": "sum by (tool_name) (rate(mcp_calls_total[5m]))", "legendFormat": "{{tool_name}}", "refId": "A"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Reconcile backlog + outcome (§6.7 Profile S)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "targets": [
+        {"expr": "run_reconcile_backlog", "legendFormat": "backlog", "refId": "A"},
+        {"expr": "sum by (outcome) (rate(run_reconcile_total[5m]))", "legendFormat": "{{outcome}}", "refId": "B"}
+      ]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "title": "Sandbox active + pending + acquire P95 (s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "targets": [
+        {"expr": "sandbox_active", "legendFormat": "active", "refId": "A"},
+        {"expr": "sandbox_pending", "legendFormat": "pending", "refId": "B"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(sandbox_acquire_duration_seconds_bucket[5m])))", "legendFormat": "acquire P95", "refId": "C"}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["deernexus", "runtime"],
+  "templating": {
+    "list": [
+      {
+        "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Prometheus datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "",
+  "title": "DeerNexus — Runtime",
+  "uid": "deernexus-runtime",
+  "version": 1
+}
