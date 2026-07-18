@@ -59,14 +59,38 @@ class TestMetricsEndpoint:
     def test_metrics_path_skipped_by_correlation_middleware(self):
         """A scrape must NOT bump http_requests_total — CorrelationMiddleware
         short-circuits public paths so Prometheus scrapes don't pollute the
-        operator's request graphs."""
+        operator's request graphs.
+
+        We compare the ``http_requests_total`` sample value before vs after a
+        scrape rather than asserting absence: the process-global REGISTRY is
+        shared across the whole test suite, and earlier tests that drive a
+        real request through CorrelationMiddleware legitimately populate it.
+        The short-circuit's contract is "a /metrics scrape does not itself
+        increment the counter", which is what this measures.
+        """
+        from prometheus_client import REGISTRY
+
+        def _http_total() -> float:
+            """Sum every http_requests_total sample value on the global registry."""
+            body, _ = __import__("deerflow.observability.metrics", fromlist=["generate_metrics_payload"]).generate_metrics_payload(REGISTRY)
+            text = body.decode()
+            total = 0.0
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name = line.split("{", 1)[0].split()[0]
+                if name == "http_requests_total":
+                    total += float(line.rsplit(" ", 1)[-1])
+            return total
+
         client = TestClient(_make_app_with_metrics())
-        # First scrape populates the registry.
+        before = _http_total()
+        # Scrape twice; neither should bump the counter.
         client.get("/metrics")
-        # Second scrape — body should still NOT contain http_requests_total
-        # because the middleware bypassed recording for /metrics.
-        body = client.get("/metrics").text
-        assert "http_requests_total" not in body
+        client.get("/metrics")
+        after = _http_total()
+        assert after == before, f"/metrics scrape bumped http_requests_total: {before} -> {after}"
 
 
 # ===========================================================================
