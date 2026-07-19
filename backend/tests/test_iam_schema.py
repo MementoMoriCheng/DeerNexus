@@ -332,3 +332,61 @@ class TestMigrationRoundTrip:
             assert IAM_TABLES <= names2, "IAM tables missing after re-upgrade to head"
         finally:
             await close_engine()
+
+    @pytest.mark.anyio
+    async def test_builtin_roles_seed_round_trip(self, tmp_path: Path):
+        """``0007_builtin_roles`` seeds 3 system templates on upgrade and
+        removes them on downgrade (pr-split-guide §7 + §8 PR-030).
+
+        Downgrade to 0006 drops the seed rows + the ``template_version``
+        column; re-upgrade restores both. The legacy/``create_all`` path
+        (empty branch) never runs this revision, so the lifespan helper
+        ``ensure_builtin_roles`` is the parallel seed path — this test only
+        covers the migration path.
+        """
+        import asyncio
+
+        import alembic.command as alembic_command
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from deerflow.contracts.rbac import BUILTIN_ROLE_NAMES
+        from deerflow.persistence.bootstrap import _get_alembic_config
+        from deerflow.persistence.engine import close_engine, get_engine, init_engine
+
+        url = f"sqlite+aiosqlite:///{tmp_path / 'roles_roundtrip.db'}"
+        await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+        try:
+            cfg = _get_alembic_config(get_engine())
+
+            async def _builtin_role_count() -> int:
+                engine = create_async_engine(url)
+                try:
+                    async with engine.connect() as conn:
+                        result = await conn.execute(
+                            text("SELECT COUNT(*) FROM roles WHERE is_system = 1 AND name IN (:n1, :n2, :n3)"),
+                            {"n1": "org:admin", "n2": "org:developer", "n3": "org:viewer"},
+                        )
+                        return int(result.scalar())
+                finally:
+                    await engine.dispose()
+
+            # Fresh bootstrap uses the empty branch (create_all + stamp head),
+            # which never runs the seed migration — builtin roles come from
+            # the lifespan helper ensure_builtin_roles in that path. To test the
+            # migration's own seed behaviour we downgrade to 0006 first, which
+            # drops both the seed rows and the template_version column, then
+            # re-upgrade to force the migration to run.
+            await asyncio.to_thread(alembic_command.downgrade, cfg, "0006_enforce_org_not_null")
+            assert await _builtin_role_count() == 0
+
+            # Re-upgrade runs 0007_builtin_roles.upgrade(): adds the column
+            # back and seeds the three builtin roles from the registry.
+            await asyncio.to_thread(alembic_command.upgrade, cfg, "head")
+            assert await _builtin_role_count() == len(BUILTIN_ROLE_NAMES)
+
+            # Downgrade again proves the seed is reversible.
+            await asyncio.to_thread(alembic_command.downgrade, cfg, "0006_enforce_org_not_null")
+            assert await _builtin_role_count() == 0
+        finally:
+            await close_engine()

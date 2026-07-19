@@ -21,6 +21,12 @@ import pytest
 import sqlalchemy as sa
 
 import deerflow.persistence.models  # noqa: F401  — register ORM with Base.metadata
+from deerflow.contracts.rbac import (
+    BUILTIN_ROLE_NAMES,
+    BUILTIN_ROLE_PERMISSIONS,
+    BUILTIN_ROLE_TEMPLATE_VERSION,
+    ORG_ADMIN_ROLE_NAME,
+)
 from deerflow.persistence.iam.model import RoleBindingRow, RoleRow
 from deerflow.persistence.orgs.model import OrganizationRow, OrgMembershipRow
 from deerflow.persistence.user.model import UserRow
@@ -28,6 +34,7 @@ from deerflow.tenancy import (
     SYSTEM_ADMIN_ROLE_NAME,
     ensure_admin_membership,
     ensure_admin_role_binding,
+    ensure_builtin_roles,
     ensure_default_org,
     ensure_system_admin_role,
 )
@@ -109,7 +116,10 @@ class TestEnsureSystemAdminRole:
         assert role.name == SYSTEM_ADMIN_ROLE_NAME
         assert role.is_system is True
         assert role.org_id is None
-        assert role.permissions == []
+        # PR-030: permissions now come from the frozen registry, not empty.
+        expected = {p.value for p in BUILTIN_ROLE_PERMISSIONS[ORG_ADMIN_ROLE_NAME]}
+        assert set(role.permissions) == expected
+        assert role.template_version == BUILTIN_ROLE_TEMPLATE_VERSION
 
     @pytest.mark.anyio
     async def test_idempotent_does_not_duplicate(self, sf):
@@ -128,6 +138,46 @@ class TestEnsureSystemAdminRole:
         # would raise IntegrityError.
         role = await ensure_system_admin_role(sf)
         assert role.org_id is None and role.is_system is True
+
+
+# ===========================================================================
+# ensure_builtin_roles (PR-030)
+# ===========================================================================
+
+
+class TestEnsureBuiltinRoles:
+    @pytest.mark.anyio
+    async def test_seeds_all_three_builtin_roles(self, sf):
+        roles = await ensure_builtin_roles(sf)
+        assert {r.name for r in roles} == BUILTIN_ROLE_NAMES
+        for role in roles:
+            assert role.is_system is True
+            assert role.org_id is None
+            assert set(role.permissions) == {p.value for p in BUILTIN_ROLE_PERMISSIONS[role.name]}
+            assert role.template_version == BUILTIN_ROLE_TEMPLATE_VERSION
+
+    @pytest.mark.anyio
+    async def test_idempotent_does_not_duplicate(self, sf):
+        first = await ensure_builtin_roles(sf)
+        second = await ensure_builtin_roles(sf)
+        assert {r.id for r in first} == {r.id for r in second}
+
+        async with sf() as session:
+            count = await session.scalar(sa.select(sa.func.count()).select_from(RoleRow).where(RoleRow.is_system.is_(True), RoleRow.name.in_(tuple(BUILTIN_ROLE_NAMES))))
+        assert count == 3
+
+    @pytest.mark.anyio
+    async def test_ensure_system_admin_role_seeds_all_three(self, sf):
+        # The wrapper ensure_system_admin_role now delegates to
+        # ensure_builtin_roles, so a single call provisions all three roles
+        # (not just org:admin). Verify the side effect so a future refactor
+        # that reverts to single-role seeding is caught.
+        admin = await ensure_system_admin_role(sf)
+        assert admin.name == ORG_ADMIN_ROLE_NAME
+
+        async with sf() as session:
+            count = await session.scalar(sa.select(sa.func.count()).select_from(RoleRow).where(RoleRow.is_system.is_(True), RoleRow.name.in_(tuple(BUILTIN_ROLE_NAMES))))
+        assert count == 3
 
 
 # ===========================================================================
@@ -229,7 +279,10 @@ class TestFullBootstrapSequence:
             binding_count = await session.scalar(sa.select(sa.func.count()).select_from(RoleBindingRow).where(RoleBindingRow.principal_id == user.id))
 
         assert org_count == 1
-        assert role_count == 1
+        # PR-030: ensure_system_admin_role now delegates to ensure_builtin_roles,
+        # which seeds all three builtin Org roles (org:admin/developer/viewer)
+        # as system templates from the frozen registry.
+        assert role_count == 3
         assert membership_count == 1
         assert binding_count == 1
 

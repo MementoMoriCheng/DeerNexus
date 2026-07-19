@@ -66,6 +66,11 @@ class RoleRow(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     permissions: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Tracks the seed revision that produced a builtin system template's
+    # permission set (ADR-0003 §5: "内置角色变更必须有迁移、变更记录和回归
+    # 测试"). NULL on custom roles — only builtin system templates carry it.
+    # Introduced by PR-030 alongside the 0007_builtin_roles seed migration.
+    template_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)

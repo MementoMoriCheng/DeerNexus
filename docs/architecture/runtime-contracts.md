@@ -1159,3 +1159,38 @@ PR-063 §16.25/§16.26 明确：按 Org 数据走 `UsageRecord / Tenant Console 
 - **multi-status OR 过滤**：PR-060 `/runs` 单次只接受 1 个 status，audit 页用 failure-status Select（默认 error）让用户切换而非一次看全部 failure status。等后端支持 status 列表 OR 过滤后改 multi-select。
 - **command palette admin 入口**：本 PR 只加 sidebar nav menu 入口；command palette（`Ctrl+K`）admin 命令是后续 polish。
 - **numbered pagination**：PR-060 是 keyset（无总页数），UI 用 Load more 按钮消费 `next_cursor`，不强行套 numbered（会语义错）。
+
+### 16.33 PR-030：权限注册表与内置角色（进行中）
+
+Track C 入口。把 ADR-0003 §3-§5 的 22 条权限字符串固化为 frozen registry，seed 3 个内置 Org 角色，建立 system 权限隔离校验，配套正反向矩阵测试。
+
+- **新建 `deerflow.contracts.rbac`**（与 `ErrorCode`/`PrincipalRef` 同层，自动通过 harness boundary）：
+  - `Permission(StrEnum)` 22 成员，5 domain（`runtime`/`admin`/`studio`/`connector`/`system`），值逐字对齐 ADR §3 §48-75。**注意 ADR §3 本身的命名不一致**：格式声明是三段式 `<domain>:<resource>:<action>`，但 `connector:read`/`connector:manage` 是 ADR §3 permission list 自己用的两段式特例——registry 照 ADR 字面收录，测试断言放宽到 `count(":") in (1, 2)`，registry 是权威源而非 regex。
+  - `BUILTIN_ROLE_PERMISSIONS: dict[str, frozenset[Permission]]`：`org:admin`(19)/`org:developer`(10)/`org:viewer`(4)，逐条对齐 ADR §4.1-4.3 矩阵。frozenset 防下游 mutation drift。
+  - `SYSTEM_PERMISSIONS` frozenset（从 prefix 派生）+ `SYSTEM_PERMISSION_PREFIX = "system:"`。
+  - `validate_role_permissions(permissions, *, is_system)` 写侧 guard：未知权限字符串 raise `PermissionValidationError(ErrorCode.VALIDATION_ERROR)`；`is_system=False` 时拒绝 `system:*` 前缀（ADR §3 §82）。异常类 `(ValueError)` 携带 `.code` + `.permission`，镜像 `TenantContextError` 模式——`ContractError` 是 pydantic BaseModel（数据信封），不是异常，不能直接 raise。该函数供未来自定义角色 write API 使用，PR-030 本身不调用（builtin 模板是权威源，不受 re-validation）。
+  - `BUILTIN_ROLE_TEMPLATE_VERSION: int = 1`：seed 模板版本号，bump 触发审计（ADR §5/§13）。
+
+- **新 alembic revision `0007_builtin_roles`**（链自 0006）：`safe_add_column` 加 `roles.template_version BigInteger nullable`（系统模板用，自定义角色 NULL）+ 幂等 seed 3 角色。seed 用 `sa.table("roles", ...)` + `op.get_bind()` 执行 SQL，probe `(name, is_system=true)`——存在则 UPDATE permissions+template_version，不存在则 INSERT（手动传 `created_at`/`updated_at`，因 `sa.table()` 不带 ORM default）。从 `deerflow.contracts.rbac.BUILTIN_ROLE_PERMISSIONS` import 单一权威源。downgrade 精确删 3 行（`WHERE is_system AND name IN (...)`，不碰未来租户角色）+ `safe_drop_column`。
+
+- **`RoleRow` ORM 同步加列**（`iam/model.py`）：`template_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)`，注释说明语义。**parity guard 强制**——`test_create_all_and_alembic_upgrade_produce_same_schema` 逐列反射比较，ORM 与 migration 必须同步。
+
+- **`tenancy/bootstrap.py` 接管 seed**（PR-022 预留交接点，原 docstring 明示「PR-030 delivers...」）：新 `ensure_builtin_roles(sf)` 循环 `BUILTIN_ROLE_NAMES`，每角色单 session probe-insert（参照原 `ensure_system_admin_role` 模式，SQLite FK-at-commit hygiene）；`ensure_system_admin_role` 改 thin wrapper——调 `ensure_builtin_roles` 后返回 `org:admin` 行。**两调用点不变**（`app.gateway.app._ensure_default_org` lifespan + `app.gateway.routers.auth._establish_admin_tenant_relationships`），保持签名/返回类型向后兼容。
+
+- **三路径一致性**（关键设计约束，非选择）：DB bootstrap `empty` 分支（`create_all` + `stamp head`）**不跑 migration**，role 完全由 lifespan `ensure_builtin_roles` 建；`legacy`/`versioned` 分支跑 migration。靠 lifespan helper + migration 共享 `BUILTIN_ROLE_PERMISSIONS` 常量收敛，避免 fresh DB 与 upgrade DB 角色内容不一致。
+
+- **测试**：44 新契约测（`test_contracts_rbac.py`：registry set-equality + len pin + 3 角色矩阵 + system 隔离 + validate 正反向 + testing-strategy §9.1 的 9×3 网格，ServiceAccount 列「按 scope」延后 PR-034）+ seed round-trip（`test_iam_schema`：downgrade 0006→0 行，upgrade head→3 行）+ 同步更新（`test_default_org_bootstrap` role_count 1→3 + permissions 断言从 `[]` 改为 registry 期望；`test_persistence_bootstrap*` HEAD 常量 0006→0007）。
+
+### 16.34 PR-030 不包含
+
+**严格不越界**（避免越界 Track C 后续 PR）：
+
+- **运行时授权计算**：`effective_permissions` 交集公式（ADR §6 `active_membership ∩ role.permissions ∩ …`）→ **PR-031 Authorize Service**。PR-030 只交付公式右边的 `role.permissions` 输入数据。
+- **router 切流**：所有 `@require_permission` 装饰器保持现状 → **PR-032/033**。
+- **`authz.py` 旧 stub 删除**：`_ALL_PERMISSIONS` 全放行路径、旧 `Permissions` 类（两段式 `threads:read` 等）保持原样，**等 PR-031/033 整体替换**（runtime-contracts §16.30 已记录此约定）。PR-030 不碰 `backend/app/gateway/authz.py`。
+- **ServiceAccount / API Key**：表已建（PR-020B），但生命周期/scope 交集/明文返回 → **PR-034/035**。
+- **`system:admin` 角色 seed**：ADR §4.4 定义了它，但 pr-split-guide §8 PR-030 清单只提 Admin/Developer/Viewer。`system:admin` 独立于 RoleBinding（需专用 API/Repository + MFA + AuditEvent），seed 它会暗示错误的 grant 路径。`system:*` 三条权限进 registry 但不绑任何角色。
+- **canonical JSON fixture**：registry 是纯枚举/常量，不是 DTO，无 round-trip 需求（与 `ErrorCode` 一致，它也没有 fixture）。
+- **403/404 错误码映射**：→ PR-031（ADR §8 invited/removed→404、suspended→403 permission_denied 等）。
+- **缓存 key/TTL**：→ PR-031（ADR §8 system-admin 独立 namespace）。
+- **OIDC group mapping / 撤权 SSE**：→ PR-036/037。
