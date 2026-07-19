@@ -30,7 +30,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from deerflow.persistence.orgs.model import OrgMembershipRow
+from deerflow.persistence.orgs.model import OrganizationRow, OrgMembershipRow
 
 
 class MultiMembershipError(Exception):
@@ -88,4 +88,61 @@ async def get_active_membership(
     raise MultiMembershipError(user_id=user_id, count=len(rows))
 
 
-__all__ = ["MultiMembershipError", "get_active_membership"]
+async def get_membership_any_status(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    user_id: str,
+    org_id: str,
+) -> OrgMembershipRow | None:
+    """Return the user's OrgMembership in ``org_id`` regardless of status (PR-031).
+
+    Unlike :func:`get_active_membership`, this returns the row for any status
+    (``invited`` / ``active`` / ``suspended`` / ``removed``) so the caller can
+    distinguish the ADR-0003 §7 / testing-strategy §9.2 error cases:
+
+    - ``active``    → granted (caller proceeds to permission check).
+    - ``suspended`` → known but frozen membership → 403 ``permission_denied``.
+    - ``invited`` / ``removed`` → no effective relationship → 404 (existence
+      hidden to avoid leaking org scope).
+    - ``None`` (no row) → same as invited/removed from the caller's view: 404.
+
+    The ``(org_id, user_id)`` UNIQUE constraint (data-model §4.5) guarantees
+    at most one row, so there is no MultiMembershipError surface here. Reads
+    only (no commit).
+    """
+    async with sf() as session:
+        stmt = select(OrgMembershipRow).where(
+            OrgMembershipRow.org_id == org_id,
+            OrgMembershipRow.user_id == user_id,
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_org_status(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+) -> str | None:
+    """Return the Organization's ``status`` for the ``organization_state`` dimension (PR-031).
+
+    ADR-0003 §6 ``effective_permissions`` intersects with ``organization_state``:
+    a ``suspended`` Org forbids new Run / publish (→ 403 ``org_suspended``) and a
+    ``deleting`` Org forbids everything but the delete-flow (→ 403
+    ``org_deleting``). The Authorize Service calls this to surface those
+    transitions; the permission-set computation itself runs only when the Org
+    is ``active`` (or when the caller accepts the state check elsewhere).
+
+    Returns ``None`` when the Org row does not exist (caller treats as 404 —
+    a missing org has no scope to authorize against). Reads only (no commit).
+    """
+    async with sf() as session:
+        row = await session.get(OrganizationRow, org_id)
+    return row.status if row is not None else None
+
+
+__all__ = [
+    "MultiMembershipError",
+    "get_active_membership",
+    "get_membership_any_status",
+    "get_org_status",
+]
