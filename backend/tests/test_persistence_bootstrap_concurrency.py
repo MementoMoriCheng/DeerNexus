@@ -28,7 +28,7 @@ from deerflow.persistence.bootstrap import bootstrap_schema
 pytestmark = pytest.mark.asyncio
 
 
-HEAD = "0006_enforce_org_not_null"
+HEAD = "0007_builtin_roles"
 
 
 def _url(tmp_path: Path) -> str:

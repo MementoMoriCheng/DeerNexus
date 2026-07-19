@@ -71,8 +71,7 @@
 
 | 逻辑 PR | 主题 | GitHub PR | 状态 | 备注 |
 | --- | --- | --- | --- | --- |
-| PR-030 | 权限注册表与内置角色 | — | 未开始（Track A 已解锁） | 正反向单测 |
-| PR-031 | 统一 Authorize Service | — | 阻塞 → PR-030 | 403/404；缓存 |
+| PR-030 | 权限注册表与内置角色 | — | 进行中 | 新建 `deerflow.contracts.rbac`：22 条权限 `Permission(StrEnum)`（5 domain，三段式命名对齐 ADR-0003 §3，`connector:*` 是 ADR 字面两段式特例）+ `BUILTIN_ROLE_PERMISSIONS` frozenset 映射（`org:admin`19/`org:developer`10/`org:viewer`4）+ `SYSTEM_PERMISSIONS` 隔离 + `validate_role_permissions` 写侧 guard（未知权限/system 进 org 角色 raise `PermissionValidationError`）+ `BUILTIN_ROLE_TEMPLATE_VERSION=1`；新 alembic revision `0007_builtin_roles`（链自 0006）：`safe_add_column` 加 `roles.template_version`（BigInteger nullable，系统模板用，自定义角色 NULL）+ 幂等 seed 3 角色（probe `(name, is_system)` → 存在 UPDATE permissions/template_version，不存在 INSERT，从 `BUILTIN_ROLE_PERMISSIONS` 读单一权威源）；`RoleRow` ORM 同步加列（parity guard 强制）；`tenancy/bootstrap.py` 新 `ensure_builtin_roles`（每角色单 session probe-insert）+ `ensure_system_admin_role` 改 thin wrapper（app.py/auth.py 两调用点不变，向后兼容）；**三路径一致性**（empty 分支 `create_all+stamp head` 不跑 migration，role 由 lifespan helper 建；legacy/versioned 跑 migration）靠 lifespan helper + migration 共享 `BUILTIN_ROLE_PERMISSIONS` 常量收敛；44 新测（registry set-equality + len pin + 3 角色矩阵 + system 隔离 + validate 正反向 + §9.1 9×3 网格，ServiceAccount 列「按 scope」延后 PR-034）+ seed round-trip + 同步更新 `test_default_org_bootstrap`（role_count 1→3）+ `test_persistence_bootstrap*` HEAD 常量（0006→0007）；**严格不越界**：不改 `authz.py` 旧 stub（PR-031/033 整体替换）/ 不碰 router 装饰器 / 不实现 effective_permissions 计算 / 不 seed `system:admin`（ADR §4.4 独立于 RoleBinding） |
 | PR-032 | Runtime Router 切 RBAC | — | 阻塞 → PR-031 | 按 Thread/Run/Artifact |
 | PR-033 | Admin / Studio Router 切 RBAC | — | 阻塞 → PR-031 | — |
 | PR-034 | ServiceAccount | — | 阻塞 → PR-030 | 生命周期 |
@@ -143,7 +142,7 @@
 | 阶段 | 窗口 | 对应 Track / PR | 进度 |
 | --- | --- | --- | --- |
 | Phase A | 0–30 天 | Track 0 + Track A + 观测基础（PR-062/063 跨阶段支撑） | Track 0 已交付；**Track A 出口达成**（PR-010 / PR-011 / PR-012 / PR-013 / PR-014A / PR-014C 落地；PR-014B 阻塞 scheduler greenfield，不阻塞 Track B）；观测基础已交付（PR-062/063 落地，跨 Phase 支撑） |
-| Phase B | 31–60 天 | Track B + C + D + B6 Console API（PR-060） | 进行中；**Track B 出口基本达成**（PR-020A/B / PR-021 / PR-022 / PR-023 / PR-024 / PR-025A/B/C/C+ 落地，仅 PR-025D 清理项延后）；**B6 Console API 已交付**（PR-060）；Track C/D 待启动（入口 PR-030） |
+| Phase B | 31–60 天 | Track B + C + D + B6 Console API（PR-060） | 进行中；**Track B 出口基本达成**（PR-020A/B / PR-021 / PR-022 / PR-023 / PR-024 / PR-025A/B/C/C+ 落地，仅 PR-025D 清理项延后）；**B6 Console API 已交付**（PR-060）；**Track C 已启动**（PR-030 进行中：权限 registry + 内置角色 seed）；Track D 待启动 |
 | Phase C | 61–90 天 | Track E + F（UI/Doctor/Backup/Gate） | 进行中；**C1 `/admin` Console UI 已交付**（PR-061 + PR #47 屏闪修复）；Doctor 完整检查已交付（PR-064）；Track E（Agent 制品/Release）未开始；PR-065 Backup / PR-066 CI Gate 未开始 |
 
 阶段出口验收以 [90-day-mvp.md](../roadmap/90-day-mvp.md) 各 §x.4/§x.5 的 checkbox 为准；本表只跟踪 PR 落地状态，不替代验收清单。

@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0006_enforce_org_not_null"
+HEAD = "0007_builtin_roles"
 BASELINE = "0001_baseline"
 
 

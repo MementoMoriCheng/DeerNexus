@@ -21,8 +21,9 @@ Phased rollout (``docs/engineering/pr-split-guide.md`` Track A):
 * PR-011 — RunEnvelope, PolicySnapshotRef, EnvelopeIntegrity,
   Policy (Request/Decision/Obligation/Evaluator), ReleaseRef/Resolver,
   ApprovalTicket, AuditEvent/AuditSink, UsageRecord/UsageRecorder + fixtures.
-* PR-012 (this commit) — TenantContext ContextVar lifecycle helpers
+* PR-012 — TenantContext ContextVar lifecycle helpers
   (bind/get/require/reset + TenantContextError).
+* PR-030 — Permission registry + builtin Org roles (ADR-0003 §3-§5).
 """
 
 from deerflow.contracts.approval import ApprovalStatus, ApprovalTicket
@@ -57,6 +58,19 @@ from deerflow.contracts.policy import (
     PolicyRequest,
     ResourceRef,
     RiskClass,
+)
+from deerflow.contracts.rbac import (
+    BUILTIN_ROLE_NAMES,
+    BUILTIN_ROLE_PERMISSIONS,
+    BUILTIN_ROLE_TEMPLATE_VERSION,
+    ORG_ADMIN_ROLE_NAME,
+    ORG_DEVELOPER_ROLE_NAME,
+    ORG_VIEWER_ROLE_NAME,
+    SYSTEM_PERMISSION_PREFIX,
+    SYSTEM_PERMISSIONS,
+    Permission,
+    PermissionValidationError,
+    validate_role_permissions,
 )
 from deerflow.contracts.release import ReleaseChannel, ReleaseRef, ReleaseResolver
 from deerflow.contracts.runs import (
@@ -117,4 +131,16 @@ __all__ = [
     "UsageRecord",
     "UsageRecorder",
     "UsageStatus",
+    # rbac (PR-030)
+    "Permission",
+    "PermissionValidationError",
+    "BUILTIN_ROLE_NAMES",
+    "BUILTIN_ROLE_PERMISSIONS",
+    "BUILTIN_ROLE_TEMPLATE_VERSION",
+    "ORG_ADMIN_ROLE_NAME",
+    "ORG_DEVELOPER_ROLE_NAME",
+    "ORG_VIEWER_ROLE_NAME",
+    "SYSTEM_PERMISSION_PREFIX",
+    "SYSTEM_PERMISSIONS",
+    "validate_role_permissions",
 ]
