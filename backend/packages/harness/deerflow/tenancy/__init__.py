@@ -28,7 +28,12 @@ from deerflow.tenancy.feature_flags import (
     get_feature_flag,
     get_feature_flags,
 )
-from deerflow.tenancy.membership import MultiMembershipError, get_active_membership
+from deerflow.tenancy.membership import (
+    MultiMembershipError,
+    get_active_membership,
+    get_membership_any_status,
+    get_org_status,
+)
 
 __all__ = [
     "BackfillReport",
@@ -48,4 +53,6 @@ __all__ = [
     "get_active_membership",
     "get_feature_flag",
     "get_feature_flags",
+    "get_membership_any_status",
+    "get_org_status",
 ]

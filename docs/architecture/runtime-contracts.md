@@ -1194,3 +1194,46 @@ Track C 入口。把 ADR-0003 §3-§5 的 22 条权限字符串固化为 frozen 
 - **403/404 错误码映射**：→ PR-031（ADR §8 invited/removed→404、suspended→403 permission_denied 等）。
 - **缓存 key/TTL**：→ PR-031（ADR §8 system-admin 独立 namespace）。
 - **OIDC group mapping / 撤权 SSE**：→ PR-036/037。
+
+### 16.35 PR-031：统一 Authorize Service（进行中）
+
+Track C 第二刀。交付 ADR-0003 §6 的 `authorize(tenant_context, permission, resource_ref) -> None | raises` 运行时授权函数，基于 DB 计算 `effective_permissions` 交集，映射 §12 的 403/404 错误码，提供 §11 的 in-memory TTL≤60s 缓存。PR-030 交付了权限 registry + 角色模板（公式右边的 `union(role.permissions)` 输入数据），本 PR 让 RBAC 真正可计算。
+
+- **新建 `app/gateway/authorize.py`**（与 `tenant.py`/`deps.py` 同层，DB-backed 必须在 app 层——contracts 层无 DB 依赖）：
+  - 纯函数 `compute_effective_permissions(*, membership_status, role_permissions, org_status, system_role, api_key_scopes) -> frozenset[str]`：无 IO，完全可测。实现 ADR §6 交集公式的每一项——`active_membership`（status=="active"）、`active_principal`（system_role 门控，UserRow 无 status 列当前粗粒度）、`non_expired_role_bindings`（调用方已过滤 expires_at）、`union(role.permissions)`（调用方已 JOIN 聚合）、`api_key.scopes_if_present`（None=全集，非 None=收窄交集，ADR §6「scope 只能收窄」）、`organization_state`（suspended/deleting 由 `authorize()` 抛错，不进 compute）、`policy_decision`（恒全集，Track E 延后）。**system_role==admin 特例**：直接返回 `SYSTEM_PERMISSIONS`（ADR §4.4 独立于 RoleBinding），API Key scope 仍应用。
+  - `AuthorizeService` 类：持 `session_factory` + `PermissionCache`。`compute_permissions_for_user(user, *, org_id, api_key_scopes=None) -> frozenset[str]`（DB-backed，查 membership/role_bindings/roles/org_status + 缓存查找 + 调纯函数）；`authorize(tenant_context, permission, resource_ref=None, *, api_key_scopes=None) -> None`（ADR §6 统一签名，调 compute + permission membership test，失败抛 `AuthorizeError`）。`_fetch_role_permissions` 单 JOIN 查 `role_bindings`→`roles` 按 `(org_id, principal_type, principal_id)` + 过滤 `expires_at IS NULL OR > now`，**防御性 drop** 未注册权限串 + `system:*` 串（registry 是写侧权威，读侧对历史脏数据容错）。
+  - `AuthorizeError(Exception)` 携带 `.code: ErrorCode` + `.permission: str | None`。**关键**：`ContractError` 是 pydantic BaseModel（数据信封），不是 Exception 子类，不能 `raise`。`AuthorizeError` 是 raise-able 形式，镜像 `TenantContextError`/`PermissionValidationError` 模式；HTTP 层（PR-032/033 router/middleware）从 `.code` 映射 status 码，需要时构造 `ContractError.from_code(...)` 信封。
+
+- **新建 `app/gateway/authorize_cache.py`**：`PermissionCache` Protocol（`get`/`set`/`invalidate`/`clear`，PR-037 可 drop-in Redis 实现）+ `InMemoryPermissionCache`（dict + `time.monotonic()` 时钟，TTL 在 `set` 时钳到 ≤60s 硬约束 ADR §11，lazy eviction on read）。`org_cache_key(org_id, principal_type, principal_id)` = `authz:{org_id}:{ptype}:{pid}`（跨 Org 天然隔离）；`system_cache_key(principal_id)` = `authz:system:{pid}`（system-admin 独立 namespace，ADR §11）。主动失效接口 `invalidate(key)` 留着但 PR-031 不接变更事件（→ PR-037）。
+
+- **`tenancy/membership.py` 扩展**（不改既有 `get_active_membership`——它字面量 `status=="active"` 把 suspended/invited/removed 一视同仁归 None，PR-031 需区分 403 vs 404）：
+  - `get_membership_any_status(sf, *, user_id, org_id) -> OrgMembershipRow | None`：按 `(user_id, org_id)` 查任意 status，`uq_org_memberships_org_user` UNIQUE 保证至多 1 行（无 MultiMembershipError 面）。
+  - `get_org_status(sf, *, org_id) -> str | None`：查 `OrganizationRow.status`（active/suspended/deleting/deleted），用于 `organization_state` 维度。
+
+- **错误码映射**（ADR §12 + testing-strategy §9.2，全部用既有 ErrorCode，无新增）：
+  - invited / removed / 无 membership / 无 Org 行 → `PERMISSION_DENIED`（router 包装 **404**，存在性隐藏，ADR §12「不得用 permission_denied 暴露 Org 范围」）
+  - suspended membership / 权限不足 → `PERMISSION_DENIED`（**403**）
+  - org suspended → `ORG_SUSPENDED`（403）
+  - org deleting / deleted → `ORG_DELETING`（403）
+  - 非 user principal（service_account/system）→ `AUTHENTICATION_INVALID`（401，PR-034/后续扩展）
+  - **HTTP 映射延后 PR-032/033**——PR-031 只抛 `AuthorizeError`，router 层根据 `.code` + 上下文（membership 缺失信号 404 vs 权限不足 403）决定 status。
+
+- **严格回滚红线**（runtime-contracts §16.34:1190 + pr-split-guide §8:350）：**不改 `authz.py`**（`_authenticate`/`_ALL_PERMISSIONS`/`require_permission`/`AuthContext` 全部保持原样）/ **不动 `require_admin_user`** / **不碰任何 router 装饰器**。PR-031 合入时**零调用方**——`authorize()` 只被自己的单测调用，真实 router 路径要等 PR-032（runtime router）/PR-033（admin/studio router）。这保证 `git revert` 不影响任何现有 API 行为（否则一次 bug 锁死全平台 ~30 个 `@require_permission` 调用点）。
+
+- **测试**（48 新测，`test_iam_authorize.py`）：membership helpers（active/non-active/missing/wrong-org + org status 4 态）+ 纯函数 5 例（admin 短路/user 路径/scope 收窄/scope=None 全集/admin+scope 仍收窄）+ cache（roundtrip/missing/ttl=0/clamp 60s/invalidate/clear/system vs org namespace）+ AuthorizeService（3 角色矩阵对齐 registry/admin 短路/无 binding 空集/多 binding 并集/过期 binding 排除/未来 binding 包含）+ §9.1 矩阵 spot-check（admin×console/run/prod vs developer vs viewer）+ §9.2 拒绝（invited/removed/suspended/无 membership/suspended org/deleting org/deleted org/missing org 共 8 态）+ scope 收窄（admin+scope/user+scope/None 全集）+ cache（hit/invalidate/system namespace）。marker 只用 `@pytest.mark.anyio`+`@pytest.mark.parametrize`，docstring 引用 `IAM-0xx`。
+
+### 16.36 PR-031 不包含
+
+**严格不越界**（避免锁死全平台 API + 避免 Track C 后续 PR 越界）：
+
+- **router 切流**：所有 `@require_permission("threads"/"runs"/"artifacts", ...)` 调用点（threads/runs/thread_runs/artifacts/feedback/suggestions/uploads 共 ~30 处）保持现状走 stub → **PR-032 Runtime Router**。admin router（admin.py/channels.py/channel_connections.py/mcp.py 共 9 处 `require_admin_user`）继续用 `system_role` 门控 → **PR-033 Admin/Studio Router**。
+- **`authz.py` 旧 stub 删除**：`_ALL_PERMISSIONS` 全放行 + 旧两段式 `Permissions` 类（`threads:read` 等）保持原样，**等 PR-031/033 整体替换**（runtime-contracts §16.34:1190 约定）。PR-031 不碰 `backend/app/gateway/authz.py`。
+- **ServiceAccount 生命周期**：principal_type 多态已支持（cache key + 查询都带 principal_type），但 SA 创建/disable/delete/限流 → **PR-034**。当前 SA principal 走 user 路径会因缺 user_id 抛 `AUTHENTICATION_INVALID`（设计如此，PR-034 扩展）。
+- **API Key 全套**：scope 交集计算原语已交付（`compute_effective_permissions` 的 `api_key_scopes` 参数 + `AuthorizeService.compute_permissions_for_user` 的 scope 收窄），但 Key 生成/hash/校验/明文返回/过期轮换撤销 → **PR-035**。PR-031 只接受调用方已校验后的 scopes。
+- **OIDC group mapping**：PR-031 只读已存在的 RoleBinding 行，不从 OIDC group 合成角色 → **PR-036**。
+- **主动失效 + SSE 重验证**：缓存 TTL=60s 是 fallback 兜底（ADR §11「主动失效失败时仍不得超过 60 秒」），但 Membership/RoleBinding/SA/Key 变更的主动 invalidate + SSE 重验证 + P99 撤权证据 → **PR-037**。PR-031 的 `InMemoryPermissionCache.invalidate()` 留接口但不接变更事件。
+- **resource-level check**：`authorize()` 的 `resource_ref` 参数保留但 MVP 不用——Workspace 级 RBAC 是**非目标**（ADR §17）。
+- **UserRow status 字段**：data-model §4.3 列了 `status: active/disabled` 但 ORM 未实现，`active_principal` 维度当前只能靠 `token_version`/`needs_setup` 粗粒度。完整 user disable 延后到独立 PR（不阻塞 Track C）。
+- **policy_decision**：ADR §6 公式的最后一项，Track E（Policy 引擎）独立工程，PR-031 视为恒全集（预留 `policy_evaluator` 注入点但 MVP 不接）。
+- **ErrorCode 新增**：PR-031 所需 code（`PERMISSION_DENIED`/`ORG_SUSPENDED`/`ORG_DELETING`/`AUTHENTICATION_INVALID`）全部已在 `contracts/errors.py` registry，无新增。
+- **全局 ContractError exception handler**：当前代码库无 `@app.exception_handler(ContractError)`，每个调用点手动映射（照 `tenant.py:284-299`）。PR-031 不引入新模式，HTTP 映射由 PR-032/033 router 层在调用 `authorize()` 时按 `.code` 决定。
