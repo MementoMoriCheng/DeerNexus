@@ -51,9 +51,12 @@ test.describe("multi-run thread renders chronologically (replay, no API key)", (
     // requires an OrgMembership + role binding. /register creates neither, so
     // seed admin IAM via the replay gateway's test-only endpoint (mounted only
     // by scripts/run_replay_gateway.py) before any /api/threads/*/runs call.
-    const iam = await context.request.post(`${APP}/api/test-only/seed-admin-iam`, {
-      headers: { "X-CSRF-Token": csrf! },
-    });
+    const iam = await context.request.post(
+      `${APP}/api/test-only/seed-admin-iam`,
+      {
+        headers: { "X-CSRF-Token": csrf! },
+      },
+    );
     expect(iam.status(), await iam.text()).toBe(200);
 
     // Seed two runs in one thread: run-1 (ALPHA) older, run-2 (OMEGA) newer, so

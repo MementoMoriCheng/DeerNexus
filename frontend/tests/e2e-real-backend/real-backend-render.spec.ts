@@ -70,7 +70,9 @@ test.describe("real backend render (replay, no API key)", () => {
     // seed admin IAM via the replay gateway's test-only endpoint (mounted only
     // by scripts/run_replay_gateway.py, never in production) or every
     // /api/threads/*/runs/stream call 403s and the render assertion times out.
-    const iam = await context.request.post(`${APP}/api/test-only/seed-admin-iam`);
+    const iam = await context.request.post(
+      `${APP}/api/test-only/seed-admin-iam`,
+    );
     expect(iam.status(), await iam.text()).toBe(200);
   });
 
