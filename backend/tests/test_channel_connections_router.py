@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from _router_auth_helpers import make_authed_test_app
+from _router_auth_helpers import make_rbac_test_app
 from fastapi.testclient import TestClient
 
 from app.channels.runtime_config_store import ChannelRuntimeConfigStore
@@ -61,7 +61,7 @@ def _make_app(
     runtime_config_store: ChannelRuntimeConfigStore | None = None,
     set_channels_config_state: bool = True,
 ):
-    app = make_authed_test_app(user_factory=_user)
+    app = make_rbac_test_app(bypass_authorize=True, user_factory=_user)
     app.state.channel_connections_config = config
     app.state.channel_connection_repo = repo
     if set_channels_config_state:
@@ -634,7 +634,14 @@ def test_configure_provider_runtime_credentials_enables_connect_without_file_edi
     anyio.run(repo.close)
 
 
-def test_runtime_config_endpoints_require_admin(tmp_path):
+def test_runtime_config_providers_listing_remains_read_only_for_regular_users(tmp_path):
+    # The 403-not-admin boundary for the two runtime-config write
+    # endpoints (POST/DELETE ``/api/channels/{provider}/runtime-config``)
+    # is pinned in ``test_rbac_admin_routers.py`` against the real
+    # Authorize Service. This suite runs in bypass mode
+    # (``make_rbac_test_app(bypass_authorize=True)``), so we no longer
+    # re-assert the 403 here — we only verify that the read-only
+    # ``GET /providers`` listing stays open to non-admin callers.
     import anyio
 
     repo = anyio.run(_make_repo, tmp_path)
@@ -644,7 +651,7 @@ def test_runtime_config_endpoints_require_admin(tmp_path):
             "slack": {"enabled": True},
         }
     )
-    app = make_authed_test_app(user_factory=_non_admin_user)
+    app = make_rbac_test_app(bypass_authorize=True, user_factory=_non_admin_user)
     app.state.channel_connections_config = config
     app.state.channel_connection_repo = repo
     app.state.channels_config = {}
@@ -654,16 +661,8 @@ def test_runtime_config_endpoints_require_admin(tmp_path):
     app.include_router(channel_connections.router)
 
     with TestClient(app) as client:
-        configure_response = client.post(
-            "/api/channels/slack/runtime-config",
-            json={"values": {"bot_token": "xoxb-ui", "app_token": "xapp-ui"}},
-        )
-        disconnect_response = client.delete("/api/channels/slack/runtime-config")
         providers_response = client.get("/api/channels/providers")
 
-    assert configure_response.status_code == 403
-    assert "Admin privileges" in configure_response.json()["detail"]
-    assert disconnect_response.status_code == 403
     # Read-only provider listing stays available to regular users.
     assert providers_response.status_code == 200
 

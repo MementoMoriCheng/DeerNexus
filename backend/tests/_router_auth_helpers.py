@@ -1,52 +1,54 @@
 """Helpers for router-level tests that need a stubbed auth context.
 
 The production gateway runs ``AuthMiddleware`` (validates the JWT cookie)
-ahead of every router, plus ``@require_permission(owner_check=True)``
-decorators that read ``request.state.auth`` and call
-``thread_store.check_access``. Router-level unit tests construct
-**bare** FastAPI apps that include only one router — they have neither
-the auth middleware nor a real thread_store, so the decorators raise
-401 (TestClient path) or ValueError (direct-call path).
+ahead of every router, then ``TenantResolutionMiddleware`` binds the
+:class:`TenantContext` ContextVar. ``@require_rbac`` reads that context
+and calls ``AuthorizeService.authorize()``. Router-level unit tests
+construct **bare** FastAPI apps that include only one router — they
+have neither the production middleware chain nor a real thread_store,
+so the decorator raises 401 (TestClient path) or ValueError
+(direct-call path).
 
 This module provides several surfaces:
 
-1. :func:`make_authed_test_app` — wraps ``FastAPI()`` with a tiny
-   ``BaseHTTPMiddleware`` that stamps a fake user / AuthContext on every
-   request, plus a permissive ``thread_store`` mock on
-   ``app.state``. Use from TestClient-based router tests that target
-   routers still gated by the legacy ``@require_permission`` stub
-   (Admin/Studio/etc., PR-033 scope).
+1. :func:`make_rbac_test_app` — wraps ``FastAPI()`` with a tiny
+   ``BaseHTTPMiddleware`` that stamps a fake user and binds a real
+   ``TenantContext`` on every request, plus a permissive
+   ``thread_store`` mock on ``app.state``. Two modes:
+
+   * **bypass mode** (``bypass_authorize=True``): sets the
+     ``_deerflow_test_bypass_auth`` flag so ``require_rbac`` returns
+     before consulting the Authorize Service. No DB / IAM seed needed.
+     Use from business-logic router tests (threads / runs / admin /
+     channels / mcp / …) that exercise the handler, not the permission
+     boundary.
+   * **real-authorize mode** (``bypass_authorize=False``, ``sf=...``):
+     binds a real ``TenantContext`` and re-points the
+     ``AuthorizeService`` singleton at the supplied session factory so
+     ``authorize()`` consults the test-seeded IAM rows. Use from the
+     RBAC boundary / matrix tests.
 
 2. :func:`call_unwrapped` — invokes the underlying function bypassing
-   the ``@require_permission`` / ``@require_rbac`` decorator chain by
-   walking ``__wrapped__``. Use from direct-call tests that previously
-   imported the route function and called it positionally.
+   the ``@require_rbac`` decorator chain by walking ``__wrapped__``.
+   Use from direct-call tests that previously imported the route
+   function and called it positionally.
 
-3. :func:`make_rbac_test_app` (PR-032) — counterpart for routers gated
-   by the new ``@require_rbac`` decorator (Thread/Run/Artifact). It
-   installs middleware that stamps the user **and** binds a real
-   :class:`TenantContext`, then seeds an IAM org/membership/role via
-   the provided session factory so ``AuthorizeService.authorize()``
-   succeeds. Caller is responsible for ``init_engine`` /
-   ``close_engine`` around the test.
-
-4. PR-032 RBAC seed helpers (:func:`rbac_sf`, :func:`bootstrap_rbac`,
+3. PR-032 RBAC seed helpers (:func:`bootstrap_rbac`,
    :func:`seed_rbac_org` / :func:`seed_rbac_user` /
    :func:`seed_rbac_membership` / :func:`bind_rbac_role`) — a shared
    implementation of the IAM seed pattern first introduced in
-   ``test_iam_authorize.py``. Every Thread/Run/Artifact/Upload/
-   Feedback/Suggestion router test migrated to ``make_rbac_test_app``
-   needs an org + builtin roles + user + active membership + role
-   binding before ``authorize()`` will allow anything; centralising the
-   helpers here keeps the seed shape identical across files and lets
-   the dedicated RBAC matrix test (``test_rbac_runtime_routers.py``)
+   ``test_iam_authorize.py``. Every router test that runs in
+   real-authorize mode needs an org + builtin roles + user + active
+   membership + role binding before ``authorize()`` will allow
+   anything; centralising the helpers here keeps the seed shape
+   identical across files and lets the dedicated RBAC matrix tests
+   (``test_rbac_runtime_routers.py``, ``test_rbac_admin_routers.py``)
    vary just the role/status axis.
 
-Both ``make_*`` helpers are deliberately permissive: they never deny a
-request by construction. Tests that want to verify the *auth boundary*
-itself (e.g. ``test_auth_middleware``, ``test_auth_type_system``) build
-their own apps with the real middleware — those should not use this
-module.
+The factory is deliberately permissive: it never denies a request by
+construction. Tests that want to verify the *auth boundary* itself
+(e.g. ``test_auth_middleware``, ``test_auth_type_system``) build their
+own apps with the real middleware — those should not use this module.
 """
 
 from __future__ import annotations
@@ -63,21 +65,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 from app.gateway.auth.models import User
-from app.gateway.authz import AuthContext, Permissions
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import async_sessionmaker
-
-# Default permission set granted to the stub user. Mirrors `_ALL_PERMISSIONS`
-# in authz.py — kept inline so the tests don't import a private symbol.
-_STUB_PERMISSIONS: list[str] = [
-    Permissions.THREADS_READ,
-    Permissions.THREADS_WRITE,
-    Permissions.THREADS_DELETE,
-    Permissions.RUNS_CREATE,
-    Permissions.RUNS_READ,
-    Permissions.RUNS_CANCEL,
-]
 
 # Default seed coordinates for the RBAC IAM bootstrap helpers below.
 # ``make_rbac_test_app`` and ``bootstrap_rbac`` use these as defaults so
@@ -118,33 +108,19 @@ def _make_rbac_stub_user() -> User:
     )
 
 
-class _StubAuthMiddleware(BaseHTTPMiddleware):
-    """Stamp a fake user / AuthContext onto every request.
-
-    Mirrors what production ``AuthMiddleware`` does after the JWT decode
-    + DB lookup short-circuit, so ``@require_permission`` finds an
-    authenticated context and skips its own re-authentication path.
-    """
-
-    def __init__(self, app: ASGIApp, user_factory: Callable[[], User]) -> None:
-        super().__init__(app)
-        self._user_factory = user_factory
-
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        user = self._user_factory()
-        request.state.user = user
-        request.state.auth = AuthContext(user=user, permissions=list(_STUB_PERMISSIONS))
-        return await call_next(request)
-
-
 class _StubRbacMiddleware(BaseHTTPMiddleware):
-    """Stub user + bind a real ``TenantContext`` on every request (PR-032).
+    """Stub user + bind a real ``TenantContext`` on every request.
 
-    For ``@require_rbac``-gated routers: ``AuthorizeService.authorize()``
-    reads the contextvar-bound tenant via ``get_tenant_context()`` and
-    the User off ``request.state.user``. This middleware mirrors what
-    production ``AuthMiddleware`` + ``TenantResolutionMiddleware`` stamp
-    together, scoped to the test's seed org.
+    ``AuthorizeService.authorize()`` reads the contextvar-bound tenant
+    via ``get_tenant_context()`` and the User off ``request.state.user``.
+    This middleware mirrors what production ``AuthMiddleware`` +
+    ``TenantResolutionMiddleware`` stamp together, scoped to the test's
+    seed org.
+
+    In bypass mode the same tenant is still bound (handlers like the
+    Org Console resolve ``org_id`` from the contextvar even when the
+    decorator is short-circuited), and the test-bypass flag is set so
+    ``require_rbac`` returns before touching the Authorize Service.
     """
 
     def __init__(
@@ -163,36 +139,40 @@ class _StubRbacMiddleware(BaseHTTPMiddleware):
         self._bypass_authorize = bypass_authorize
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        user = self._user_factory()
-        user_id = str(user.id)
-        request.state.user = user
-        # Keep request.state.auth populated too so any handler that still
-        # reads the legacy AuthContext (e.g. shared utility helpers) keeps
-        # working during the PR-032 → PR-033 transition.
-        request.state.auth = AuthContext(user=user, permissions=list(_STUB_PERMISSIONS))
-
-        if self._bypass_authorize:
-            # Business-logic router tests (PR-032 migration): they exercise
-            # the handler, not the RBAC boundary, so they set the same
-            # bypass flag that ``_make_test_request_stub`` uses for
-            # direct-call tests. ``require_rbac`` returns before touching
-            # the Authorize Service, so no DB / IAM seed is needed. RBAC
-            # boundary coverage lives in ``test_rbac_runtime_routers.py``.
-            #
-            # Stored on ``request.state`` (not the Request instance)
-            # because Starlette's ``BaseHTTPMiddleware`` rebuilds the
-            # Request object between dispatch and the route handler, so
-            # instance attributes do not survive — only scope-backed
-            # ``request.state`` does. ``require_rbac`` checks both.
-            request.state._deerflow_test_bypass_auth = True  # type: ignore[attr-defined]
-            return await call_next(request)
-
         from deerflow.contracts import (
             PrincipalRef,
             TenantContext,
             bind_tenant_context,
             reset_tenant_context,
         )
+
+        user = self._user_factory()
+        user_id = str(user.id)
+        request.state.user = user
+
+        if self._bypass_authorize:
+            # Business-logic router tests: they exercise the handler, not
+            # the RBAC boundary, so they set the same bypass flag that
+            # ``_make_test_request_stub`` uses for direct-call tests.
+            # ``require_rbac`` returns before touching the Authorize
+            # Service, so no DB / IAM seed is needed. RBAC boundary
+            # coverage lives in ``test_rbac_*_routers.py``.
+            #
+            # Stored on ``request.state`` (not the Request instance)
+            # because Starlette's ``BaseHTTPMiddleware`` rebuilds the
+            # Request object between dispatch and the route handler, so
+            # instance attributes do not survive — only scope-backed
+            # ``request.state`` does. ``require_rbac`` checks both.
+            #
+            # No TenantContext is bound here: the autouse
+            # ``_auto_user_context`` fixture (or a test-specific
+            # ``_bound_tenant`` fixture) already bound one with
+            # ``org_id="default"``, and ContextVar inheritance propagates
+            # it into the request task. Handlers reading ``org_id`` off
+            # the contextvar (Org Console's ``_require_org_id``) see that
+            # value. Re-binding here would clobber the fixture's value.
+            request.state._deerflow_test_bypass_auth = True  # type: ignore[attr-defined]
+            return await call_next(request)
 
         tenant = TenantContext(
             org_id=self._org_id,
@@ -208,38 +188,6 @@ class _StubRbacMiddleware(BaseHTTPMiddleware):
             reset_tenant_context(token)
 
 
-def make_authed_test_app(
-    *,
-    user_factory: Callable[[], User] | None = None,
-    owner_check_passes: bool = True,
-) -> FastAPI:
-    """Build a FastAPI test app with stub auth + permissive thread_store.
-
-    Args:
-        user_factory: Override the default test user. Must return a fully
-            populated :class:`User`. Useful for cross-user isolation tests
-            that need a stable id across requests.
-        owner_check_passes: When True (default), ``thread_store.check_access``
-            returns True for every call so ``@require_permission(owner_check=True)``
-            never blocks the route under test. Pass False to verify that
-            permission failures surface correctly.
-
-    Returns:
-        A ``FastAPI`` app with the stub middleware installed and
-        ``app.state.thread_store`` set to a permissive mock. The
-        caller is still responsible for ``app.include_router(...)``.
-    """
-    factory = user_factory or _make_stub_user
-    app = FastAPI()
-    app.add_middleware(_StubAuthMiddleware, user_factory=factory)
-
-    repo = MagicMock()
-    repo.check_access = AsyncMock(return_value=owner_check_passes)
-    app.state.thread_store = repo
-
-    return app
-
-
 def make_rbac_test_app(
     *,
     org_id: str = RBAC_DEFAULT_ORG_ID,
@@ -249,7 +197,7 @@ def make_rbac_test_app(
     auth_method: str = "session",
     bypass_authorize: bool = False,
 ) -> FastAPI:
-    """Build a FastAPI test app wired for ``@require_rbac`` (PR-032).
+    """Build a FastAPI test app wired for ``@require_rbac``.
 
     Installs :class:`_StubRbacMiddleware`. Two modes:
 
@@ -261,14 +209,14 @@ def make_rbac_test_app(
       test-seeded IAM rows. Use this for the RBAC boundary / matrix tests.
 
     * **Bypass mode** (``bypass_authorize=True``): the middleware sets
-      ``request._deerflow_test_bypass_auth = True``, so ``require_rbac``
-      returns before touching the Authorize Service — no DB / IAM seed
-      needed. Use this for migrated business-logic router tests whose
-      concern is the handler behaviour, not the permission boundary.
-      Semantically equivalent to the old ``make_authed_test_app``
-      (which stamped a full-permission ``AuthContext``); RBAC coverage
-      is provided separately by ``test_rbac_runtime_routers.py`` and by
-      PR-031's ``test_iam_authorize.py``.
+      ``request.state._deerflow_test_bypass_auth = True``, so
+      ``require_rbac`` returns before touching the Authorize Service —
+      no DB / IAM seed needed. Use this for migrated business-logic
+      router tests whose concern is the handler behaviour, not the
+      permission boundary. The middleware still stamps
+      ``request.state.user`` and binds a default TenantContext so
+      handlers that read ``org_id`` off the contextvar (e.g. the Org
+      Console) keep working without a real seed.
 
     Args:
         sf: Session factory from ``get_session_factory()`` (the same one
@@ -303,8 +251,9 @@ def make_rbac_test_app(
     6. ``rbac_sf`` teardown (or ``close_engine`` +
        ``reset_authorize_service_for_testing()``) runs automatically.
 
-    Bypass mode needs none of that — just ``make_rbac_test_app(bypass_authorize=True)``
-    and ``app.include_router(...)``.
+    Bypass mode needs none of that — just
+    ``make_rbac_test_app(bypass_authorize=True)`` and
+    ``app.include_router(...)``.
     """
     # Real-authorize mode needs a user whose id matches the IAM seed
     # (RBAC_DEFAULT_USER_ID); bypass mode is identity-agnostic so the
@@ -348,15 +297,15 @@ def make_rbac_test_app(
 
 
 def call_unwrapped[*P, R](decorated: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> R:
-    """Invoke the underlying function of a ``@require_permission`` / ``@require_rbac``-decorated route.
+    """Invoke the underlying function of a ``@require_rbac``-decorated route.
 
     ``functools.wraps`` sets ``__wrapped__`` on each layer; we walk all
-    the way down to the original handler, bypassing every authz +
-    require_auth wrapper. Use from tests that need to call route
-    functions directly (without TestClient) and don't want to construct
-    a fake ``Request`` just to satisfy the decorator. The ``ParamSpec``
-    propagates the wrapped route's signature so call sites still get
-    parameter checking despite the unwrapping.
+    the way down to the original handler, bypassing every authz wrapper.
+    Use from tests that need to call route functions directly (without
+    TestClient) and don't want to construct a fake ``Request`` just to
+    satisfy the decorator. The ``ParamSpec`` propagates the wrapped
+    route's signature so call sites still get parameter checking
+    despite the unwrapping.
     """
     fn: Callable = decorated
     while hasattr(fn, "__wrapped__"):
@@ -386,11 +335,11 @@ def make_internal_user(*, user_id: str = "default") -> SimpleNamespace:
 #
 # ``require_rbac`` calls ``AuthorizeService.authorize()``, which JOINs
 # role_bindings → roles on the DB. Any TestClient-driven router test
-# therefore needs an org + the three builtin roles + a user + an active
-# membership + a role binding before a single request will pass. These
-# helpers centralise that seed so every migrated router test file
-# (threads / thread_runs / runs / artifacts / uploads / feedback /
-# suggestions) and the dedicated matrix test use an identical shape.
+# in real-authorize mode therefore needs an org + the three builtin
+# roles + a user + an active membership + a role binding before a
+# single request will pass. These helpers centralise that seed so
+# every matrix test file (runtime / admin) and the dedicated boundary
+# tests use an identical shape.
 #
 # They are the public counterpart of the private ``_bootstrap`` /
 # ``_seed_*`` helpers in ``test_iam_authorize.py`` — that file keeps its

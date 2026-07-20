@@ -35,10 +35,12 @@ Track C 第三刀:把 Thread / Run / Artifact 四个 runtime router 从
   ``PERMISSION_DENIED`` → 403 default。invited/removed→404 的细化
   留 multi-Org active phase follow-up (single-Org bootstrap
   阶段实际不存在该场景)。
-* **保留旧 stub**: ``authz.py`` 整体不动 —— Admin/Studio router
-  (PR-033) 和它们的测试还在用旧 ``require_permission`` /
-  ``_deerflow_test_bypass_auth``。``authz.py`` 的删除时机: ADR §14
-  step 10,触发条件 = PR-033 切完 + 旧 acceptance §15 勾掉。
+* **旧 stub 已删除**: ``authz.py`` (``require_permission`` /
+  ``require_auth`` / ``AuthContext`` / ``_ALL_PERMISSIONS``) 随
+  PR-033 切完 Admin router 后整体删除,完成了 ADR §14 step 10
+  (删除 ``_ALL_PERMISSIONS`` 等旧放行路径)。所有 router 现在走
+  ``@require_rbac`` + DB-backed Authorize Service,无 flat-grant
+  stub 残留。
 """
 
 from __future__ import annotations

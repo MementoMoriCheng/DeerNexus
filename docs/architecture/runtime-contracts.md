@@ -1248,7 +1248,7 @@ Track C 第三刀落地。把 Thread/Run/Artifact/Upload/Feedback/Suggestion 七
 - **矩阵测试 `test_rbac_runtime_routers.py`** 23 测：§9.1 角色×能力 15 cell（Oracle=`BUILTIN_ROLE_PERMISSIONS`，admin/developer 全允许 runtime 域，viewer 拒 write/create/cancel）+ §9.2 状态映射 4（无 membership / suspended membership / suspended org / 无 binding 全→403）+ trusted-internal-caller 白名单短路（200）+ owner_check→404 + `policy.evaluated` allow（INFO）/deny（WARNING）观测。挂最小 dummy router 隔离 handler 副作用，URL path 用 `Permission.name`（非 `.value`，因 `runtime:thread:read` 的冒号不安全）。
 - **测试迁移**：6 个 router 业务测试（threads/artifacts/runs_api/messages_pagination/token_usage/cancel_run_idempotent + skills_custom_router 跨界 uploads）迁移到 `make_rbac_test_app(bypass_authorize=True)`；1 个 owner_check 边界测试（uploads `owner_check_passes=False`）走真路径。`test_stateless_runs_owner_isolation` 不迁移（测 services 层 owner check，不经 router 装饰器）。
 - **e2e 适配**：`require_rbac` 生效后 `/register` 用户无 IAM membership 被 403（设计预期：single-Org bootstrap 阶段只有 `/initialize` 创建的首个 admin 有完整 IAM）。`test_runtime_lifecycle_e2e` / `test_replay_golden` / `test_setup_agent_http_e2e_real_server` 的用户引导从 `/register` 改 `/initialize`（在 app event loop 内 seed IAM，避免 sync TestClient 路径跑 async seed 与 aiosqlite 连接池冲突）。三个文件的 `_reset_process_singletons` 副本补齐 `AuthorizeService._default_service`（PR-031 引入的新单元）+ `deps._cached_local_provider`/`_cached_repo`（admin 计数泄漏源）reset——此前这些 reset 列表未纳入 PR-031/032 引入的进程级单例。
-- **旧 stub 保留**：`authz.py`（`require_permission`/`_ALL_PERMISSIONS`/`AuthContext`）完整不动，Admin/Studio router（PR-033）和它们的测试还在用。删除时机：ADR §14 step 10，触发条件 = PR-033 切完 + 旧 acceptance §15 勾掉。
+- **旧 stub 保留（PR-032 时点）**：PR-032 不动 `authz.py`（`require_permission`/`_ALL_PERMISSIONS`/`AuthContext`），保留给 Admin/Studio router（PR-033）和它们的测试继续用。**PR-033 已完成此删除**（见 §16.39）—— ADR §14 step 10 的触发条件「PR-033 切完 + 旧 acceptance §15 勾掉」于 PR-033 满足。
 
 ### 16.38 PR-032 不包含
 
@@ -1262,3 +1262,35 @@ Track C 第三刀落地。把 Thread/Run/Artifact/Upload/Feedback/Suggestion 七
 - **普通 `/register` 用户 IAM 引导**：PR-032 让 RBAC 生效后，`/register` 创建的用户无 membership/role binding，调 runtime router 会 403。这是 single-Org bootstrap 阶段的设计预期（只有 `/initialize` 的首个 admin 有完整 IAM）。普通用户的 IAM 引导（自动 seed default org membership + 默认 role）延后到 **PR-034 ServiceAccount** 或独立的 membership 引导 PR——取决于产品设计（自服务 join vs admin 邀请）。当前 e2e 测试用 `/initialize` 绕过。
 - **API Key scope 收窄**：`authorize()` 已支持 scope 交集（PR-031），但 runtime router 不接 API Key 路径 → **PR-035**。
 - **主动失效**：`require_rbac` 每次请求调 `authorize()`，走 `AuthorizeService` 的 TTL≤60s 缓存。Membership/RoleBinding 变更的主动 invalidate → **PR-037**。
+
+### 16.39 PR-033 Admin / Studio Router 切 RBAC（已交付）
+
+Track C 第四刀。PR-032 切完七个 runtime router 后,Admin 域四个 router
+仍走 `deps.require_admin_user`(`system_role == "admin"` 临时门控)。
+PR-033 把它们切到 `@require_rbac` + `AuthorizeService.authorize()`,并
+整体删除 `authz.py` 旧 stub(ADR §14 step 10)。
+
+- **router 切换(9 个 call site)**:
+  - `admin.py` 3 端点(`GET /stats`/`/runs`/`/usage`)→ `Permission.ADMIN_CONSOLE_READ`(read-only Org Console,ADR §4.1 `org:admin` 携带)。
+  - `channels.py` 1 端点(`POST /{name}/restart`) + `channel_connections.py` 2 端点(`POST|DELETE /{provider}/runtime-config`) + `mcp.py` 3 端点(`GET|PUT /mcp/config`、`POST /mcp/cache/reset`)→ `Permission.ADMIN_ORG_MANAGE`(system 级运维操作,`org:admin` 独有)。
+  - 非 admin 端点(`GET /api/channels/`、`GET /api/channels/providers` 等 read-only)保持无装饰器。
+- **`authz.py` 删除**:`require_permission`/`require_auth`/`AuthContext`/`Permissions`/`_ALL_PERMISSIONS`/`_authenticate`/`get_auth_context`/`_make_test_request_stub` 整体移除。`auth_middleware.py` 不再 stamp `request.state.auth`(只 stamp `request.state.user` + `auth_source`,权限检查交给 `@require_rbac` + AuthorizeService)。`deps.require_admin_user` 删除(9 个调用点全部切走)。
+- **`system_role == "admin"` 不是放行源**:`authorize()` 内部把 user 写死为 `system_role="user"`(走 cache path),依赖 TenantContext.principal。一个 `system_role="admin"` 但**无** `org:admin` binding 的用户调 admin 端点被 403 —— admin 的真实权限来源是 `/initialize` seed 的 `org:admin` RoleBinding,不是 `system_role` 字段。矩阵测试 `test_rbac_admin_routers.py::TestSystemRoleAdminIsNotAGrant` 锁定此语义。
+- **矩阵测试 `test_rbac_admin_routers.py`** 13 测(IAM-206/207/208/209):§9.1 角色×能力 6 cell(Oracle=`BUILTIN_ROLE_PERMISSIONS`,admin 全允许 admin 域,developer/viewer 全拒)+ §9.2 状态映射 4(无 membership / suspended membership / suspended org / 无 binding 全→403,用 `ADMIN_CONSOLE_READ` 作为最 permissive admin 能力)+ `system_role="admin"` 无 binding → 403 / 加 binding → 200(2 测)+ `policy.evaluated` allow(INFO)/deny(WARNING)观测(2 测)。挂最小 dummy router 隔离 handler 副作用。
+- **测试迁移**:
+  - 5 个 router 业务测试(`test_admin_console_api`/`test_channels_router`/`test_channel_connections_router`/`test_stateless_runs_owner_isolation`/`test_mcp_config_secrets`)迁移到 `make_rbac_test_app(bypass_authorize=True)`。
+  - 3 个 `test_403_when_not_admin` 重复 case(admin_console_api 每端点一个)删除 —— 矩阵测试一次性覆盖三个 admin capability × 三个角色的全部 cell,per-endpoint 重复测试是冗余。
+  - `test_mcp_config_secrets` 的 2 个直接调用 endpoint 测试(cache reset + update 副作用)改用 `call_unwrapped` 走 `__wrapped__` 跳过装饰器,只测 handler 业务副作用。
+  - `test_auth.py` 删除 ~210 行 `AuthContext`/`require_auth`/`require_permission` 直测块(12 个 test),保留 JWT/password/User 模型测试。新装饰器的等价覆盖在 `test_rbac_runtime_routers.py`(runtime 域)+ `test_rbac_admin_routers.py`(admin 域)。
+- **`_router_auth_helpers.py` 重构**:删除 `_StubAuthMiddleware`(唯一作用是 stamp `request.state.auth`,无消费方)/`make_authed_test_app`/`_STUB_PERMISSIONS`/`AuthContext` import。统一走 `make_rbac_test_app` 双模式。bypass 模式**不** bind TenantContext —— autouse `_auto_user_context` fixture(或 test-specific `_bound_tenant`)已 bind `org_id="default"`,ContextVar 继承让它透传到 request task;re-bind 会 clobber fixture 的值。
+- **ADR §15 验收勾选**:本 PR 勾掉「Router 无手写角色判断」+「旧 flat permission 放行路径已删除或被 Feature Flag 完全关闭」两项。其余 9 项(Viewer/Developer/API Key/membership/P99/最后 admin 保护/OIDC/system-admin 跨 Org/正反向矩阵)需 PR-034/035/036/037/040 等后续 PR。
+
+### 16.40 PR-033 不包含
+
+**严格不越界**:
+
+- **Studio router 切流**:无 `studio:*` 权限的 router 存在今天(Package/Release/Catalog 是 Track E PR-054 系列)。`Permission.STUDIO_*` 已在 PR-030 注册表,等 router 落地时直接挂 `@require_rbac(Permission.STUDIO_*)`。
+- **stateless `/api/runs/stream|wait` owner check 迁移**:与 PR-032 相同,这两个端点 undecorated,owner check 在 `services.start_run` 内(`services.py:335-357`)。`test_stateless_runs_owner_isolation` 继续覆盖现状。
+- **memory.py / metrics.py 审计**:这两个 router 当前无 admin gate(memory.py 走 internal_auth header 校验、metrics.py 是 `/metrics` public path)。如未来加 admin 门控,直接挂 `@require_rbac`,无需先走 `require_admin_user` 中转。
+- **`system_role == "admin"` 短路语义重设**:`authorize()` 内部 user 写死 `system_role="user"`(走 cache path),`system_role` 字段只在 `compute_permissions_for_user` 入口读一次(走 admin 短路 `SYSTEM_PERMISSIONS` —— 只含 `system:*` 前缀,不含 `admin:*`)。本 PR 不改这一行为;未来若要让 `system_role="admin"` 跨 Org 走专用接口(ADR §4.4),需 plumb `system_role` through `TenantContext.principal` —— 留给 system-admin 跨 Org PR。
+- **主动失效 / API Key scope / invited-removed → 404 细化**:同 PR-032 §16.38,延后 PR-035/037/multi-Org active phase。

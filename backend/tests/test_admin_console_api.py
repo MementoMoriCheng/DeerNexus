@@ -2,10 +2,14 @@
 
 Two layers, mirroring the established pattern:
 
-1. **Mock-based router tests** (``make_authed_test_app`` + ``app.state.run_store``
-   mock) — verify the 401/403/503/400 gates, response shaping, error scrubbing,
-   cursor round-trip, and ``limit+1`` ``has_more`` boundary. Mirrors
-   ``test_thread_token_usage.py`` and ``test_runs_api_endpoints.py``.
+1. **Mock-based router tests** (``make_rbac_test_app(bypass_authorize=True)``
+   + ``app.state.run_store`` mock) — verify the 503/400 gates, response
+   shaping, error scrubbing, cursor round-trip, and ``limit+1``
+   ``has_more`` boundary. Mirrors ``test_thread_token_usage.py`` and
+   ``test_runs_api_endpoints.py``. The 403-not-admin boundary is covered
+   for all admin capabilities by ``test_rbac_admin_routers.py`` against
+   the real Authorize Service; this suite runs in bypass mode so a
+   regular-user stub would also pass.
 
 2. **DB-backed production-scale test** (``init_engine`` + 1000 seeded rows) —
    pr-split-guide §11 explicitly requires "生产规模查询测试" for the Org
@@ -20,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from _router_auth_helpers import make_authed_test_app
+from _router_auth_helpers import make_rbac_test_app
 from fastapi.testclient import TestClient
 
 from app.gateway.pagination import decode_cursor, encode_cursor
@@ -36,11 +40,12 @@ from deerflow.contracts import (
 # Test app builders
 # ---------------------------------------------------------------------------
 
-# The admin gate reads ``system_role`` off the stub user. The default
-# ``_make_stub_user`` returns ``system_role="user"``; for admin-allowed paths
-# we override the user factory. ``require_admin_user`` first looks at
-# ``request.state.user`` (stamped by ``_StubAuthMiddleware``) so the factory
-# is the right injection point.
+# The Org Console endpoints are gated by ``@require_rbac(Permission.ADMIN_CONSOLE_READ)``
+# (PR-033). The decorator runs in bypass mode under these unit tests
+# (``make_rbac_test_app(bypass_authorize=True)``) so the handler business
+# logic is exercised without seeding an IAM stack. The 403 boundary
+# (viewer/developer/missing-binding) is pinned in
+# ``test_rbac_admin_routers.py`` against the real Authorize Service.
 
 
 def _make_admin_user():
@@ -54,20 +59,9 @@ def _make_admin_user():
     )
 
 
-def _make_regular_user():
-    from app.gateway.auth.models import User
-
-    return User(
-        email="regular@example.com",
-        password_hash="x",
-        system_role="user",
-        id=uuid4(),
-    )
-
-
 def _make_app(run_store=None, *, user_factory=None):
     """Build a test app with stub auth (admin or regular) + mock run store."""
-    app = make_authed_test_app(user_factory=user_factory or _make_admin_user)
+    app = make_rbac_test_app(bypass_authorize=True, user_factory=user_factory or _make_admin_user)
     app.include_router(admin_router.router)
     if run_store is not None:
         app.state.run_store = run_store
@@ -162,13 +156,12 @@ class TestOrgStats:
         assert body["window_end"].startswith("2026-07-18")
         store.aggregate_stats_by_org.assert_awaited_once()
 
-    def test_403_when_not_admin(self, _bound_tenant):
-        store = MagicMock()
-        store.aggregate_stats_by_org = AsyncMock(return_value=_stats_agg())
-        app = _make_app(store, user_factory=_make_regular_user)
-        with TestClient(app) as client:
-            r = client.get("/api/v1/admin/stats")
-        assert r.status_code == 403
+    # The 403-when-not-admin case (regular user / viewer / suspended
+    # membership) is covered for all admin capabilities by the matrix
+    # test ``test_rbac_admin_routers.py`` against the real Authorize
+    # Service. This suite runs in bypass mode (``make_rbac_test_app(
+    # bypass_authorize=True)``) so a regular-user stub would also
+    # pass — the boundary is intentionally not re-tested here.
 
     def test_400_when_no_tenant_context(self):
         # Force a tenant-less request: do NOT bind a contextvar for this test.
@@ -190,7 +183,7 @@ class TestOrgStats:
         reset_tenant_context  # noqa: B018 — silence lint
 
     def test_503_when_store_none(self, _bound_tenant):
-        app = make_authed_test_app(user_factory=_make_admin_user)
+        app = make_rbac_test_app(bypass_authorize=True, user_factory=_make_admin_user)
         app.include_router(admin_router.router)
         # No app.state.run_store at all → get_run_store returns None.
         with TestClient(app) as client:
@@ -329,16 +322,11 @@ class TestOrgRuns:
         assert r.status_code == 200
         assert r.json()["data"][0]["error"] is None
 
-    def test_403_when_not_admin(self, _bound_tenant):
-        store = MagicMock()
-        store.list_runs_by_org = AsyncMock(return_value=([], False))
-        app = _make_app(store, user_factory=_make_regular_user)
-        with TestClient(app) as client:
-            r = client.get("/api/v1/admin/runs")
-        assert r.status_code == 403
+    # The 403-when-not-admin boundary is covered by
+    # ``test_rbac_admin_routers.py`` (see TestOrgStats note above).
 
     def test_503_when_store_none(self, _bound_tenant):
-        app = make_authed_test_app(user_factory=_make_admin_user)
+        app = make_rbac_test_app(bypass_authorize=True, user_factory=_make_admin_user)
         app.include_router(admin_router.router)
         with TestClient(app) as client:
             r = client.get("/api/v1/admin/runs")
@@ -375,16 +363,11 @@ class TestOrgUsage:
         call_kwargs = store.aggregate_tokens_by_org.await_args.kwargs
         assert call_kwargs["include_active"] is True
 
-    def test_403_when_not_admin(self, _bound_tenant):
-        store = MagicMock()
-        store.aggregate_tokens_by_org = AsyncMock(return_value=_token_agg())
-        app = _make_app(store, user_factory=_make_regular_user)
-        with TestClient(app) as client:
-            r = client.get("/api/v1/admin/usage")
-        assert r.status_code == 403
+    # The 403-when-not-admin boundary is covered by
+    # ``test_rbac_admin_routers.py`` (see TestOrgStats note above).
 
     def test_503_when_store_none(self, _bound_tenant):
-        app = make_authed_test_app(user_factory=_make_admin_user)
+        app = make_rbac_test_app(bypass_authorize=True, user_factory=_make_admin_user)
         app.include_router(admin_router.router)
         with TestClient(app) as client:
             r = client.get("/api/v1/admin/usage")

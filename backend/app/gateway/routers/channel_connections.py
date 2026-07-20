@@ -16,8 +16,9 @@ from app.channels.runtime_config_store import (
     apply_runtime_connection_config,
     merge_runtime_channel_configs,
 )
-from app.gateway.deps import require_admin_user
+from app.gateway.rbac import require_rbac
 from deerflow.config.channel_connections_config import ChannelConnectionsConfig
+from deerflow.contracts import Permission
 from deerflow.persistence.channel_connections import ChannelConnectionRepository
 from deerflow.persistence.engine import get_session_factory
 
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 _STATE_TTL_SECONDS = 600
 _MAX_PENDING_CONNECT_CODES_PER_PROVIDER = 5
 _MASKED_CREDENTIAL_VALUE = "********"
-_ADMIN_REQUIRED_DETAIL = "Admin privileges required to manage channel runtime credentials."
 
 
 class ChannelCredentialFieldResponse(BaseModel):
@@ -555,8 +555,8 @@ async def disconnect_channel_connection(connection_id: str, request: Request) ->
 
 
 @router.delete("/{provider}/runtime-config", response_model=ChannelProviderResponse)
+@require_rbac(Permission.ADMIN_ORG_MANAGE)
 async def disconnect_channel_provider_runtime(provider: str, request: Request) -> ChannelProviderResponse:
-    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     config = await _get_channel_connections_config(request)
     if not config.enabled:
         raise HTTPException(status_code=400, detail="Channel connections are disabled")
@@ -637,12 +637,12 @@ async def connect_channel_provider(provider: str, request: Request) -> ChannelCo
 
 
 @router.post("/{provider}/runtime-config", response_model=ChannelProviderResponse)
+@require_rbac(Permission.ADMIN_ORG_MANAGE)
 async def configure_channel_provider_runtime(
     provider: str,
     body: ChannelRuntimeConfigRequest,
     request: Request,
 ) -> ChannelProviderResponse:
-    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     config = await _get_channel_connections_config(request)
     if not config.enabled:
         raise HTTPException(status_code=400, detail="Channel connections are disabled")

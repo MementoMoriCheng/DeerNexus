@@ -7,14 +7,13 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.gateway.deps import require_admin_user
+from app.gateway.rbac import require_rbac
 from deerflow.config.extensions_config import ExtensionsConfig, get_extensions_config, reload_extensions_config
+from deerflow.contracts import Permission
 from deerflow.mcp.cache import reset_mcp_tools_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["mcp"])
-
-_ADMIN_REQUIRED_DETAIL = "Admin privileges required to manage MCP configuration."
 
 
 _MCP_STDIO_COMMAND_ALLOWLIST_ENV = "DEER_FLOW_MCP_STDIO_COMMAND_ALLOWLIST"
@@ -230,6 +229,7 @@ def _merge_preserving_secrets(
     summary="Get MCP Configuration",
     description="Retrieve the current Model Context Protocol (MCP) server configurations.",
 )
+@require_rbac(Permission.ADMIN_ORG_MANAGE)
 async def get_mcp_configuration(request: Request) -> McpConfigResponse:
     """Get the current MCP configuration.
 
@@ -251,8 +251,6 @@ async def get_mcp_configuration(request: Request) -> McpConfigResponse:
         }
         ```
     """
-    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
-
     config = get_extensions_config()
 
     servers = {name: _mask_server_config(McpServerConfigResponse(**server.model_dump())) for name, server in config.mcp_servers.items()}
@@ -265,6 +263,7 @@ async def get_mcp_configuration(request: Request) -> McpConfigResponse:
     summary="Reset MCP Tools Cache",
     description=("Reset cached MCP tools and pooled sessions process-wide so tools are reloaded on next use. This affects all threads and users in the current Gateway process."),
 )
+@require_rbac(Permission.ADMIN_ORG_MANAGE)
 async def reset_mcp_tools_cache_endpoint(request: Request) -> McpCacheResetResponse:
     """Reset cached MCP tools and persistent sessions process-wide.
 
@@ -272,7 +271,6 @@ async def reset_mcp_tools_cache_endpoint(request: Request) -> McpCacheResetRespo
     servers. This affects all threads and users in the current Gateway process,
     and avoids relying on extensions_config.json mtime changes.
     """
-    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     reset_mcp_tools_cache()
     return McpCacheResetResponse(
         success=True,
@@ -286,6 +284,7 @@ async def reset_mcp_tools_cache_endpoint(request: Request) -> McpCacheResetRespo
     summary="Update MCP Configuration",
     description="Update Model Context Protocol (MCP) server configurations and save to file.",
 )
+@require_rbac(Permission.ADMIN_ORG_MANAGE)
 async def update_mcp_configuration(request: Request, body: McpConfigUpdateRequest) -> McpConfigResponse:
     """Update the MCP configuration.
 
@@ -319,7 +318,6 @@ async def update_mcp_configuration(request: Request, body: McpConfigUpdateReques
         ```
     """
     try:
-        await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
         _validate_mcp_update_request(body)
 
         # Get the current config path (or determine where to save it)

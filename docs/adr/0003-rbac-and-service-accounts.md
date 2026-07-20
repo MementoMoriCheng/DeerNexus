@@ -416,7 +416,9 @@ MVP 默认 `additive`：
 7. 双写或比较旧 / 新授权结果；
 8. 运行 RBAC 正反向和双 Org 测试；
 9. 切换新授权为权威；
-10. 删除 `_ALL_PERMISSIONS` 等旧放行路径。
+10. 删除 `_ALL_PERMISSIONS` 等旧放行路径。✅（PR-033：`authz.py` 整体删除，
+    `require_permission`/`require_auth`/`AuthContext`/`_ALL_PERMISSIONS`
+    全部移除；所有 runtime + admin router 走 `@require_rbac` + AuthorizeService）
 
 迁移期任何差异默认拒绝高风险写操作。
 
@@ -433,8 +435,10 @@ MVP 默认 `additive`：
 - [ ] 最后 org:admin 保护通过
 - [ ] OIDC allowlist group 映射通过
 - [ ] system-admin 跨 Org 操作走专用接口并审计
-- [ ] Router 无手写角色判断
-- [ ] 旧 flat permission 放行路径已删除或被 Feature Flag 完全关闭
+- [x] Router 无手写角色判断（PR-033：9 个 `require_admin_user` call site 全切到
+      `@require_rbac`，无内联 `system_role == "admin"` 判断残留）
+- [x] 旧 flat permission 放行路径已删除或被 Feature Flag 完全关闭（PR-033：
+      `authz.py` 整体删除，`_ALL_PERMISSIONS` flat-grant 不再存在）
 - [ ] RBAC 正反向矩阵和双 Org 测试进入 CI
 
 ---

@@ -6,7 +6,10 @@ request passes the cookie check, resolves the JWT payload to a real
 ``deerflow.runtime.user_context`` contextvar so that repository-layer
 owner filtering works automatically via the sentinel pattern.
 
-Fine-grained permission checks remain in authz.py decorators.
+Fine-grained permission checks live in the ``@require_rbac`` decorator
+(``app.gateway.rbac``), which reads the bound ``TenantContext`` and
+calls ``AuthorizeService.authorize()`` (PR-031). Authentication itself
+is fully handled here.
 """
 
 from collections.abc import Callable
@@ -24,7 +27,6 @@ from app.gateway.auth_disabled import (
     get_auth_disabled_user,
     is_auth_disabled,
 )
-from app.gateway.authz import _ALL_PERMISSIONS, AuthContext
 from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, get_internal_user, is_valid_internal_auth_token
 from deerflow.runtime.user_context import reset_current_user, set_current_user
 
@@ -69,12 +71,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     On success, stamps ``request.state.user`` and the
     ``deerflow.runtime.user_context`` contextvar so that repository-layer
-    owner filters work downstream without every route needing a
-    ``@require_auth`` decorator. Routes that need per-resource
-    authorization (e.g. "user A cannot read user B's thread by guessing
-    the URL") should additionally use ``@require_permission(...,
-    owner_check=True)`` for explicit enforcement — but authentication
-    itself is fully handled here.
+    owner filters work downstream without every route needing its own
+    authentication wrapper. Routes that need per-resource authorization
+    (e.g. "user A cannot read user B's thread by guessing the URL", or
+    "only ``org:admin`` can read the Org Console") additionally use
+    ``@require_rbac(..., owner_check=True)`` for explicit enforcement —
+    but authentication itself is fully handled here.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -130,13 +132,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        # Stamp both request.state.user (for the contextvar pattern)
-        # and request.state.auth (so @require_permission's "auth is
-        # None" branch short-circuits instead of running the entire
-        # JWT-decode + DB-lookup pipeline a second time per request).
+        # Stamp request.state.user (for the contextvar pattern).
+        # TenantResolutionMiddleware runs next and binds the
+        # TenantContext ContextVar that @require_rbac reads to call
+        # AuthorizeService.authorize(). No legacy AuthContext is
+        # stamped — fine-grained permission checks consult the
+        # DB-backed Authorize Service, not an in-memory stub.
         request.state.user = user
         request.state.auth_source = auth_source
-        request.state.auth = AuthContext(user=user, permissions=_ALL_PERMISSIONS)
         token = set_current_user(user)
         try:
             return await call_next(request)
