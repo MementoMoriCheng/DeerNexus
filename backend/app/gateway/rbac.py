@@ -143,6 +143,36 @@ def _is_internal_owner_request(request: Request) -> bool:
     return bool(header_owner)
 
 
+def _request_supplied_positionally(sig: inspect.Signature, args: tuple) -> bool:
+    """Return True if ``request`` was supplied as a positional argument.
+
+    Used by the ``require_rbac`` wrapper to distinguish two bind failures
+    that both surface as ``TypeError`` from ``Signature.bind``:
+
+    * Caller omitted ``request`` entirely (e.g.
+      ``upload_files("t1", files=[...])``) → we should inject the stub.
+    * Caller supplied ``request`` positionally but in the wrong slot or
+      with the wrong overall arity → we should defer to the wrapped
+      function and let it raise the canonical TypeError.
+
+    The heuristic: walk ``sig.parameters`` in declaration order and count
+    how many positional-or-keyword / positional-only parameters appear
+    before ``request``. If the caller supplied at least that many
+    positional args, ``request`` was likely supplied positionally.
+    """
+    params = list(sig.parameters.values())
+    positional_kinds = {
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    }
+    for idx, param in enumerate(params):
+        if param.name == "request":
+            return len(args) > idx
+        if param.kind not in positional_kinds:
+            return False
+    return False
+
+
 def require_rbac(
     permission: Permission,
     *,
@@ -186,35 +216,49 @@ def require_rbac(
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Resolve the ``request`` argument whether it was passed
             # positionally or as a keyword. Direct-call unit tests
-            # (e.g. ``tests/blocking_io``) invoke the decorated handler
-            # with ``request`` as a positional arg, while FastAPI always
-            # passes it as a keyword. ``inspect.signature.bind`` maps
-            # both forms to the same parameter slot without raising
-            # (it only binds — it does not call the function), so we
-            # avoid the ``got multiple values for argument 'request'``
-            # TypeError that naive ``kwargs.get("request")`` + stub
-            # injection produced when ``request`` was in ``args``.
+            # invoke the decorated handler in three shapes:
+            #
+            # * ``handler(request)`` — positional, with stub request.
+            # * ``handler(thread_id, body, request)`` — positional,
+            #   multi-arg (e.g. ``tests/blocking_io``).
+            # * ``handler(thread_id, files=[...])`` — ``request`` omitted
+            #   entirely (e.g. ``test_uploads_router`` direct calls).
+            #
+            # FastAPI itself always passes ``request`` as a keyword.
+            # ``inspect.signature.bind`` maps both positional and
+            # keyword forms to the same parameter slot without calling
+            # the function. When binding *succeeds*, we read ``request``
+            # out of the bound arguments. When binding *fails* because
+            # the caller omitted a required argument, we check whether
+            # it was ``request`` that was missing — if so, inject the
+            # stub (mirrors the pre-PR-033 behaviour of
+            # ``authz.require_permission``). Otherwise the caller passed
+            # a genuinely wrong shape, and we defer to the wrapped
+            # function so it raises the same TypeError it would have
+            # without the decorator.
             sig = inspect.signature(func)
             request: Any = None
+            bind_failed = False
             try:
                 bound = sig.bind(*args, **kwargs)
+                bound.apply_defaults()
                 request = bound.arguments.get("request")
             except TypeError:
-                # Argument binding failed (caller passed wrong shape).
-                # Defer to the wrapped function so it raises the same
-                # TypeError it would have without the decorator.
-                return await func(*args, **kwargs)
+                bind_failed = True
 
             if request is None:
-                # ``request`` is declared on ``func`` but not supplied
-                # by the caller — this is the direct-call unit test
-                # path that doesn't construct a FastAPI Request. Inject
-                # a minimal stub (mirrors the pre-PR-033 behaviour of
-                # ``authz.require_permission``).
-                if "request" in sig.parameters:
+                if "request" in sig.parameters and not _request_supplied_positionally(sig, args):
+                    # Caller omitted ``request`` — inject the bypass
+                    # stub. The ``_request_supplied_positionally``
+                    # guard prevents misattributing a bind failure to
+                    # ``request`` when the caller actually passed it
+                    # positionally in the wrong slot.
                     kwargs["request"] = _make_test_request_stub()
                     request = kwargs["request"]
-                else:
+                elif bind_failed:
+                    # Genuine caller error (wrong number of positional
+                    # args, unrelated to ``request``). Let the wrapped
+                    # function raise the canonical TypeError.
                     return await func(*args, **kwargs)
 
             if _request_has_bypass_flag(request):
