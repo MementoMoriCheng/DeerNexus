@@ -184,17 +184,38 @@ def require_rbac(
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            request = kwargs.get("request")
+            # Resolve the ``request`` argument whether it was passed
+            # positionally or as a keyword. Direct-call unit tests
+            # (e.g. ``tests/blocking_io``) invoke the decorated handler
+            # with ``request`` as a positional arg, while FastAPI always
+            # passes it as a keyword. ``inspect.signature.bind`` maps
+            # both forms to the same parameter slot without raising
+            # (it only binds — it does not call the function), so we
+            # avoid the ``got multiple values for argument 'request'``
+            # TypeError that naive ``kwargs.get("request")`` + stub
+            # injection produced when ``request`` was in ``args``.
+            sig = inspect.signature(func)
+            request: Any = None
+            try:
+                bound = sig.bind(*args, **kwargs)
+                request = bound.arguments.get("request")
+            except TypeError:
+                # Argument binding failed (caller passed wrong shape).
+                # Defer to the wrapped function so it raises the same
+                # TypeError it would have without the decorator.
+                return await func(*args, **kwargs)
+
             if request is None:
-                # Unit tests may call decorated route handlers directly
-                # without constructing a FastAPI Request object. Inject
-                # a minimal stub when the wrapped function declares
-                # ``request`` (mirrors authz.require_permission).
-                if "request" in inspect.signature(func).parameters:
+                # ``request`` is declared on ``func`` but not supplied
+                # by the caller — this is the direct-call unit test
+                # path that doesn't construct a FastAPI Request. Inject
+                # a minimal stub (mirrors the pre-PR-033 behaviour of
+                # ``authz.require_permission``).
+                if "request" in sig.parameters:
                     kwargs["request"] = _make_test_request_stub()
+                    request = kwargs["request"]
                 else:
                     return await func(*args, **kwargs)
-                request = kwargs["request"]
 
             if _request_has_bypass_flag(request):
                 return await func(*args, **kwargs)

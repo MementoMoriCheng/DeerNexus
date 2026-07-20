@@ -65,7 +65,14 @@ def _make_request(tmp_path) -> Request:
     store = ChannelRuntimeConfigStore(tmp_path / "channels" / "runtime-config.json")
     app.state.channel_runtime_config_store = store
     user = SimpleNamespace(id=UUID("11111111-2222-3333-4444-555555555555"), system_role="admin")
-    return Request({"type": "http", "app": app, "headers": [], "state": {"user": user}})
+    request = Request({"type": "http", "app": app, "headers": [], "state": {"user": user}})
+    # PR-033 swap: both handlers now carry ``@require_rbac(Permission.ADMIN_ORG_MANAGE)``.
+    # This suite exercises the handler's file IO, not the authz boundary
+    # (covered by ``test_rbac_admin_routers.py``), so set the test-bypass
+    # flag on ``request.state`` so ``require_rbac`` returns before touching
+    # the Authorize Service — no IAM seed needed.
+    request.state._deerflow_test_bypass_auth = True  # type: ignore[attr-defined]
+    return request
 
 
 async def test_configure_runtime_channel_does_not_block_event_loop(tmp_path) -> None:
