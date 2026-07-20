@@ -60,15 +60,15 @@ deerflow runtime → deerflow.contracts ← app.control_plane adapters
 
 ## 3. 通用类型约定
 
-| 类型 | 约定 |
-| --- | --- |
-| ID | UUID 的规范小写字符串；外部系统 ID 可为字符串但必须带 provider |
-| 时间 | UTC、RFC 3339、微秒可选；持久化使用带时区 timestamp |
-| 枚举 | 小写 snake_case；未知值由消费者安全拒绝或忽略，不能静默映射 |
-| 金额 | 十进制定点字符串 + ISO 4217 币种，不使用浮点数 |
-| Token | 非负整数 |
-| Metadata | JSON 对象；只允许显式白名单字段，不放密钥或完整 Prompt |
-| Schema 版本 | `schema_version`，初始值 `v1alpha1` |
+| 类型        | 约定                                                           |
+| ----------- | -------------------------------------------------------------- |
+| ID          | UUID 的规范小写字符串；外部系统 ID 可为字符串但必须带 provider |
+| 时间        | UTC、RFC 3339、微秒可选；持久化使用带时区 timestamp            |
+| 枚举        | 小写 snake_case；未知值由消费者安全拒绝或忽略，不能静默映射    |
+| 金额        | 十进制定点字符串 + ISO 4217 币种，不使用浮点数                 |
+| Token       | 非负整数                                                       |
+| Metadata    | JSON 对象；只允许显式白名单字段，不放密钥或完整 Prompt         |
+| Schema 版本 | `schema_version`，初始值 `v1alpha1`                            |
 
 所有跨进程 DTO 必须可 JSON 序列化。进程内可以使用不可变 dataclass/Pydantic model，但序列化结果必须符合本文字段。
 
@@ -272,13 +272,13 @@ MVP 支持的 obligation：
 
 ### 7.3 评估时机
 
-| 动作 | MVP 策略 |
-| --- | --- |
-| 创建 Run、选择模型、加载普通 Skill | 创建 Run 时评估并记录 `policy_version` |
-| 读取 Agent ReleaseRef | 创建 Run 时评估并固定 |
-| 高风险/关键工具调用 | 每次调用实时评估 |
-| 外部网络、写操作、凭证访问 | 每次调用实时评估 |
-| 长 Run 恢复 | 恢复前重评估 Run admission；已完成步骤不重放 |
+| 动作                               | MVP 策略                                     |
+| ---------------------------------- | -------------------------------------------- |
+| 创建 Run、选择模型、加载普通 Skill | 创建 Run 时评估并记录 `policy_version`       |
+| 读取 Agent ReleaseRef              | 创建 Run 时评估并固定                        |
+| 高风险/关键工具调用                | 每次调用实时评估                             |
+| 外部网络、写操作、凭证访问         | 每次调用实时评估                             |
+| 长 Run 恢复                        | 恢复前重评估 Run admission；已完成步骤不重放 |
 
 高风险判断由工具元数据与租户策略共同决定，调用方不得自行降级 `risk_class`。
 
@@ -480,29 +480,29 @@ ContractError(
 
 MVP 错误码：
 
-| Code | 语义 | Retryable |
-| --- | --- | --- |
-| `tenant_context_missing` | 可信租户上下文不存在 | 否 |
-| `tenant_mismatch` | 资源与当前 Org/Workspace 不一致 | 否 |
-| `authentication_invalid` | 凭证无效、过期或无法映射主体 | 否 |
-| `principal_disabled` | 已认证主体被禁用或撤销 | 否 |
-| `org_suspended` | Org 已暂停，不允许新 Run 或发布 | 否 |
-| `org_deleting` | Org 正在删除，只允许删除流程、受控导出、审计和取消 | 否 |
-| `permission_denied` | 已知作用域内权限不足 | 否 |
-| `policy_denied` | 策略明确拒绝 | 否 |
-| `policy_unavailable` | 策略无法安全评估 | 视调用方退避重试 |
-| `approval_required` | 动作需要企业审批 | 否 |
-| `release_not_found` | 通道没有可用制品 | 否 |
-| `release_not_published` | prod 指向未发布版本 | 否 |
-| `release_revoked` | 制品已撤销 | 否 |
-| `release_unpinned` | prod Run 缺少不可变 ReleaseRef / digest | 否 |
-| `release_tenant_mismatch` | 制品跨 Org | 否 |
-| `release_conflict` | ReleaseChannel 的 If-Match / row version 冲突 | 可 |
-| `run_conflict` | 幂等键或状态转换冲突 | 可 |
-| `idempotency_conflict` | 同幂等键对应不同请求 | 否 |
-| `audit_unavailable` | 强审计写路径不可用 | 可 |
-| `validation_error` | 请求不符合 Schema 或业务前置条件 | 否 |
-| `rate_limited` | 请求超过主体或 Org 限制 | 可 |
+| Code                      | 语义                                               | Retryable        |
+| ------------------------- | -------------------------------------------------- | ---------------- |
+| `tenant_context_missing`  | 可信租户上下文不存在                               | 否               |
+| `tenant_mismatch`         | 资源与当前 Org/Workspace 不一致                    | 否               |
+| `authentication_invalid`  | 凭证无效、过期或无法映射主体                       | 否               |
+| `principal_disabled`      | 已认证主体被禁用或撤销                             | 否               |
+| `org_suspended`           | Org 已暂停，不允许新 Run 或发布                    | 否               |
+| `org_deleting`            | Org 正在删除，只允许删除流程、受控导出、审计和取消 | 否               |
+| `permission_denied`       | 已知作用域内权限不足                               | 否               |
+| `policy_denied`           | 策略明确拒绝                                       | 否               |
+| `policy_unavailable`      | 策略无法安全评估                                   | 视调用方退避重试 |
+| `approval_required`       | 动作需要企业审批                                   | 否               |
+| `release_not_found`       | 通道没有可用制品                                   | 否               |
+| `release_not_published`   | prod 指向未发布版本                                | 否               |
+| `release_revoked`         | 制品已撤销                                         | 否               |
+| `release_unpinned`        | prod Run 缺少不可变 ReleaseRef / digest            | 否               |
+| `release_tenant_mismatch` | 制品跨 Org                                         | 否               |
+| `release_conflict`        | ReleaseChannel 的 If-Match / row version 冲突      | 可               |
+| `run_conflict`            | 幂等键或状态转换冲突                               | 可               |
+| `idempotency_conflict`    | 同幂等键对应不同请求                               | 否               |
+| `audit_unavailable`       | 强审计写路径不可用                                 | 可               |
+| `validation_error`        | 请求不符合 Schema 或业务前置条件                   | 否               |
+| `rate_limited`            | 请求超过主体或 Org 限制                            | 可               |
 
 对外 HTTP 映射见 [API 边界](api-boundaries.md)。内部日志可记录诊断信息，对外消息不得泄露资源存在性、策略细节或密钥信息。
 
@@ -595,13 +595,13 @@ Alpha 阶段允许调整字段，但每次变更必须：
 
 落地模块（`backend/packages/harness/deerflow/contracts/`）：
 
-| 模块 | 内容 | 对应章节 |
-| --- | --- | --- |
-| `versioning.py` | `CURRENT_SCHEMA_VERSION = "v1alpha1"` | §3、§13 |
-| `identity.py` | `PrincipalRef`、`PrincipalType` | §4 |
-| `context.py` | `TenantContext`、`AuthMethod`（DTO 与不变量） | §5、§5.1 |
-| `errors.py` | `ContractError`、`ErrorCode` 注册表、`is_retryable_code` | §12 |
-| `__init__.py` | 公开导出与分阶段交付说明 | §2 |
+| 模块            | 内容                                                     | 对应章节 |
+| --------------- | -------------------------------------------------------- | -------- |
+| `versioning.py` | `CURRENT_SCHEMA_VERSION = "v1alpha1"`                    | §3、§13  |
+| `identity.py`   | `PrincipalRef`、`PrincipalType`                          | §4       |
+| `context.py`    | `TenantContext`、`AuthMethod`（DTO 与不变量）            | §5、§5.1 |
+| `errors.py`     | `ContractError`、`ErrorCode` 注册表、`is_retryable_code` | §12      |
+| `__init__.py`   | 公开导出与分阶段交付说明                                 | §2       |
 
 关键不变量已在 DTO 层强制：
 
@@ -635,13 +635,13 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`principal_ref
 
 落地模块（`backend/packages/harness/deerflow/contracts/`）：
 
-| 模块 | 内容 | 对应章节 |
-| --- | --- | --- |
-| `policy.py` | `ResourceRef`、`PolicyRequest`、`PolicyDecision`、`PolicyObligation`、`PolicyEvaluator` Protocol；`RiskClass` / `Decision` / `ObligationType` 闭集 | §7 |
-| `release.py` | `ReleaseRef`、`ReleaseResolver` Protocol；`ReleaseChannel` 闭集 | §8 |
-| `runs.py` | `RunEnvelope`、`PolicySnapshotRef`、`EnvelopeIntegrity`；`EnvelopeSource` / `IntegrityAlgorithm` 闭集 | §6 |
-| `approval.py` | `ApprovalTicket`（MVP 仅预留中断引用）、`ApprovalStatus` 闭集 | §9 |
-| `events.py` | `AuditEvent`、`AuditSink` Protocol、`UsageRecord`、`UsageRecorder` Protocol；`AuditOutcome` / `UsageStatus` 闭集 | §10、§11 |
+| 模块          | 内容                                                                                                                                               | 对应章节 |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `policy.py`   | `ResourceRef`、`PolicyRequest`、`PolicyDecision`、`PolicyObligation`、`PolicyEvaluator` Protocol；`RiskClass` / `Decision` / `ObligationType` 闭集 | §7       |
+| `release.py`  | `ReleaseRef`、`ReleaseResolver` Protocol；`ReleaseChannel` 闭集                                                                                    | §8       |
+| `runs.py`     | `RunEnvelope`、`PolicySnapshotRef`、`EnvelopeIntegrity`；`EnvelopeSource` / `IntegrityAlgorithm` 闭集                                              | §6       |
+| `approval.py` | `ApprovalTicket`（MVP 仅预留中断引用）、`ApprovalStatus` 闭集                                                                                      | §9       |
+| `events.py`   | `AuditEvent`、`AuditSink` Protocol、`UsageRecord`、`UsageRecorder` Protocol；`AuditOutcome` / `UsageStatus` 闭集                                   | §10、§11 |
 
 关键不变量已在 DTO 层强制：
 
@@ -672,14 +672,14 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 
 落地模块（`backend/packages/harness/deerflow/contracts/context.py`）：§5.2 的四个生命周期函数与 `TenantContextError`，与 `TenantContext` DTO 同模块。
 
-| 符号 | 语义 | 对应章节 |
-| --- | --- | --- |
-| `_current_tenant` | `ContextVar[TenantContext \| None]`，`default=None`，名为 `deerflow_current_tenant` | §5.2 |
-| `bind_tenant_context(context) -> Token` | 绑定当前任务上下文，返回 reset token | §5.2 |
-| `reset_tenant_context(token) -> None` | 用 token 恢复先前值（必须 try/finally） | §5.2 |
-| `get_tenant_context() -> TenantContext \| None` | 读取或返回 None，**不回退默认 Org** | §5.2、§5.1 |
-| `require_tenant_context() -> TenantContext` | 未绑定时 `raise TenantContextError(TENANT_CONTEXT_MISSING)` | §5.2 |
-| `TenantContextError(RuntimeError)` | 携带稳定 `ErrorCode`，入口层可据此产出 `ContractError` 信封 | §12 |
+| 符号                                            | 语义                                                                                | 对应章节   |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------- | ---------- |
+| `_current_tenant`                               | `ContextVar[TenantContext \| None]`，`default=None`，名为 `deerflow_current_tenant` | §5.2       |
+| `bind_tenant_context(context) -> Token`         | 绑定当前任务上下文，返回 reset token                                                | §5.2       |
+| `reset_tenant_context(token) -> None`           | 用 token 恢复先前值（必须 try/finally）                                             | §5.2       |
+| `get_tenant_context() -> TenantContext \| None` | 读取或返回 None，**不回退默认 Org**                                                 | §5.2、§5.1 |
+| `require_tenant_context() -> TenantContext`     | 未绑定时 `raise TenantContextError(TENANT_CONTEXT_MISSING)`                         | §5.2       |
+| `TenantContextError(RuntimeError)`              | 携带稳定 `ErrorCode`，入口层可据此产出 `ContractError` 信封                         | §12        |
 
 关键不变量已在代码层强制：
 
@@ -702,11 +702,11 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 
 落地模块（`backend/app/gateway/`）：
 
-| 模块 | 内容 | 对应章节 |
-| --- | --- | --- |
-| `config.py` | `DEFAULT_BOOTSTRAP_ORG_ID` 常量 + `GatewayConfig.default_org_id`（env `DEER_FLOW_DEFAULT_ORG_ID`） | §5.2、ADR-0001 §6 |
+| 模块        | 内容                                                                                                                           | 对应章节                  |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
+| `config.py` | `DEFAULT_BOOTSTRAP_ORG_ID` 常量 + `GatewayConfig.default_org_id`（env `DEER_FLOW_DEFAULT_ORG_ID`）                             | §5.2、ADR-0001 §6         |
 | `tenant.py` | `TenantResolutionMiddleware`、`resolve_principal`、`resolve_tenant_context`（单 Org bootstrap）、auth-source→`AuthMethod` 映射 | §5.2、api-boundaries §6.1 |
-| `app.py` | 中间件注册（tenant 在 auth 之前 add，因 `BaseHTTPMiddleware` 反序执行） | §5.2 |
+| `app.py`    | 中间件注册（tenant 在 auth 之前 add，因 `BaseHTTPMiddleware` 反序执行）                                                        | §5.2                      |
 
 解析语义（单 Org bootstrap，ADR-0001 §6 / ADR-0002 §5 行 1）：
 
@@ -734,11 +734,11 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 
 落地模块：
 
-| 模块 | 内容 | 对应章节 |
-| --- | --- | --- |
-| `app/gateway/tenant_rebuild.py` | `rebuild_tenant_context(envelope)`、`bind_tenant_from_envelope(envelope)` | §5.2 rule 4 |
-| `runtime/runs/worker.py` | `RunContext.tenant` 字段（可选，向后兼容）；`run_agent` 入口防御性 rebind | §5.2 rule 3/4 |
-| `app/gateway/deps.py` | `get_run_context` 从 contextvar 填充 `tenant` | §5.2 |
+| 模块                            | 内容                                                                      | 对应章节      |
+| ------------------------------- | ------------------------------------------------------------------------- | ------------- |
+| `app/gateway/tenant_rebuild.py` | `rebuild_tenant_context(envelope)`、`bind_tenant_from_envelope(envelope)` | §5.2 rule 4   |
+| `runtime/runs/worker.py`        | `RunContext.tenant` 字段（可选，向后兼容）；`run_agent` 入口防御性 rebind | §5.2 rule 3/4 |
+| `app/gateway/deps.py`           | `get_run_context` 从 contextvar 填充 `tenant`                             | §5.2          |
 
 解析语义（§5.2 rule 3/4，ADR-0002 §3 invariant 6）：
 
@@ -764,10 +764,10 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 
 落地模块：
 
-| 模块 | 内容 | 对应章节 |
-| --- | --- | --- |
-| `app/gateway/tenant.py` | `resolve_channel_tenant_context(owner_user_id, request_id)`（无 `Request` 解析器，镜像 HTTP 路径的 `resolve_tenant_context`）；`channel_tenant_scope(owner_user_id, request_id)` contextmanager（bind/reset，owner 缺失时 no-op） | §5.2 rule 2/3/6 |
-| `app/channels/manager.py` | `ChannelManager._handle_message` 在 `_apply_effective_owner` 后、现有 try/except 外层用 `channel_tenant_scope` 包裹分发 | §5.2 rule 3 |
+| 模块                      | 内容                                                                                                                                                                                                                              | 对应章节        |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `app/gateway/tenant.py`   | `resolve_channel_tenant_context(owner_user_id, request_id)`（无 `Request` 解析器，镜像 HTTP 路径的 `resolve_tenant_context`）；`channel_tenant_scope(owner_user_id, request_id)` contextmanager（bind/reset，owner 缺失时 no-op） | §5.2 rule 2/3/6 |
+| `app/channels/manager.py` | `ChannelManager._handle_message` 在 `_apply_effective_owner` 后、现有 try/except 外层用 `channel_tenant_scope` 包裹分发                                                                                                           | §5.2 rule 3     |
 
 解析语义（§5.2 rule 3，补足而非替代 HTTP 回环）：
 
@@ -794,15 +794,15 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`policy_reques
 
 落地模块（按 §5.2 rule 6 / data-model §11.2 的应用仓储强制过滤要求）：
 
-| 模块 | 内容 | 对应章节 |
-| --- | --- | --- |
-| `contracts/context.py` | `AUTO_ORG` sentinel + `_OrgIdSentinel` + `resolve_org_id(value, *, method_name)`（三态：AUTO_ORG 读 bound tenant，缺失即 `RuntimeError` fail-closed；显式 `str` 覆盖；显式 `None` 绕过） | §5.2、§11.2 |
-| `persistence/thread_meta/{base,sql,memory}.py` | `ThreadMetaStore` 全方法加 `org_id` kw；SQL/memory 实现写入盖戳、读取/变更按 `org_id` 过滤（与 `user_id` 并存做纵深防御）；`check_access` 跨 Org 行恒 deny（即便 `user_id is None` 的 permissive 模式） | §7.1 |
-| `persistence/run/sql.py` + `runtime/runs/store/{base,memory}.py` + `runtime/runs/manager.py` | `RunStore.put` 仅 insert 盖戳 `org_id`（不可变，update 分支不覆盖）；`get`/`list_by_thread`/`delete` 加 `org_id` 谓词；`RunRecord.org_id` 字段经 `_store_put_payload` 显式线程化，保证 `RunManager` 重试仍 tenant-scoped | §7.2 |
-| `runtime/events/store/db.py` | `DbRunEventStore.put`/`put_batch` 软读 tenant 盖戳 `org_id`（Worker PR-014A 防御性 rebind 后通常有 tenant）；`list_messages`/`list_events`/`list_messages_by_run`/`count_messages`/`delete_by_thread`/`delete_by_run` 加 `org_id` 谓词 | §10（run_events） |
-| `persistence/feedback/sql.py` | `FeedbackRepository.create`/`upsert`（仅 insert 盖戳，org_id 不可变）；`get`/`list_by_run`/`list_by_thread`/`delete`/`delete_by_run`/`list_by_thread_grouped` 加 `org_id` 谓词 | feedback |
-| `app/gateway/services.py` `start_run` | 从 `run_ctx.tenant.org_id` 解析并显式传入 `create_or_reject(org_id=...)` 与 `thread_store.create(org_id=...)`；旧行修复路径补 `org_id=None` | §5.2 rule 3 |
-| `app/gateway/deps.py` 启动恢复、`app/gateway/routers/threads.py` 旧行修复 | 显式 `org_id=None`（system-admin 等价扫描/修复路径） | §11.2 |
+| 模块                                                                                         | 内容                                                                                                                                                                                                                                   | 对应章节          |
+| -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| `contracts/context.py`                                                                       | `AUTO_ORG` sentinel + `_OrgIdSentinel` + `resolve_org_id(value, *, method_name)`（三态：AUTO_ORG 读 bound tenant，缺失即 `RuntimeError` fail-closed；显式 `str` 覆盖；显式 `None` 绕过）                                               | §5.2、§11.2       |
+| `persistence/thread_meta/{base,sql,memory}.py`                                               | `ThreadMetaStore` 全方法加 `org_id` kw；SQL/memory 实现写入盖戳、读取/变更按 `org_id` 过滤（与 `user_id` 并存做纵深防御）；`check_access` 跨 Org 行恒 deny（即便 `user_id is None` 的 permissive 模式）                                | §7.1              |
+| `persistence/run/sql.py` + `runtime/runs/store/{base,memory}.py` + `runtime/runs/manager.py` | `RunStore.put` 仅 insert 盖戳 `org_id`（不可变，update 分支不覆盖）；`get`/`list_by_thread`/`delete` 加 `org_id` 谓词；`RunRecord.org_id` 字段经 `_store_put_payload` 显式线程化，保证 `RunManager` 重试仍 tenant-scoped               | §7.2              |
+| `runtime/events/store/db.py`                                                                 | `DbRunEventStore.put`/`put_batch` 软读 tenant 盖戳 `org_id`（Worker PR-014A 防御性 rebind 后通常有 tenant）；`list_messages`/`list_events`/`list_messages_by_run`/`count_messages`/`delete_by_thread`/`delete_by_run` 加 `org_id` 谓词 | §10（run_events） |
+| `persistence/feedback/sql.py`                                                                | `FeedbackRepository.create`/`upsert`（仅 insert 盖戳，org_id 不可变）；`get`/`list_by_run`/`list_by_thread`/`delete`/`delete_by_run`/`list_by_thread_grouped` 加 `org_id` 谓词                                                         | feedback          |
+| `app/gateway/services.py` `start_run`                                                        | 从 `run_ctx.tenant.org_id` 解析并显式传入 `create_or_reject(org_id=...)` 与 `thread_store.create(org_id=...)`；旧行修复路径补 `org_id=None`                                                                                            | §5.2 rule 3       |
+| `app/gateway/deps.py` 启动恢复、`app/gateway/routers/threads.py` 旧行修复                    | 显式 `org_id=None`（system-admin 等价扫描/修复路径）                                                                                                                                                                                   | §11.2             |
 
 org scope 语义（与 §11.2 一致）：
 
@@ -961,7 +961,7 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
   - `correlation.py`：`@dataclass(frozen=True) CorrelationContext`（§2 全集，除 `request_id` 外皆可选）+ `_current_correlation` ContextVar；`bind_correlation` / `reset_correlation` / `get_correlation` 镜像 `contracts/context.py:116-178` 的 tenant ContextVar 模式（task-local、`asyncio.create_task`/`to_thread` 继承、`try/finally` 配对）；`new_request_id()`（uuid4().hex）；`validate_inbound_request_id(raw)`（§2 "校验长度和字符，不能造成日志注入"：长度 1-128 + 仅 `[A-Za-z0-9._-]`，不合法返回 None → 视为未提供 → 生成新 id）。
   - `scrubbing.py`：§3.3 禁止字段清洗 choke-point（authorization / cookie / api_key / secret / token / dsn / password / prompt / response / claims / file_body / signed_url）。**token-aware 匹配**：单词条目（`token`/`secret`/…）按 key 拆 token 后做集合成员判断（`bearer_token`→[`bearer`,`token`]→命中 `token`；`tokens`→[`tokens`]→不命中），多词条目（`api_key`/`file_body`/`signed_url`）按子串。这样既抓 `httpx_authorization` / `sqlalchemy_password` 三方库前缀，又不误杀 `tokens`（计数）/`tokenization_ms`（耗时）这类良性复数。命中后值替换为 `"<redacted>"` 不丢键（让读者看到清洗介入，便于发现回归）。
   - `logging_setup.py`：替换 `app.py:40-44` 模块级 `logging.basicConfig`。`JsonFormatter`（§3.1 19 字段 JSON，canonical 顺序，timestamp=ISO8601 UTC millis、`deployment_version` 空则不写、`event_name`/`error_code`/`duration_ms`/`outcome` 从 `extra` 提顶、剩余 `extra` 经 `scrub_extra` 并入、exception/stack_info 序列化）；从 `get_correlation()` 读关联字段，从 `opentelemetry.trace.get_current_span().get_span_context()` 读 `trace_id`/`span_id`（invalid all-zeros 视为无 span，不写零 id 污染查询）。`TextFormatter` 保留今天 `"%(asctime)s - %(name)s - %(levelname)s - %(message)s"` + `[request_id=… org_id=…]` 后缀（无绑定时无后缀 = 今天行为）。`configure_logging(config)` 幂等：按 `_deerflow_observability` 标记只移除自己装的 handler（不动三方），重复调用不堆叠。`apply_logging_level`（`app_config.py:73`）不动，仍是单一 level 调整点。
-  - `tracing.py`：`init_tracing(config) -> shutdown_callable | None`——`otel.exporter_endpoint=None`（默认）返回 None（API 层 no-op tracer 已就位，调用点零成本）；否则延迟 import SDK + OTLP exporter，装配 `TracerProvider(resource=Resource.create({service.name/namespace/deployment.environment/version}))` + `BatchSpanProcessor(OTLPSpanExporter(endpoint))` + `ParentBased(TraceIdRatioBased(rate=sampler_ratio))`，返回 flush shutdown。**§5.4 tail sampler 延后**——TODO 标注：100% errors/Policy deny/Sandbox 违规保留规则需 Track C/E 的 deny/violation 代码路径。`get_tracer(name)` 薄封装；`set_span_attributes(span, **attrs)` §5.3 allow-list（org_id/run_id/thread_id/release_digest/policy_version/route/model/provider/tool_registry_name/decision/error_code + http.* 语义约定 + event_name/duration_ms），非白名单键 DEBUG 日志后丢，None 值跳过，非 recording span 不抛。
+  - `tracing.py`：`init_tracing(config) -> shutdown_callable | None`——`otel.exporter_endpoint=None`（默认）返回 None（API 层 no-op tracer 已就位，调用点零成本）；否则延迟 import SDK + OTLP exporter，装配 `TracerProvider(resource=Resource.create({service.name/namespace/deployment.environment/version}))` + `BatchSpanProcessor(OTLPSpanExporter(endpoint))` + `ParentBased(TraceIdRatioBased(rate=sampler_ratio))`，返回 flush shutdown。**§5.4 tail sampler 延后**——TODO 标注：100% errors/Policy deny/Sandbox 违规保留规则需 Track C/E 的 deny/violation 代码路径。`get_tracer(name)` 薄封装；`set_span_attributes(span, **attrs)` §5.3 allow-list（org_id/run_id/thread_id/release_digest/policy_version/route/model/provider/tool_registry_name/decision/error_code + http.\* 语义约定 + event_name/duration_ms），非白名单键 DEBUG 日志后丢，None 值跳过，非 recording span 不抛。
   - `events.py`：`emit_event(event_name, *, level=INFO, message=None, **fields)`——单一 choke-point（镜像 `tenancy/audit_events.py::emit_tenant_event`，便于 PR-063/未来 outbox 替换 sink）。从 `get_correlation()` 注入关联 ID；`fields` 经 `scrub_extra`；经独立 logger `observability.events` 记录（便于独立路由/索引），`event_name` 提顶为 log 字段且 set 到当前 span 的 `event_name` 属性（log↔trace join）。**MUST NOT raise**（observability 非正确性门禁）。
   - `__init__.py`：导出上述公共 API。
   - `deerflow/config/observability_config.py`（非 `observability/` 内——config 模型与 `tenancy_config.py`/`production_config.py` 同层）：`ObservabilityConfig` + `OtelConfig`（pydantic `ConfigDict(extra="forbid")`）。默认 = 今天行为（`log_format="text"` + `otel.exporter_endpoint=None`），可回滚。
@@ -978,7 +978,7 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
 - **关联 ID 注入防御**：inbound `X-Request-Id` 严格校验（长度 1-128 + `[A-Za-z0-9._-]`），杜绝换行 / JSON 结构 / 控制字符日志注入。
 - **OTel no-op 路径零成本**：endpoint 未配 → `trace.get_tracer` 返回 API 层 no-op tracer，`start_as_current_span` 是零成本 context manager。
 
-测试（148 个，全绿）：`test_observability_correlation.py`（contextvar 生命周期 + asyncio `create_task` 继承 + sibling 不泄漏 + inbound request_id 校验含日志注入 / JSON 结构 / 控制字符 / 128 字符边界）、`test_observability_scrubbing.py`（§3.3 全字段覆盖 + token-aware 良性复数 `tokens`/`responses`/`tokenization_ms` 不误杀 + 三方库前缀命中 + 不改输入）、`test_observability_config.py`（pydantic schema 默认 + AppConfig additive wiring + sampler_ratio 范围 + `extra="forbid"`）、`test_observability_logging.py`（JsonFormatter §3.1 19 字段 + canonical 顺序 + ISO8601 UTC + correlation 注入 + OTel trace_id 注入 + 不写零 trace_id + scrubbing choke-point + lifted 字段提顶 + exception 序列化；TextFormatter 今天形状 + 关联后缀；`configure_logging` 幂等不堆叠）、`test_observability_tracing.py`（`init_tracing` no-op vs wired 返回 callable + `set_span_attributes` §5.3 allow-list + None 跳过 + 非白名单丢 + 非 recording span 不抛）、`test_observability_events.py`（`emit_event` 形状 + correlation 注入 + scrubbing + active span set attribute + 无 active span 不抛 + logger/otel 失败不抛的 never-raises 契约）、`test_correlation_middleware.py`（request_id 生成/honor/校验拒绝/trim + HTTP 根 span 开闭 + route template rename + http.* 属性 + 4xx/5xx status_class + gateway.request.completed 事件 + §3.2 level 映射 + fail-open）。OTel 测试隔离用 `tests/conftest.py::otel_in_memory` fixture——直接赋 `opentelemetry.trace._TRACER_PROVIDER` 全局 + 重置 `_TRACER_PROVIDER_SET_ONCE._done`（OTel 公私 API 都被 `Once.do_once` 门禁至多一次/进程，`log=False` 只静默 warning 不启用 override；硬重置是唯一办法）。
+测试（148 个，全绿）：`test_observability_correlation.py`（contextvar 生命周期 + asyncio `create_task` 继承 + sibling 不泄漏 + inbound request_id 校验含日志注入 / JSON 结构 / 控制字符 / 128 字符边界）、`test_observability_scrubbing.py`（§3.3 全字段覆盖 + token-aware 良性复数 `tokens`/`responses`/`tokenization_ms` 不误杀 + 三方库前缀命中 + 不改输入）、`test_observability_config.py`（pydantic schema 默认 + AppConfig additive wiring + sampler_ratio 范围 + `extra="forbid"`）、`test_observability_logging.py`（JsonFormatter §3.1 19 字段 + canonical 顺序 + ISO8601 UTC + correlation 注入 + OTel trace_id 注入 + 不写零 trace_id + scrubbing choke-point + lifted 字段提顶 + exception 序列化；TextFormatter 今天形状 + 关联后缀；`configure_logging` 幂等不堆叠）、`test_observability_tracing.py`（`init_tracing` no-op vs wired 返回 callable + `set_span_attributes` §5.3 allow-list + None 跳过 + 非白名单丢 + 非 recording span 不抛）、`test_observability_events.py`（`emit_event` 形状 + correlation 注入 + scrubbing + active span set attribute + 无 active span 不抛 + logger/otel 失败不抛的 never-raises 契约）、`test_correlation_middleware.py`（request_id 生成/honor/校验拒绝/trim + HTTP 根 span 开闭 + route template rename + http.\* 属性 + 4xx/5xx status_class + gateway.request.completed 事件 + §3.2 level 映射 + fail-open）。OTel 测试隔离用 `tests/conftest.py::otel_in_memory` fixture——直接赋 `opentelemetry.trace._TRACER_PROVIDER` 全局 + 重置 `_TRACER_PROVIDER_SET_ONCE._done`（OTel 公私 API 都被 `Once.do_once` 门禁至多一次/进程，`log=False` 只静默 warning 不启用 override；硬重置是唯一办法）。
 
 全套 backend suite 零新失败（52 失败全为 main 上预存 Windows/sandbox/symlink flake，`comm -23` 对比 main 为空集；branch 多 148 通过：5104→5252）。
 
@@ -1017,7 +1017,7 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
 - **可回滚**：`MetricsConfig.enabled=false` → `/metrics` 404，counter 仍 bump（bump 成本远低于 trace，§6 SLO 全靠它——禁用是操作者 opt-out 不是安全默认）。
 - **不改 PR-062 fail-open / fail-closed 正交**：CorrelationMiddleware 仍 fail-open，TenantResolutionMiddleware 仍 fail-closed 503。
 
-测试（35 个，全绿）：`test_observability_metrics.py`（§4.1 allow-list 含高基数 id 拒绝 + `_make_counter/histogram/gauge` 拒绝 + `/metrics` payload bytes+content-type + supplied registry + `registry_health` + fail-on-bad-label + zero-tokens noop + `normalize_tool_name` 4 分支 + 全部 27 wired metrics bump 后 payload 含期望名 + 常量标签 stamp + `emit_event` fan-out 驱动 `http_requests_total` + unmapped 事件不 bump）；`test_observability_metrics_endpoint.py`（`/metrics` 200 canonical content-type + body 含 python_/process_ + 抓取不污染 http_requests_total + 4 dashboard JSON 解析且每面板有 expr + alerts YAML 解析 + 每条告警带 §9 八字段 annotation + severity ∈ p1/p2）。per-test `CollectorRegistry` 隔离 fixture（patch `_registry_or_default` + `reset_accessor_caches_for_tests`）避免污染 process-global REGISTRY。
+测试（35 个，全绿）：`test_observability_metrics.py`（§4.1 allow-list 含高基数 id 拒绝 + `_make_counter/histogram/gauge` 拒绝 + `/metrics` payload bytes+content-type + supplied registry + `registry_health` + fail-on-bad-label + zero-tokens noop + `normalize_tool_name` 4 分支 + 全部 27 wired metrics bump 后 payload 含期望名 + 常量标签 stamp + `emit_event` fan-out 驱动 `http_requests_total` + unmapped 事件不 bump）；`test_observability_metrics_endpoint.py`（`/metrics` 200 canonical content-type + body 含 python*/process* + 抓取不污染 http_requests_total + 4 dashboard JSON 解析且每面板有 expr + alerts YAML 解析 + 每条告警带 §9 八字段 annotation + severity ∈ p1/p2）。per-test `CollectorRegistry` 隔离 fixture（patch `_registry_or_default` + `reset_accessor_caches_for_tests`）避免污染 process-global REGISTRY。
 
 全套 backend suite：52 失败在 main、54 失败在 branch——`comm -23` 显示 branch 多的 2 个是 `test_mcp_file_migration`（main 上 15 失败 / branch 上 16 失败的同一 Windows/symlink flake，特定子测试随机抖动）+ `test_metrics_path_skipped_by_correlation_middleware`（独立运行 + 邻近 middleware 套件 108 测试全绿——属顺序相关 flake）。branch 多 33 通过（5252→5285，本 PR 35 新测试 - 2 重叠）。
 
@@ -1041,7 +1041,7 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
 
 - **新建 `app/doctor/probes/` 包（5 probe 模块 + `__init__.py`）**，每个 probe `async def probe_xxx(config) -> DoctorCheckResult`，镜像 `tenant_probe.py` 模式（throwaway / 进程内资源，所有失败容错为 FAIL 不抛，无 secret 泄漏——result message 只带 host 标签不带完整 URL/密码）：
   - **`postgres_probe.py::probe_postgres_connectivity`**（`postgres.connectivity`）：throwaway `create_async_engine`（不复用全局 engine，镜像 tenant_probe 隔离契约）→ `SELECT 1` + `SELECT version()` 校验版本 ≥15（runbook §5.1 FAIL 阈值）+ pool 配置信息性报告。backend=sqlite/memory → WARN 跳过（postgres probe 仅对 backend=postgres 有意义）。DB 错误 → FAIL 含 host 不含密码。
-  - **`metrics_probe.py::probe_metrics_presence`**（`metrics.presence`，新 check_id）：进程内调 `generate_metrics_payload()`（**不**做 HTTP `/metrics` 抓取——doctor 是 preflight 门禁常在 gateway 起之前跑），断言 29 个 wired §4 metric 名（`EXPECTED_METRIC_NAMES` tuple 显式列出，pin rename 回归）全在 payload。`observability.metrics.enabled=false` → WARN。缺 wired metric 但只有 `python_*`/`process_*`（doctor 跑在 gateway pod 外）→ WARN（环境条件非 wiring 回归）。缺部分 wired metric（至少有 `http_requests_total`）→ FAIL（rename/调用点回归）。
+  - **`metrics_probe.py::probe_metrics_presence`**（`metrics.presence`，新 check*id）：进程内调 `generate_metrics_payload()`（**不**做 HTTP `/metrics` 抓取——doctor 是 preflight 门禁常在 gateway 起之前跑），断言 29 个 wired §4 metric 名（`EXPECTED_METRIC_NAMES` tuple 显式列出，pin rename 回归）全在 payload。`observability.metrics.enabled=false` → WARN。缺 wired metric 但只有 `python*_`/`process\__`（doctor 跑在 gateway pod 外）→ WARN（环境条件非 wiring 回归）。缺部分 wired metric（至少有 `http_requests_total`）→ FAIL（rename/调用点回归）。
   - **`deployment_evidence_probe.py::probe_deployment_evidence`**（`deployment.evidence_validation`）：纯 config 校验。Profile S → PASS（无额外证据要求）；Profile H 缺 `profile_h_evidence` → FAIL；Profile W 缺 `profile_w_evidence` / `profile_w_rollback_evidence` / `profile_w_soak_hours(>0)` 任一 → FAIL（runbook §5.1 Profile W 最复杂、未记录 dispatch/rollback 是已知事故源）。不做 HTTP 可达性（那是发布流程的事）。
   - **`gateway_security_probe.py::probe_gateway_security`**（`gateway.security_validation`）：读 `DEER_FLOW_GATEWAY_URL` 环境变量（未设 → WARN 跳过，doctor 可独立验证 DB+观测层）。配置了 URL 时用 httpx 探测：`tls_enabled=true` 但 URL 是 `http://` → FAIL（声明与运行时不符）；CORS 声明但响应无 `Access-Control-Allow-Origin` → WARN（preflight 可能仍工作）；CSRF 启用但无 csrf cookie → WARN。httpx 失败 → FAIL 含 host 不含 auth。
   - **`rate_limit_probe.py::probe_rate_limit_retry_after`**（`gateway.rate_limit_retry_after`）：同样依赖 `DEER_FLOW_GATEWAY_URL`（未设或 `rate_limit_enabled=false` → WARN 跳过）。触发 auth login lockout：对 `/api/v1/auth/login/local` 连发 `threshold + 2` 次坏密码（fake user 不可命中真实账号），期望 429 + `Retry-After` 头 → PASS；429 无 Retry-After → WARN；无 429 → FAIL（rate-limit 运行时未生效）。
@@ -1082,6 +1082,7 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
 PR-063 §16.25/§16.26 明确：按 Org 数据走 `UsageRecord / Tenant Console (PR-060/061)`，**不**进共享 Grafana dashboard（§8.4/§4.1 不在共享 dashboard 暴露 org 标签）。本 PR 交付 Tenant Console 的后端只读 API 半边（PR-061 交付 UI）。
 
 **3 endpoints**（`backend/app/gateway/routers/admin.py`，前缀 `/api/v1/admin`，全 org-scoped）：
+
 - `GET /stats` → `OrgStatsResponse`：`total_runs`、`runs_by_status`（status→count）、`failure_rate`（`(error+timeout+interrupted)/total`）、`recent_runs_24h`、`recent_failures_24h`（独立于窗口的「现在」信号）、`window_start/window_end`。默认窗口 7 天。
 - `GET /runs` → `OrgRunListResponse`：keyset 分页 on `(created_at DESC, run_id DESC)`，`{data, has_more, next_cursor}` 信封。status/model/time-window 过滤。`OrgRunSummary.error` 截断 200 字符 + §3.3 禁词 substring 清洗（命中 → `<redacted>`，不截断输出避免首字节泄漏）。
 - `GET /usage` → `OrgTokenUsageResponse`：org 级 token 聚合，shape 镜像 `ThreadTokenUsageResponse`（`by_model`/`by_caller` 复用既有子模型），`org_id` 替换 `thread_id` + 加 `window_start/window_end`。`include_active` 控制是否含 running。
@@ -1091,6 +1092,7 @@ PR-063 §16.25/§16.26 明确：按 Org 数据走 `UsageRecord / Tenant Console 
 **org_id 解析**：`_require_org_id(request)` 从 bound `TenantContext`（`TenantResolutionMiddleware` 绑定）取 `ctx.org_id`，未绑定 → 400（Org Console 无 tenant 上下文无意义）。Admin 在 Org A 不能看 Org B——per-Org 隔离。
 
 **3 新 RunRepository 方法**（`persistence/run/sql.py` + `runtime/runs/store/base.py` ABC + `runtime/runs/store/memory.py` 三后端对称）：
+
 - `aggregate_tokens_by_org(org_id, *, since=None, until=None, include_active=False)`：镜像 `aggregate_tokens_by_thread`，filter 从 `thread_id` 换 `org_id` + 时间窗，走 `ix_runs_org_status_created` 索引。同 return shape。
 - `aggregate_stats_by_org(org_id, *, since=None, until=None)`：3 查询（status GROUP BY + COUNT 24h + COUNT 24h failures），全走 org 索引。
 - `list_runs_by_org(org_id, *, status, model, since, until, limit, cursor)`：keyset 分页 `(created_at DESC, run_id DESC)`，`limit+1` has_more，cursor 是 `(created_at, run_id)` tuple。返回 `(rows, has_more)`，rows 经 `_row_to_dict`。
@@ -1117,6 +1119,7 @@ PR-063 §16.25/§16.26 明确：按 Org 数据走 `UsageRecord / Tenant Console 
 消费 PR-060 的 3 个 endpoints，交付 3 个 Console 页面。pr-split-guide §11 明确「只做 Runs、Usage、Failure/Audit 入口；不扩审批、市场、KB」。
 
 **路由结构**：新建 `frontend/src/app/admin/` 独立 segment（不混 workspace sidebar——admin 上下文与 chat 语义错配）。
+
 - `layout.tsx`：`export const dynamic = "force-dynamic"` + SSR admin 门控（镜像 `workspace/layout.tsx` 的 `getServerSideUser` tagged-union switch），`authenticated` 分支检查 `result.user.system_role !== "admin"` → redirect `/workspace`（零客户端闪烁）；挂 `AuthProvider` + `QueryClientProvider` + `AdminShell` + `<Toaster />`（admin layout 自带 toaster 不复用 workspace）。
 - `page.tsx`：`redirect("/admin/runs")`（默认入口）。
 - `runs/page.tsx`、`usage/page.tsx`、`audit/page.tsx`：3 个 `"use client"` 页面。
@@ -1124,6 +1127,7 @@ PR-063 §16.25/§16.26 明确：按 Org 数据走 `UsageRecord / Tenant Console 
 **`AdminShell`**（`src/components/admin/admin-shell.tsx`）：顶部 sticky nav bar（Admin Console 标题 + Runs/Usage/Failure-Audit 三 link），`usePathname()` 高亮 active，`max-w-(--container-width-lg)` 内容区。复用 design tokens，不复用 workspace sidebar。
 
 **Admin API client**（`src/core/admin/{types,api,hooks,index}.ts`，镜像 `core/mcp/api.ts` + `core/memory/api.ts` 模式）：
+
 - `AdminRequestError`（`get isAdminRequired() → status === 403`，镜像 `MCPConfigRequestError`）+ FastAPI `{"detail": ...}` envelope 解析。
 - 3 fetch 函数 `fetchAdminStats/fetchAdminRuns/fetchAdminUsage`，全用 `import { fetch } from "@/core/api/fetcher"`（CSRF + credentials + 401→login 免费）；URL prefix `${getBackendBaseURL()}/api/v1/admin/*`（`getBackendBaseURL` 返回 "" → relative → 走 `next.config.js:71` catch-all rewrite → gateway）。
 - TanStack Query hooks：`useAdminStats`（`useQuery`）、`useAdminRuns`（`useInfiniteQuery`，`getNextPageParam: lastPage => lastPage.next_cursor`，消费 PR-060 keyset）、`useAdminUsage`（`useQuery`）。QueryKey `["admin","stats",params]` 等。
@@ -1133,6 +1137,7 @@ PR-063 §16.25/§16.26 明确：按 Org 数据走 `UsageRecord / Tenant Console 
 **Table primitive**（`src/components/ui/table.tsx`）：手写 shadcn new-york table（~80 行，标准 `<table>` + Tailwind + `data-slot` 属性），避免 `pnpm dlx shadcn add` 在 CI 跑网络。
 
 **Runs 页**（`src/app/admin/runs/page.tsx`）：
+
 - `RunsFilterBar`（status `Select` + 24h/7d/30d/All `Tabs`，`useState` 不引表单库，镜像 settings page）。
 - `RunsTable`（`useAdminRuns` infinite，keyset 翻页 `next_cursor`）—— 7 列（run_id 截断+Tooltip / status Badge 按 variant 映射 / model / total_tokens `formatTokenCount` / user / created_at `formatTimeAgo` / error 截断 200 字符）+ 底部 `Load more` 按钮（`fetchNextPage`，disabled 当 `isFetchingNextPage`）。
 - Loading → `<Skeleton>` 占位行；Error → `<Empty>` + error message；空列表 → `<Empty>`（icon + "No runs in this window"）。
@@ -1248,7 +1253,7 @@ Track C 第三刀落地。把 Thread/Run/Artifact/Upload/Feedback/Suggestion 七
 - **矩阵测试 `test_rbac_runtime_routers.py`** 23 测：§9.1 角色×能力 15 cell（Oracle=`BUILTIN_ROLE_PERMISSIONS`，admin/developer 全允许 runtime 域，viewer 拒 write/create/cancel）+ §9.2 状态映射 4（无 membership / suspended membership / suspended org / 无 binding 全→403）+ trusted-internal-caller 白名单短路（200）+ owner_check→404 + `policy.evaluated` allow（INFO）/deny（WARNING）观测。挂最小 dummy router 隔离 handler 副作用，URL path 用 `Permission.name`（非 `.value`，因 `runtime:thread:read` 的冒号不安全）。
 - **测试迁移**：6 个 router 业务测试（threads/artifacts/runs_api/messages_pagination/token_usage/cancel_run_idempotent + skills_custom_router 跨界 uploads）迁移到 `make_rbac_test_app(bypass_authorize=True)`；1 个 owner_check 边界测试（uploads `owner_check_passes=False`）走真路径。`test_stateless_runs_owner_isolation` 不迁移（测 services 层 owner check，不经 router 装饰器）。
 - **e2e 适配**：`require_rbac` 生效后 `/register` 用户无 IAM membership 被 403（设计预期：single-Org bootstrap 阶段只有 `/initialize` 创建的首个 admin 有完整 IAM）。两条路径：(a) 后端 e2e（`test_runtime_lifecycle_e2e` / `test_replay_golden` / `test_setup_agent_http_e2e_real_server`）的用户引导从 `/register` 改 `/initialize`（在 app event loop 内 seed IAM，避免 sync TestClient 路径跑 async seed 与 aiosqlite 连接池冲突）；(b) 前端 Playwright e2e（`real-backend-render` / `multi-run-order`）仍用 `/register`（浏览器不能直接调 `/initialize` 的「首个 admin」约束），改为 register 后调新增的 test-only `/api/test-only/seed-admin-iam` 端点（挂在 `seed_runs_router.py`，仅由 `scripts/run_replay_gateway.py` 在 `DEERFLOW_ENABLE_TEST_SEED=1` 时挂载，不进生产）。三个后端 e2e 的 `_reset_process_singletons` 副本补齐 `AuthorizeService._default_service`（PR-031 引入的新单元）+ `deps._cached_local_provider`/`_cached_repo`（admin 计数泄漏源）reset——此前这些 reset 列表未纳入 PR-031/032 引入的进程级单例。
-- **旧 stub 保留**：`authz.py`（`require_permission`/`_ALL_PERMISSIONS`/`AuthContext`）完整不动，Admin/Studio router（PR-033）和它们的测试还在用。删除时机：ADR §14 step 10，触发条件 = PR-033 切完 + 旧 acceptance §15 勾掉。
+- **旧 stub 保留（PR-032 时点）**：PR-032 不动 `authz.py`（`require_permission`/`_ALL_PERMISSIONS`/`AuthContext`），保留给 Admin/Studio router（PR-033）和它们的测试继续用。**PR-033 已完成此删除**（见 §16.39）—— ADR §14 step 10 的触发条件「PR-033 切完 + 旧 acceptance §15 勾掉」于 PR-033 满足。
 
 ### 16.38 PR-032 不包含
 
@@ -1262,3 +1267,35 @@ Track C 第三刀落地。把 Thread/Run/Artifact/Upload/Feedback/Suggestion 七
 - **普通 `/register` 用户 IAM 引导**：PR-032 让 RBAC 生效后，`/register` 创建的用户无 membership/role binding，调 runtime router 会 403。这是 single-Org bootstrap 阶段的设计预期（只有 `/initialize` 的首个 admin 有完整 IAM）。普通用户的 IAM 引导（自动 seed default org membership + 默认 role）延后到 **PR-034 ServiceAccount** 或独立的 membership 引导 PR——取决于产品设计（自服务 join vs admin 邀请）。当前 e2e 测试用 `/initialize` 绕过。
 - **API Key scope 收窄**：`authorize()` 已支持 scope 交集（PR-031），但 runtime router 不接 API Key 路径 → **PR-035**。
 - **主动失效**：`require_rbac` 每次请求调 `authorize()`，走 `AuthorizeService` 的 TTL≤60s 缓存。Membership/RoleBinding 变更的主动 invalidate → **PR-037**。
+
+### 16.39 PR-033 Admin / Studio Router 切 RBAC（已交付）
+
+Track C 第四刀。PR-032 切完七个 runtime router 后,Admin 域四个 router
+仍走 `deps.require_admin_user`(`system_role == "admin"` 临时门控)。
+PR-033 把它们切到 `@require_rbac` + `AuthorizeService.authorize()`,并
+整体删除 `authz.py` 旧 stub(ADR §14 step 10)。
+
+- **router 切换(9 个 call site)**:
+  - `admin.py` 3 端点(`GET /stats`/`/runs`/`/usage`)→ `Permission.ADMIN_CONSOLE_READ`(read-only Org Console,ADR §4.1 `org:admin` 携带)。
+  - `channels.py` 1 端点(`POST /{name}/restart`) + `channel_connections.py` 2 端点(`POST|DELETE /{provider}/runtime-config`) + `mcp.py` 3 端点(`GET|PUT /mcp/config`、`POST /mcp/cache/reset`)→ `Permission.ADMIN_ORG_MANAGE`(system 级运维操作,`org:admin` 独有)。
+  - 非 admin 端点(`GET /api/channels/`、`GET /api/channels/providers` 等 read-only)保持无装饰器。
+- **`authz.py` 删除**:`require_permission`/`require_auth`/`AuthContext`/`Permissions`/`_ALL_PERMISSIONS`/`_authenticate`/`get_auth_context`/`_make_test_request_stub` 整体移除。`auth_middleware.py` 不再 stamp `request.state.auth`(只 stamp `request.state.user` + `auth_source`,权限检查交给 `@require_rbac` + AuthorizeService)。`deps.require_admin_user` 删除(9 个调用点全部切走)。
+- **`system_role == "admin"` 不是放行源**:`authorize()` 内部把 user 写死为 `system_role="user"`(走 cache path),依赖 TenantContext.principal。一个 `system_role="admin"` 但**无** `org:admin` binding 的用户调 admin 端点被 403 —— admin 的真实权限来源是 `/initialize` seed 的 `org:admin` RoleBinding,不是 `system_role` 字段。矩阵测试 `test_rbac_admin_routers.py::TestSystemRoleAdminIsNotAGrant` 锁定此语义。
+- **矩阵测试 `test_rbac_admin_routers.py`** 13 测(IAM-206/207/208/209):§9.1 角色×能力 6 cell(Oracle=`BUILTIN_ROLE_PERMISSIONS`,admin 全允许 admin 域,developer/viewer 全拒)+ §9.2 状态映射 4(无 membership / suspended membership / suspended org / 无 binding 全→403,用 `ADMIN_CONSOLE_READ` 作为最 permissive admin 能力)+ `system_role="admin"` 无 binding → 403 / 加 binding → 200(2 测)+ `policy.evaluated` allow(INFO)/deny(WARNING)观测(2 测)。挂最小 dummy router 隔离 handler 副作用。
+- **测试迁移**:
+  - 5 个 router 业务测试(`test_admin_console_api`/`test_channels_router`/`test_channel_connections_router`/`test_stateless_runs_owner_isolation`/`test_mcp_config_secrets`)迁移到 `make_rbac_test_app(bypass_authorize=True)`。
+  - 3 个 `test_403_when_not_admin` 重复 case(admin_console_api 每端点一个)删除 —— 矩阵测试一次性覆盖三个 admin capability × 三个角色的全部 cell,per-endpoint 重复测试是冗余。
+  - `test_mcp_config_secrets` 的 2 个直接调用 endpoint 测试(cache reset + update 副作用)改用 `call_unwrapped` 走 `__wrapped__` 跳过装饰器,只测 handler 业务副作用。
+  - `test_auth.py` 删除 ~210 行 `AuthContext`/`require_auth`/`require_permission` 直测块(12 个 test),保留 JWT/password/User 模型测试。新装饰器的等价覆盖在 `test_rbac_runtime_routers.py`(runtime 域)+ `test_rbac_admin_routers.py`(admin 域)。
+- **`_router_auth_helpers.py` 重构**:删除 `_StubAuthMiddleware`(唯一作用是 stamp `request.state.auth`,无消费方)/`make_authed_test_app`/`_STUB_PERMISSIONS`/`AuthContext` import。统一走 `make_rbac_test_app` 双模式。bypass 模式**不** bind TenantContext —— autouse `_auto_user_context` fixture(或 test-specific `_bound_tenant`)已 bind `org_id="default"`,ContextVar 继承让它透传到 request task;re-bind 会 clobber fixture 的值。
+- **ADR §15 验收勾选**:本 PR 勾掉「Router 无手写角色判断」+「旧 flat permission 放行路径已删除或被 Feature Flag 完全关闭」两项。其余 9 项(Viewer/Developer/API Key/membership/P99/最后 admin 保护/OIDC/system-admin 跨 Org/正反向矩阵)需 PR-034/035/036/037/040 等后续 PR。
+
+### 16.40 PR-033 不包含
+
+**严格不越界**:
+
+- **Studio router 切流**:无 `studio:*` 权限的 router 存在今天(Package/Release/Catalog 是 Track E PR-054 系列)。`Permission.STUDIO_*` 已在 PR-030 注册表,等 router 落地时直接挂 `@require_rbac(Permission.STUDIO_*)`。
+- **stateless `/api/runs/stream|wait` owner check 迁移**:与 PR-032 相同,这两个端点 undecorated,owner check 在 `services.start_run` 内(`services.py:335-357`)。`test_stateless_runs_owner_isolation` 继续覆盖现状。
+- **memory.py / metrics.py 审计**:这两个 router 当前无 admin gate(memory.py 走 internal_auth header 校验、metrics.py 是 `/metrics` public path)。如未来加 admin 门控,直接挂 `@require_rbac`,无需先走 `require_admin_user` 中转。
+- **`system_role == "admin"` 短路语义重设**:`authorize()` 内部 user 写死 `system_role="user"`(走 cache path),`system_role` 字段只在 `compute_permissions_for_user` 入口读一次(走 admin 短路 `SYSTEM_PERMISSIONS` —— 只含 `system:*` 前缀,不含 `admin:*`)。本 PR 不改这一行为;未来若要让 `system_role="admin"` 跨 Org 走专用接口(ADR §4.4),需 plumb `system_role` through `TenantContext.principal` —— 留给 system-admin 跨 Org PR。
+- **主动失效 / API Key scope / invited-removed → 404 细化**:同 PR-032 §16.38,延后 PR-035/037/multi-Org active phase。

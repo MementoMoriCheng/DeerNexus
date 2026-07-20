@@ -10,12 +10,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from _router_auth_helpers import call_unwrapped
 from fastapi import HTTPException
 
-from app.gateway.deps import require_admin_user
 from app.gateway.routers import mcp as mcp_router
 from app.gateway.routers.mcp import (
-    _ADMIN_REQUIRED_DETAIL,
     _MCP_STDIO_COMMAND_ALLOWLIST_ENV,
     McpConfigUpdateRequest,
     McpOAuthConfigResponse,
@@ -319,32 +318,35 @@ def test_roundtrip_mask_then_merge_preserves_original_secrets():
 # ---------------------------------------------------------------------------
 # Security hardening: MCP config API authorization and stdio command policy
 # ---------------------------------------------------------------------------
+#
+# The ``@require_rbac(Permission.ADMIN_ORG_MANAGE)`` boundary on the three
+# MCP endpoints (GET/PUT /api/mcp/config, POST /api/mcp/cache/reset) is
+# pinned in ``test_rbac_admin_routers.py`` against the real Authorize
+# Service. The two tests below exercise the **handler side-effects**
+# (cache reset + tools reload) by unwrapping the decorator — they are
+# not authz tests.
 
 
-def _request_with_role(system_role: str):
+def _request_stub():
+    """Minimal Request stub for direct handler invocation.
+
+    Carries just enough state (``request.state.user``) for the handler
+    bodies; the ``@require_rbac`` decorator is bypassed via
+    :func:`call_unwrapped`, so no tenant / IAM seed is needed.
+    """
     return SimpleNamespace(
         state=SimpleNamespace(
             user=SimpleNamespace(
                 id="user-1",
-                system_role=system_role,
+                system_role="admin",
             )
         )
     )
 
 
 @pytest.mark.asyncio
-async def test_mcp_config_requires_admin_user():
-    """MCP config is system-level executable configuration, not a normal user setting."""
-    await require_admin_user(_request_with_role("admin"), detail=_ADMIN_REQUIRED_DETAIL)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await require_admin_user(_request_with_role("user"), detail=_ADMIN_REQUIRED_DETAIL)
-
-    assert exc_info.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_reset_mcp_tools_cache_endpoint_requires_admin_user(monkeypatch):
+async def test_reset_mcp_tools_cache_endpoint_resets_cache(monkeypatch):
+    """The cache-reset endpoint unconditionally calls ``reset_mcp_tools_cache``."""
     called = False
 
     def fake_reset_mcp_tools_cache():
@@ -353,16 +355,13 @@ async def test_reset_mcp_tools_cache_endpoint_requires_admin_user(monkeypatch):
 
     monkeypatch.setattr(mcp_router, "reset_mcp_tools_cache", fake_reset_mcp_tools_cache)
 
-    response = await reset_mcp_tools_cache_endpoint(_request_with_role("admin"))
+    # Bypass ``@require_rbac`` — this test exercises the handler body,
+    # not the authz boundary (covered by ``test_rbac_admin_routers.py``).
+    response = await call_unwrapped(reset_mcp_tools_cache_endpoint, _request_stub())
 
     assert called is True
     assert response.success is True
     assert "next use" in response.message
-
-    with pytest.raises(HTTPException) as exc_info:
-        await reset_mcp_tools_cache_endpoint(_request_with_role("user"))
-
-    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -391,8 +390,12 @@ async def test_update_mcp_configuration_resets_tools_cache(monkeypatch, tmp_path
     monkeypatch.setattr(mcp_router, "reload_extensions_config", lambda: reloaded_config)
     monkeypatch.setattr(mcp_router, "reset_mcp_tools_cache", fake_reset_mcp_tools_cache)
 
-    response = await update_mcp_configuration(
-        _request_with_role("admin"),
+    # Bypass ``@require_rbac`` — this test exercises the handler body
+    # (cache reset + reload round-trip), not the authz boundary
+    # (covered by ``test_rbac_admin_routers.py``).
+    response = await call_unwrapped(
+        update_mcp_configuration,
+        _request_stub(),
         McpConfigUpdateRequest(
             mcp_servers={
                 "github": McpServerConfigResponse(

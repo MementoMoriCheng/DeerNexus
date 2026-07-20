@@ -11,12 +11,13 @@ These power the three Console entry points defined for PR-061 Admin Console
 UI (Runs, Usage, Failure/Audit — the last reuses ``/runs?status=error,...``
 and the stats rollup rather than introducing a separate audit endpoint).
 
-Gating: temporary ``system_role == "admin"`` check via
-:func:`app.gateway.deps.require_admin_user`. The shared authz stub grants
-every authenticated user ``_ALL_PERMISSIONS`` (Track C RBAC is undelivered),
-so ``@require_permission`` is not yet a real gate. The
-:func:`require_admin_user` helper is the production-preserved choke point —
-Track C (PR-030/031) will swap it for a permission check in one place.
+Gating: ``@require_rbac(Permission.ADMIN_CONSOLE_READ)`` — the
+DB-backed Authorize Service (PR-031) gates every endpoint against the
+caller's effective permission set. ``org:admin`` carries
+``admin:console:read`` (ADR-0003 §4.1); ``org:developer`` / ``org:viewer``
+do not, so they receive 403. ``system_role == "admin"`` users must still
+carry an ``org:admin`` RoleBinding (seeded by ``/initialize`` /
+``seed-admin-iam``) — the ``system_role`` field alone is not a grant.
 
 Data source: existing ``RunRow`` token columns + ``token_usage_by_model``
 JSON. ``UsageRecord`` persistence is deferred (the contract requires
@@ -34,19 +35,18 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from app.gateway.deps import get_run_store, require_admin_user
+from app.gateway.deps import get_run_store
 from app.gateway.pagination import decode_cursor, encode_cursor
+from app.gateway.rbac import require_rbac
 from app.gateway.routers.thread_runs import (
     ThreadTokenUsageCallerBreakdown,
     ThreadTokenUsageModelBreakdown,
 )
-from deerflow.contracts import get_tenant_context
+from deerflow.contracts import Permission, get_tenant_context
 from deerflow.utils.time import coerce_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
-
-_ADMIN_REQUIRED_DETAIL = "Admin privileges required to access the Org Console API."
 
 # RunRow.error is free text and may carry a secret (DSN fragment, prompt
 # excerpt). Truncate to keep the response bounded and scrub forbidden
@@ -178,13 +178,13 @@ def _to_org_run_summary(row: dict[str, Any]) -> OrgRunSummary:
 
 
 @router.get("/stats", response_model=OrgStatsResponse)
+@require_rbac(Permission.ADMIN_CONSOLE_READ)
 async def org_stats(
     request: Request,
     since: datetime | None = Query(default=None, description="Window start (UTC). Defaults to now-7d."),
     until: datetime | None = Query(default=None, description="Window end (UTC). Defaults to now."),
 ) -> OrgStatsResponse:
     """Run status rollup for the caller's active Org."""
-    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     org_id = _require_org_id(request)
     run_store = get_run_store(request)
     if run_store is None:
@@ -203,6 +203,7 @@ async def org_stats(
 
 
 @router.get("/runs", response_model=OrgRunListResponse)
+@require_rbac(Permission.ADMIN_CONSOLE_READ)
 async def org_runs(
     request: Request,
     status_filter: str | None = Query(default=None, alias="status", description="Filter by run status."),
@@ -213,7 +214,6 @@ async def org_runs(
     cursor: str | None = Query(default=None, description="Opaque cursor from a prior page's next_cursor."),
 ) -> OrgRunListResponse:
     """Keyset-paginated run listing for the caller's active Org."""
-    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     org_id = _require_org_id(request)
     run_store = get_run_store(request)
     if run_store is None:
@@ -260,6 +260,7 @@ async def org_runs(
 
 
 @router.get("/usage", response_model=OrgTokenUsageResponse)
+@require_rbac(Permission.ADMIN_CONSOLE_READ)
 async def org_usage(
     request: Request,
     since: datetime | None = Query(default=None, description="Window start (UTC). Defaults to unbounded."),
@@ -267,7 +268,6 @@ async def org_usage(
     include_active: bool = Query(default=False, description="Include running runs in the aggregation."),
 ) -> OrgTokenUsageResponse:
     """Org-level token usage aggregation for the caller's active Org."""
-    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
     org_id = _require_org_id(request)
     run_store = get_run_store(request)
     if run_store is None:

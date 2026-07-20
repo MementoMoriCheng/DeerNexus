@@ -35,10 +35,12 @@ Track C 第三刀:把 Thread / Run / Artifact 四个 runtime router 从
   ``PERMISSION_DENIED`` → 403 default。invited/removed→404 的细化
   留 multi-Org active phase follow-up (single-Org bootstrap
   阶段实际不存在该场景)。
-* **保留旧 stub**: ``authz.py`` 整体不动 —— Admin/Studio router
-  (PR-033) 和它们的测试还在用旧 ``require_permission`` /
-  ``_deerflow_test_bypass_auth``。``authz.py`` 的删除时机: ADR §14
-  step 10,触发条件 = PR-033 切完 + 旧 acceptance §15 勾掉。
+* **旧 stub 已删除**: ``authz.py`` (``require_permission`` /
+  ``require_auth`` / ``AuthContext`` / ``_ALL_PERMISSIONS``) 随
+  PR-033 切完 Admin router 后整体删除,完成了 ADR §14 step 10
+  (删除 ``_ALL_PERMISSIONS`` 等旧放行路径)。所有 router 现在走
+  ``@require_rbac`` + DB-backed Authorize Service,无 flat-grant
+  stub 残留。
 """
 
 from __future__ import annotations
@@ -141,6 +143,36 @@ def _is_internal_owner_request(request: Request) -> bool:
     return bool(header_owner)
 
 
+def _request_supplied_positionally(sig: inspect.Signature, args: tuple) -> bool:
+    """Return True if ``request`` was supplied as a positional argument.
+
+    Used by the ``require_rbac`` wrapper to distinguish two bind failures
+    that both surface as ``TypeError`` from ``Signature.bind``:
+
+    * Caller omitted ``request`` entirely (e.g.
+      ``upload_files("t1", files=[...])``) → we should inject the stub.
+    * Caller supplied ``request`` positionally but in the wrong slot or
+      with the wrong overall arity → we should defer to the wrapped
+      function and let it raise the canonical TypeError.
+
+    The heuristic: walk ``sig.parameters`` in declaration order and count
+    how many positional-or-keyword / positional-only parameters appear
+    before ``request``. If the caller supplied at least that many
+    positional args, ``request`` was likely supplied positionally.
+    """
+    params = list(sig.parameters.values())
+    positional_kinds = {
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    }
+    for idx, param in enumerate(params):
+        if param.name == "request":
+            return len(args) > idx
+        if param.kind not in positional_kinds:
+            return False
+    return False
+
+
 def require_rbac(
     permission: Permission,
     *,
@@ -182,17 +214,52 @@ def require_rbac(
     def decorator(func: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            request = kwargs.get("request")
+            # Resolve the ``request`` argument whether it was passed
+            # positionally or as a keyword. Direct-call unit tests
+            # invoke the decorated handler in three shapes:
+            #
+            # * ``handler(request)`` — positional, with stub request.
+            # * ``handler(thread_id, body, request)`` — positional,
+            #   multi-arg (e.g. ``tests/blocking_io``).
+            # * ``handler(thread_id, files=[...])`` — ``request`` omitted
+            #   entirely (e.g. ``test_uploads_router`` direct calls).
+            #
+            # FastAPI itself always passes ``request`` as a keyword.
+            # ``inspect.signature.bind`` maps both positional and
+            # keyword forms to the same parameter slot without calling
+            # the function. When binding *succeeds*, we read ``request``
+            # out of the bound arguments. When binding *fails* because
+            # the caller omitted a required argument, we check whether
+            # it was ``request`` that was missing — if so, inject the
+            # stub (mirrors the pre-PR-033 behaviour of
+            # ``authz.require_permission``). Otherwise the caller passed
+            # a genuinely wrong shape, and we defer to the wrapped
+            # function so it raises the same TypeError it would have
+            # without the decorator.
+            sig = inspect.signature(func)
+            request: Any = None
+            bind_failed = False
+            try:
+                bound = sig.bind(*args, **kwargs)
+                bound.apply_defaults()
+                request = bound.arguments.get("request")
+            except TypeError:
+                bind_failed = True
+
             if request is None:
-                # Unit tests may call decorated route handlers directly
-                # without constructing a FastAPI Request object. Inject
-                # a minimal stub when the wrapped function declares
-                # ``request`` (mirrors authz.require_permission).
-                if "request" in inspect.signature(func).parameters:
+                if "request" in sig.parameters and not _request_supplied_positionally(sig, args):
+                    # Caller omitted ``request`` — inject the bypass
+                    # stub. The ``_request_supplied_positionally``
+                    # guard prevents misattributing a bind failure to
+                    # ``request`` when the caller actually passed it
+                    # positionally in the wrong slot.
                     kwargs["request"] = _make_test_request_stub()
-                else:
+                    request = kwargs["request"]
+                elif bind_failed:
+                    # Genuine caller error (wrong number of positional
+                    # args, unrelated to ``request``). Let the wrapped
+                    # function raise the canonical TypeError.
                     return await func(*args, **kwargs)
-                request = kwargs["request"]
 
             if _request_has_bypass_flag(request):
                 return await func(*args, **kwargs)

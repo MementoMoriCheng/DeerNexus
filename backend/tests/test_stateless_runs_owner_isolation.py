@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from _router_auth_helpers import make_authed_test_app
+from _router_auth_helpers import make_rbac_test_app
 from fastapi.testclient import TestClient
 from langgraph.store.memory import InMemoryStore
 
@@ -76,7 +76,7 @@ def _client(user):
     ``create_or_reject`` raises ``ConflictError`` so a request that passes the
     owner check short-circuits to 409 before any agent code runs.
     """
-    app = make_authed_test_app(user_factory=lambda: user)
+    app = make_rbac_test_app(bypass_authorize=True, user_factory=lambda: user)
     app.include_router(runs.router)
     app.state.thread_store = _make_thread_store()
     app.state.stream_bridge = MagicMock()

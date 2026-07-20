@@ -7,13 +7,12 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app.gateway.deps import require_admin_user
+from app.gateway.rbac import require_rbac
+from deerflow.contracts import Permission
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
-
-_ADMIN_REQUIRED_DETAIL = "Admin privileges required to manage channel runtime workers."
 
 
 class ChannelStatusResponse(BaseModel):
@@ -39,10 +38,9 @@ async def get_channels_status() -> ChannelStatusResponse:
 
 
 @router.post("/{name}/restart", response_model=ChannelRestartResponse)
+@require_rbac(Permission.ADMIN_ORG_MANAGE)
 async def restart_channel(name: str, request: Request) -> ChannelRestartResponse:
     """Restart a specific IM channel."""
-    await require_admin_user(request, detail=_ADMIN_REQUIRED_DETAIL)
-
     from app.channels.service import get_channel_service
 
     service = get_channel_service()

@@ -1,4 +1,14 @@
-"""Tests for authentication module: JWT, password hashing, AuthContext, and authz decorators."""
+"""Tests for authentication primitives: JWT, password hashing, and the User model.
+
+The legacy ``AuthContext`` / ``require_auth`` / ``require_permission``
+decorators lived in ``app.gateway.authz`` and were removed in PR-033
+(ADR §14 step 10) once every router had been swapped to
+``@require_rbac`` + the DB-backed Authorize Service. Coverage of the
+new decorator's role matrix and error mapping lives in
+``test_rbac_runtime_routers.py`` and ``test_rbac_admin_routers.py``;
+``test_iam_authorize.py`` covers ``AuthorizeService.authorize()``
+itself.
+"""
 
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,19 +16,11 @@ from uuid import uuid4
 
 import bcrypt
 import pytest
-from fastapi import FastAPI, HTTPException
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 from app.gateway.auth import create_access_token, decode_token, hash_password, verify_password
 from app.gateway.auth.models import User
 from app.gateway.auth.password import needs_rehash
-from app.gateway.authz import (
-    AuthContext,
-    Permissions,
-    get_auth_context,
-    require_auth,
-    require_permission,
-)
 
 # ── Password Hashing ────────────────────────────────────────────────────────
 
@@ -138,214 +140,14 @@ def test_create_token_custom_expiry():
     assert payload.sub == user_id
 
 
-# ── AuthContext ────────────────────────────────────────────────────────────
-
-
-def test_auth_context_unauthenticated():
-    """AuthContext with no user."""
-    ctx = AuthContext(user=None, permissions=[])
-    assert ctx.is_authenticated is False
-    assert ctx.has_permission("threads", "read") is False
-
-
-def test_auth_context_authenticated_no_perms():
-    """AuthContext with user but no permissions."""
-    user = User(id=uuid4(), email="test@example.com", password_hash="hash")
-    ctx = AuthContext(user=user, permissions=[])
-    assert ctx.is_authenticated is True
-    assert ctx.has_permission("threads", "read") is False
-
-
-def test_auth_context_has_permission():
-    """AuthContext permission checking."""
-    user = User(id=uuid4(), email="test@example.com", password_hash="hash")
-    perms = [Permissions.THREADS_READ, Permissions.THREADS_WRITE]
-    ctx = AuthContext(user=user, permissions=perms)
-    assert ctx.has_permission("threads", "read") is True
-    assert ctx.has_permission("threads", "write") is True
-    assert ctx.has_permission("threads", "delete") is False
-    assert ctx.has_permission("runs", "read") is False
-
-
-def test_auth_context_require_user_raises():
-    """require_user raises 401 when not authenticated."""
-    ctx = AuthContext(user=None, permissions=[])
-    with pytest.raises(HTTPException) as exc_info:
-        ctx.require_user()
-    assert exc_info.value.status_code == 401
-
-
-def test_auth_context_require_user_returns_user():
-    """require_user returns user when authenticated."""
-    user = User(id=uuid4(), email="test@example.com", password_hash="hash")
-    ctx = AuthContext(user=user, permissions=[])
-    returned = ctx.require_user()
-    assert returned == user
-
-
-# ── get_auth_context helper ─────────────────────────────────────────────────
-
-
-def test_get_auth_context_not_set():
-    """get_auth_context returns None when auth not set on request."""
-    mock_request = MagicMock()
-    # Make getattr return None (simulating attribute not set)
-    mock_request.state = MagicMock()
-    del mock_request.state.auth
-    assert get_auth_context(mock_request) is None
-
-
-def test_get_auth_context_set():
-    """get_auth_context returns the AuthContext from request."""
-    user = User(id=uuid4(), email="test@example.com", password_hash="hash")
-    ctx = AuthContext(user=user, permissions=[Permissions.THREADS_READ])
-
-    mock_request = MagicMock()
-    mock_request.state.auth = ctx
-
-    assert get_auth_context(mock_request) == ctx
-
-
-# ── require_auth decorator ──────────────────────────────────────────────────
-
-
-def test_require_auth_sets_auth_context():
-    """require_auth rejects unauthenticated requests with 401."""
-    from fastapi import Request
-
-    app = FastAPI()
-
-    @app.get("/test")
-    @require_auth
-    async def endpoint(request: Request):
-        ctx = get_auth_context(request)
-        return {"authenticated": ctx.is_authenticated}
-
-    with TestClient(app) as client:
-        # No cookie → 401 (require_auth independently enforces authentication)
-        response = client.get("/test")
-        assert response.status_code == 401
-
-
-def test_require_auth_requires_request_param():
-    """require_auth raises ValueError if request parameter is missing."""
-    import asyncio
-
-    @require_auth
-    async def bad_endpoint():  # Missing `request` parameter
-        pass
-
-    with pytest.raises(ValueError, match="require_auth decorator requires 'request' parameter"):
-        asyncio.run(bad_endpoint())
-
-
-# ── require_permission decorator ─────────────────────────────────────────────
-
-
-def test_require_permission_requires_auth():
-    """require_permission raises 401 when not authenticated."""
-    from fastapi import Request
-
-    app = FastAPI()
-
-    @app.get("/test")
-    @require_permission("threads", "read")
-    async def endpoint(request: Request):
-        return {"ok": True}
-
-    with TestClient(app) as client:
-        response = client.get("/test")
-        assert response.status_code == 401
-        assert "Authentication required" in response.json()["detail"]
-
-
-def test_require_permission_denies_wrong_permission():
-    """User without required permission gets 403."""
-    from fastapi import Request
-
-    app = FastAPI()
-    user = User(id=uuid4(), email="test@example.com", password_hash="hash")
-
-    @app.get("/test")
-    @require_permission("threads", "delete")
-    async def endpoint(request: Request):
-        return {"ok": True}
-
-    mock_auth = AuthContext(user=user, permissions=[Permissions.THREADS_READ])
-
-    with patch("app.gateway.authz._authenticate", return_value=mock_auth):
-        with TestClient(app) as client:
-            response = client.get("/test")
-            assert response.status_code == 403
-            assert "Permission denied" in response.json()["detail"]
-
-
-def _make_internal_owner_check_app():
-    """App with an owner_check route and a thread owned by ``alice``."""
-    import asyncio
-
-    from fastapi import Request
-    from langgraph.store.memory import InMemoryStore
-
-    from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
-
-    app = FastAPI()
-    thread_store = MemoryThreadMetaStore(InMemoryStore())
-    asyncio.run(thread_store.create("alice-thread", user_id="alice"))
-    app.state.thread_store = thread_store
-
-    @app.get("/threads/{thread_id}")
-    @require_permission("threads", "read", owner_check=True)
-    async def endpoint(thread_id: str, request: Request):
-        return {"ok": True}
-
-    return app
-
-
-def _internal_auth_context() -> AuthContext:
-    from types import SimpleNamespace
-
-    from app.gateway.internal_auth import INTERNAL_SYSTEM_ROLE
-
-    user = SimpleNamespace(id="default", system_role=INTERNAL_SYSTEM_ROLE)
-    return AuthContext(user=user, permissions=[Permissions.THREADS_READ])
-
-
-def test_require_permission_internal_role_scoped_by_owner_header():
-    """An internal caller acting for the thread owner passes the owner check."""
-    from app.gateway.internal_auth import INTERNAL_OWNER_USER_ID_HEADER_NAME
-
-    app = _make_internal_owner_check_app()
-    with patch("app.gateway.authz._authenticate", return_value=_internal_auth_context()):
-        with TestClient(app) as client:
-            response = client.get(
-                "/threads/alice-thread",
-                headers={INTERNAL_OWNER_USER_ID_HEADER_NAME: "alice"},
-            )
-    assert response.status_code == 200
-
-
-def test_require_permission_internal_role_denied_for_other_owner():
-    """The internal token must not grant access to another user's thread."""
-    from app.gateway.internal_auth import INTERNAL_OWNER_USER_ID_HEADER_NAME
-
-    app = _make_internal_owner_check_app()
-    with patch("app.gateway.authz._authenticate", return_value=_internal_auth_context()):
-        with TestClient(app) as client:
-            response = client.get(
-                "/threads/alice-thread",
-                headers={INTERNAL_OWNER_USER_ID_HEADER_NAME: "mallory"},
-            )
-    assert response.status_code == 404
-
-
-def test_require_permission_internal_role_without_header_is_scoped_to_internal_user():
-    """With no owner header, internal callers are scoped like before the bypass."""
-    app = _make_internal_owner_check_app()
-    with patch("app.gateway.authz._authenticate", return_value=_internal_auth_context()):
-        with TestClient(app) as client:
-            response = client.get("/threads/alice-thread")
-    assert response.status_code == 404
+# NOTE: The legacy ``AuthContext`` / ``require_auth`` / ``require_permission``
+# decorator tests (formerly ~210 lines here) were removed in PR-033 along
+# with ``app.gateway.authz`` itself. Equivalent coverage of the new
+# ``@require_rbac`` decorator (role matrix, owner_check, internal-caller
+# short-circuit, ``policy.evaluated`` observation) lives in
+# ``test_rbac_runtime_routers.py`` (Thread/Run/Artifact domain) and
+# ``test_rbac_admin_routers.py`` (Admin/Channels/MCP domain).
+# ``test_iam_authorize.py`` covers ``AuthorizeService.authorize()`` directly.
 
 
 # ── Weak JWT secret warning ──────────────────────────────────────────────────

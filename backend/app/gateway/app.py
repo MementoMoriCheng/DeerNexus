@@ -566,8 +566,8 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     app.include_router(auth.router)
 
     # Org Console API (PR-060) is mounted at /api/v1/admin. Read-only stats /
-    # runs / usage endpoints scoped to the caller's active Org; gated by the
-    # temporary ``require_admin_user`` helper until Track C RBAC lands.
+    # runs / usage endpoints scoped to the caller's active Org; gated by
+    # ``@require_rbac(Permission.ADMIN_CONSOLE_READ)`` (PR-033).
     app.include_router(admin_router.router)
 
     # Feedback API is mounted at /api/threads/{thread_id}/runs/{run_id}/feedback
