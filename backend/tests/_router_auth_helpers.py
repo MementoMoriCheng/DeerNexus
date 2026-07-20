@@ -328,12 +328,7 @@ def make_rbac_test_app(
         return app
 
     if sf is None:
-        raise ValueError(
-            "make_rbac_test_app(bypass_authorize=False) requires sf=... "
-            "(a session factory from rbac_sf / get_session_factory). "
-            "Pass bypass_authorize=True for business-logic tests that "
-            "don't exercise the RBAC boundary."
-        )
+        raise ValueError("make_rbac_test_app(bypass_authorize=False) requires sf=... (a session factory from rbac_sf / get_session_factory). Pass bypass_authorize=True for business-logic tests that don't exercise the RBAC boundary.")
 
     # Re-bind the AuthorizeService singleton to the test factory so
     # ``require_rbac``'s ``get_authorize_service()`` call hits the
@@ -485,11 +480,7 @@ async def bind_rbac_role(
     from deerflow.persistence.iam.model import RoleBindingRow, RoleRow
 
     async with sf() as session:
-        role = (
-            await session.execute(
-                select(RoleRow).where(RoleRow.name == role_name, RoleRow.is_system.is_(True))
-            )
-        ).scalar_one()
+        role = (await session.execute(select(RoleRow).where(RoleRow.name == role_name, RoleRow.is_system.is_(True)))).scalar_one()
         binding = RoleBindingRow(
             id=uuid4().hex,
             org_id=org_id,

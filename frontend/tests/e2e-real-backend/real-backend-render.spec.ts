@@ -64,6 +64,14 @@ test.describe("real backend render (replay, no API key)", () => {
       data: { email, password: "very-strong-password-123" },
     });
     expect(resp.status(), await resp.text()).toBe(201);
+
+    // PR-032: runtime routers now consult AuthorizeService.authorize(), which
+    // requires an OrgMembership + role binding. /register creates neither, so
+    // seed admin IAM via the replay gateway's test-only endpoint (mounted only
+    // by scripts/run_replay_gateway.py, never in production) or every
+    // /api/threads/*/runs/stream call 403s and the render assertion times out.
+    const iam = await context.request.post(`${APP}/api/test-only/seed-admin-iam`);
+    expect(iam.status(), await iam.text()).toBe(200);
   });
 
   test("renders the replayed auto-title + suggestions from a real backend", async ({

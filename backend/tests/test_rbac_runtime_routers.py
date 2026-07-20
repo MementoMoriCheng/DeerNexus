@@ -112,13 +112,9 @@ class TestRoleMatrix:
             response = client.get(_PROBE_PATH[permission])
 
         if expected_allow:
-            assert response.status_code == 200, (
-                f"{role_name} should allow {cap_name} ({permission.value}) but got {response.status_code}: {response.text}"
-            )
+            assert response.status_code == 200, f"{role_name} should allow {cap_name} ({permission.value}) but got {response.status_code}: {response.text}"
         else:
-            assert response.status_code == 403, (
-                f"{role_name} should deny {cap_name} ({permission.value}) but got {response.status_code}: {response.text}"
-            )
+            assert response.status_code == 403, f"{role_name} should deny {cap_name} ({permission.value}) but got {response.status_code}: {response.text}"
 
 
 # ===========================================================================
