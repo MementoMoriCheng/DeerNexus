@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from _router_auth_helpers import make_authed_test_app
+from _router_auth_helpers import make_rbac_test_app
 from _run_message_pagination_helpers import assert_run_message_page
 from fastapi.testclient import TestClient
 
@@ -17,7 +17,7 @@ from app.gateway.routers import runs
 
 def _make_app(run_store=None, event_store=None, feedback_repo=None):
     """Build a test FastAPI app with stub auth and mocked state."""
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(runs.router)
 
     if run_store is not None:

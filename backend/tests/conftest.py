@@ -266,3 +266,47 @@ def otel_in_memory():
         fresh = TracerProvider()
         otel_trace._TRACER_PROVIDER = fresh  # type: ignore[attr-defined]
         otel_trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# PR-032 — RBAC session-factory fixture
+# ---------------------------------------------------------------------------
+#
+# ``require_rbac`` calls ``AuthorizeService.authorize()``, which JOINs
+# role_bindings → roles on the DB. Real-authorize-mode router tests
+# therefore need a live (isolated) SQLite engine. Defined here (the
+# standard pytest fixture location) rather than in ``_router_auth_helpers``
+# so test modules request it via parameter injection without an explicit
+# import — mirrors the existing ``sf`` fixture in ``test_iam_authorize``.
+# Pair with ``bootstrap_rbac`` from ``_router_auth_helpers`` to seed the
+# org / roles / user / membership / binding rows.
+
+
+@pytest.fixture
+async def rbac_sf(tmp_path):
+    """Boot an isolated SQLite DB; yield its session factory (PR-032).
+
+    Counterpart of ``test_iam_authorize.sf`` for the router-test family.
+    Every TestClient-based router test migrated to ``make_rbac_test_app``
+    in real-authorize mode should depend on this fixture, then call
+    ``bootstrap_rbac`` before building the app. The factory is also what
+    ``make_rbac_test_app`` re-binds the ``AuthorizeService`` singleton
+    against, so ``require_rbac``'s ``get_authorize_service()`` reads the
+    rows this fixture seeds.
+    """
+    from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'rbac_router.db'}"
+    await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+    try:
+        yield get_session_factory()
+    finally:
+        await close_engine()
+        # Drop the AuthorizeService singleton so it doesn't outlive this
+        # test's session factory — ``make_rbac_test_app(sf=...)`` rebinds
+        # it, and a stale singleton would send later tests' authorize()
+        # calls at a closed engine. Mirrors the reset the e2e tests do in
+        # their own ``_reset_process_singletons`` copies.
+        from app.gateway.authorize import reset_authorize_service_for_testing
+
+        reset_authorize_service_for_testing()

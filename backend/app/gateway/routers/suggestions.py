@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends, Request
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from app.gateway.authz import require_permission
 from app.gateway.deps import get_config
+from app.gateway.rbac import require_rbac
 from deerflow.config.app_config import AppConfig
+from deerflow.contracts.rbac import Permission
 from deerflow.models import create_chat_model
 
 logger = logging.getLogger(__name__)
@@ -144,7 +145,7 @@ async def get_suggestions_config(
     summary="Generate Follow-up Questions",
     description="Generate short follow-up questions a user might ask next, based on recent conversation context.",
 )
-@require_permission("threads", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_THREAD_READ, owner_check=True)
 async def generate_suggestions(
     thread_id: str,
     body: SuggestionsRequest,

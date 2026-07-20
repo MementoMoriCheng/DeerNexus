@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from _router_auth_helpers import make_authed_test_app
+from _router_auth_helpers import make_rbac_test_app
 from fastapi.testclient import TestClient
 
 from app.gateway.routers import thread_runs
@@ -25,7 +25,7 @@ THREAD_ID = "thread-cancel-test"
 
 
 def _make_app(mgr: RunManager) -> TestClient:
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(thread_runs.router)
     app.state.run_manager = mgr
     return TestClient(app, raise_server_exceptions=False)

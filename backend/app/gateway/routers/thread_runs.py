@@ -19,10 +19,11 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.gateway.authz import require_permission
 from app.gateway.deps import get_checkpointer, get_current_user, get_feedback_repo, get_run_event_store, get_run_manager, get_run_store, get_stream_bridge
 from app.gateway.pagination import trim_run_message_page
+from app.gateway.rbac import require_rbac
 from app.gateway.services import sse_consumer, start_run, wait_for_run_completion
+from deerflow.contracts.rbac import Permission
 from deerflow.runtime import RunRecord, RunStatus, serialize_channel_values_for_api
 
 logger = logging.getLogger(__name__)
@@ -140,7 +141,7 @@ def _record_to_response(record: RunRecord) -> RunResponse:
 
 
 @router.post("/{thread_id}/runs", response_model=RunResponse)
-@require_permission("runs", "create", owner_check=True, require_existing=True)
+@require_rbac(Permission.RUNTIME_RUN_CREATE, owner_check=True, require_existing=True)
 async def create_run(thread_id: str, body: RunCreateRequest, request: Request) -> RunResponse:
     """Create a background run (returns immediately)."""
     record = await start_run(body, thread_id, request)
@@ -148,7 +149,7 @@ async def create_run(thread_id: str, body: RunCreateRequest, request: Request) -
 
 
 @router.post("/{thread_id}/runs/stream")
-@require_permission("runs", "create", owner_check=True, require_existing=True)
+@require_rbac(Permission.RUNTIME_RUN_CREATE, owner_check=True, require_existing=True)
 async def stream_run(thread_id: str, body: RunCreateRequest, request: Request) -> StreamingResponse:
     """Create a run and stream events via SSE.
 
@@ -176,7 +177,7 @@ async def stream_run(thread_id: str, body: RunCreateRequest, request: Request) -
 
 
 @router.post("/{thread_id}/runs/wait", response_model=dict)
-@require_permission("runs", "create", owner_check=True, require_existing=True)
+@require_rbac(Permission.RUNTIME_RUN_CREATE, owner_check=True, require_existing=True)
 async def wait_run(thread_id: str, body: RunCreateRequest, request: Request) -> dict:
     """Create a run and block until it completes, returning the final state."""
     bridge = get_stream_bridge(request)
@@ -203,7 +204,7 @@ async def wait_run(thread_id: str, body: RunCreateRequest, request: Request) -> 
 
 
 @router.get("/{thread_id}/runs", response_model=list[RunResponse])
-@require_permission("runs", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_RUN_READ, owner_check=True)
 async def list_runs(thread_id: str, request: Request) -> list[RunResponse]:
     """List all runs for a thread."""
     run_mgr = get_run_manager(request)
@@ -213,7 +214,7 @@ async def list_runs(thread_id: str, request: Request) -> list[RunResponse]:
 
 
 @router.get("/{thread_id}/runs/{run_id}", response_model=RunResponse)
-@require_permission("runs", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_RUN_READ, owner_check=True)
 async def get_run(thread_id: str, run_id: str, request: Request) -> RunResponse:
     """Get details of a specific run."""
     run_mgr = get_run_manager(request)
@@ -225,7 +226,7 @@ async def get_run(thread_id: str, run_id: str, request: Request) -> RunResponse:
 
 
 @router.post("/{thread_id}/runs/{run_id}/cancel")
-@require_permission("runs", "cancel", owner_check=True, require_existing=True)
+@require_rbac(Permission.RUNTIME_RUN_CANCEL, owner_check=True, require_existing=True)
 async def cancel_run(
     thread_id: str,
     run_id: str,
@@ -260,7 +261,7 @@ async def cancel_run(
 
 
 @router.get("/{thread_id}/runs/{run_id}/join")
-@require_permission("runs", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_RUN_READ, owner_check=True)
 async def join_run(thread_id: str, run_id: str, request: Request) -> StreamingResponse:
     """Join an existing run's SSE stream."""
     run_mgr = get_run_manager(request)
@@ -288,7 +289,7 @@ async def join_run(thread_id: str, run_id: str, request: Request) -> StreamingRe
 # warn about a duplicate operation id during OpenAPI generation.
 @router.get("/{thread_id}/runs/{run_id}/stream", response_model=None)
 @router.post("/{thread_id}/runs/{run_id}/stream", response_model=None)
-@require_permission("runs", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_RUN_READ, owner_check=True)
 async def stream_existing_run(
     thread_id: str,
     run_id: str,
@@ -340,7 +341,7 @@ async def stream_existing_run(
 
 
 @router.get("/{thread_id}/messages")
-@require_permission("runs", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_RUN_READ, owner_check=True)
 async def list_thread_messages(
     thread_id: str,
     request: Request,
@@ -385,7 +386,7 @@ async def list_thread_messages(
 
 
 @router.get("/{thread_id}/runs/{run_id}/messages")
-@require_permission("runs", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_RUN_READ, owner_check=True)
 async def list_run_messages(
     thread_id: str,
     run_id: str,
@@ -411,7 +412,7 @@ async def list_run_messages(
 
 
 @router.get("/{thread_id}/runs/{run_id}/events")
-@require_permission("runs", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_RUN_READ, owner_check=True)
 async def list_run_events(
     thread_id: str,
     run_id: str,
@@ -426,7 +427,7 @@ async def list_run_events(
 
 
 @router.get("/{thread_id}/token-usage", response_model=ThreadTokenUsageResponse)
-@require_permission("threads", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_THREAD_READ, owner_check=True)
 async def thread_token_usage(
     thread_id: str,
     request: Request,

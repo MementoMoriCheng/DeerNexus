@@ -98,3 +98,43 @@ async def seed_runs(body: SeedRunsBody, request: Request) -> dict:
         await event_store.put_batch(events)
 
     return {"ok": True, "thread_id": body.thread_id, "runs": len(body.runs)}
+
+
+@router.post("/seed-admin-iam")
+async def seed_admin_iam(request: Request) -> dict:
+    """Seed admin OrgMembership + RoleBinding for the authenticated user (PR-032).
+
+    The replay e2e gateway registers a throwaway user via ``/api/v1/auth/register``
+    (which creates the User row but no IAM relationships). Since PR-032 the
+    runtime routers consult ``AuthorizeService.authorize()``, which requires an
+    active OrgMembership + a role binding carrying the runtime permissions —
+    without this seed every ``/api/threads/*/runs/stream`` call 403s and the
+    Playwright render assertion times out.
+
+    Reads the user_id off the request's auth context (the same identity the
+    browser session uses), then writes the admin membership + system admin role
+    binding via the tenancy helpers (idempotent). Mounted only by the replay
+    gateway, never in production.
+    """
+    from app.gateway.config import get_gateway_config
+    from app.gateway.deps import get_current_user_from_request
+    from deerflow.persistence.engine import get_session_factory
+    from deerflow.tenancy import (
+        ensure_admin_membership,
+        ensure_admin_role_binding,
+        ensure_system_admin_role,
+    )
+
+    user = await get_current_user_from_request(request)
+    user_id = str(user.id)
+
+    sf = get_session_factory()
+    if sf is None:
+        return {"ok": False, "error": "persistence not initialised"}
+
+    org_id = get_gateway_config().default_org_id
+    await ensure_admin_membership(sf, org_id=org_id, user_id=user_id)
+    role = await ensure_system_admin_role(sf)
+    await ensure_admin_role_binding(sf, org_id=org_id, user_id=user_id, role_id=role.id)
+
+    return {"ok": True, "user_id": user_id, "org_id": org_id}

@@ -184,12 +184,17 @@ def _reset_process_singletons(monkeypatch: pytest.MonkeyPatch) -> None:
     - paths: ``DEER_FLOW_HOME``-derived filesystem paths.
     - persistence.engine: SQLAlchemy engine/session factory for the sqlite dir.
     - app.gateway.deps: cached local auth provider/repository.
+    - app.gateway.authorize: ``AuthorizeService`` process singleton (PR-031
+      introduced it, PR-032 made the runtime routers actually call it via
+      ``require_rbac``). Without this reset the second test's requests hit
+      the first test's session factory and ``authorize()`` sees no rows.
 
     A shared public reset helper would be cleaner long-term; this test keeps
     the reset boundary explicit because the PR is focused on runtime lifecycle
     coverage rather than config-cache API cleanup.
     """
 
+    from app.gateway import authorize as authorize_module
     from app.gateway import deps as deps_module
     from deerflow.config import app_config as app_config_module
     from deerflow.config import extensions_config as extensions_config_module
@@ -208,6 +213,7 @@ def _reset_process_singletons(monkeypatch: pytest.MonkeyPatch) -> None:
         (engine_module, "_session_factory", None),
         (deps_module, "_cached_local_provider", None),
         (deps_module, "_cached_repo", None),
+        (authorize_module, "_default_service", None),
     ):
         monkeypatch.setattr(module, attr, value, raising=False)
 
@@ -266,8 +272,15 @@ def isolated_app(isolated_deer_flow_home: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 def _register_user(client, *, email: str = "runtime-e2e@example.com") -> str:
+    # PR-032: runtime routers consult AuthorizeService.authorize(), so the
+    # caller needs a seeded OrgMembership + admin RoleBinding. /initialize
+    # (not /register) creates the first admin with those relationships inside
+    # the app's own event loop (a manual asyncio seed from this sync TestClient
+    # path would fight the running loop's aiosqlite pool). Each test has an
+    # isolated sqlite DB + its own DEER_FLOW_HOME, so the "first admin only"
+    # constraint is scoped to the test's own empty DB.
     response = client.post(
-        "/api/v1/auth/register",
+        "/api/v1/auth/initialize",
         json={"email": email, "password": "very-strong-password-123"},
     )
     assert response.status_code == 201, response.text

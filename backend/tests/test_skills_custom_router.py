@@ -6,7 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
-from _router_auth_helpers import make_authed_test_app
+from _router_auth_helpers import make_rbac_test_app
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -141,7 +141,7 @@ def test_uploaded_skill_archive_installs_sandbox_readable_tree(monkeypatch, tmp_
     monkeypatch.setattr("deerflow.skills.installer.scan_skill_content", _scan)
     monkeypatch.setattr(skills_router, "refresh_skills_system_prompt_cache_async", _refresh)
 
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.state.config = config
     app.dependency_overrides[get_config] = lambda: config
     app.include_router(uploads_router.router)
