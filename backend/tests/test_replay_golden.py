@@ -27,7 +27,12 @@ def _reset_process_singletons(monkeypatch: pytest.MonkeyPatch) -> None:
     """Invalidate process-wide caches so the test-only config/home take effect.
 
     Same set the real-server e2e resets (see test_setup_agent_http_e2e_real_server).
+    Includes ``AuthorizeService._default_service`` (PR-031/032): without the
+    reset, a prior test's session factory lingers and ``require_rbac``'s
+    ``authorize()`` reads stale rows.
     """
+    from app.gateway import authorize as authorize_module
+    from app.gateway import deps as deps_module
     from deerflow.config import app_config as app_config_module
     from deerflow.config import paths as paths_module
     from deerflow.persistence import engine as engine_module
@@ -39,6 +44,9 @@ def _reset_process_singletons(monkeypatch: pytest.MonkeyPatch) -> None:
         (paths_module, "_paths_singleton"),
         (engine_module, "_engine"),
         (engine_module, "_session_factory"),
+        (authorize_module, "_default_service"),
+        (deps_module, "_cached_local_provider"),
+        (deps_module, "_cached_repo"),
     ):
         monkeypatch.setattr(module, attr, None, raising=False)
 

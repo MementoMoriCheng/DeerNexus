@@ -13,11 +13,12 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.gateway.authz import require_permission
 from app.gateway.deps import get_checkpointer, get_feedback_repo, get_run_event_store, get_run_manager, get_run_store, get_stream_bridge
 from app.gateway.pagination import trim_run_message_page
+from app.gateway.rbac import require_rbac
 from app.gateway.routers.thread_runs import RunCreateRequest
 from app.gateway.services import sse_consumer, start_run, wait_for_run_completion
+from deerflow.contracts.rbac import Permission
 from deerflow.runtime import serialize_channel_values_for_api
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,7 @@ async def _resolve_run(run_id: str, request: Request) -> dict:
 
 
 @router.get("/{run_id}/messages")
-@require_permission("runs", "read")
+@require_rbac(Permission.RUNTIME_RUN_READ)
 async def run_messages(
     run_id: str,
     request: Request,
@@ -135,7 +136,7 @@ async def run_messages(
 
 
 @router.get("/{run_id}/feedback")
-@require_permission("runs", "read")
+@require_rbac(Permission.RUNTIME_RUN_READ)
 async def run_feedback(run_id: str, request: Request) -> list[dict]:
     """Return all feedback for a run."""
     run = await _resolve_run(run_id, request)

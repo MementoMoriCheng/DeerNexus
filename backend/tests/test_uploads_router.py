@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from _router_auth_helpers import call_unwrapped, make_authed_test_app
+from _router_auth_helpers import (
+    bootstrap_rbac,
+    call_unwrapped,
+    make_rbac_test_app,
+)
 from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
@@ -714,10 +718,19 @@ def test_upload_limits_endpoint_reads_uploads_config():
     assert result.max_total_size == 2097152
 
 
-def test_upload_limits_endpoint_requires_thread_access():
+@pytest.mark.anyio
+async def test_upload_limits_endpoint_requires_thread_access(rbac_sf):
+    """Owner-check boundary: authorize() passes (org:admin) but
+    thread_store.check_access denies → 404. Exercises the real
+    require_rbac path (not bypass) since the test's whole point is the
+    owner_check branch."""
+    from deerflow.contracts.rbac import ORG_ADMIN_ROLE_NAME
+
+    await bootstrap_rbac(rbac_sf, role_name=ORG_ADMIN_ROLE_NAME)
+
     cfg = MagicMock()
     cfg.uploads = {}
-    app = make_authed_test_app(owner_check_passes=False)
+    app = make_rbac_test_app(sf=rbac_sf, owner_check_passes=False)
     app.state.config = cfg
     app.dependency_overrides[get_config] = lambda: cfg
     app.include_router(uploads.router)

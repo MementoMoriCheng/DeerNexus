@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from _router_auth_helpers import make_authed_test_app
+from _router_auth_helpers import make_rbac_test_app
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from langgraph.checkpoint.memory import InMemorySaver
@@ -55,7 +55,7 @@ def _build_thread_app() -> tuple[FastAPI, InMemoryStore, InMemorySaver]:
 
     Returns ``(app, store, checkpointer)`` for direct seeding/inspection.
     """
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     store = InMemoryStore()
     checkpointer = InMemorySaver()
     app.state.store = store
@@ -114,7 +114,7 @@ def test_delete_thread_route_cleans_thread_directory(tmp_path):
     paths.sandbox_work_dir("thread-route", user_id=user_id).mkdir(parents=True, exist_ok=True)
     (paths.sandbox_work_dir("thread-route", user_id=user_id) / "notes.txt").write_text("hello", encoding="utf-8")
 
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(threads.router)
 
     with patch("app.gateway.routers.threads.get_paths", return_value=paths):
@@ -129,7 +129,7 @@ def test_delete_thread_route_cleans_thread_directory(tmp_path):
 def test_delete_thread_route_rejects_invalid_thread_id(tmp_path):
     paths = Paths(tmp_path)
 
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(threads.router)
 
     with patch("app.gateway.routers.threads.get_paths", return_value=paths):
@@ -142,7 +142,7 @@ def test_delete_thread_route_rejects_invalid_thread_id(tmp_path):
 def test_delete_thread_route_returns_422_for_route_safe_invalid_id(tmp_path):
     paths = Paths(tmp_path)
 
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(threads.router)
 
     with patch("app.gateway.routers.threads.get_paths", return_value=paths):

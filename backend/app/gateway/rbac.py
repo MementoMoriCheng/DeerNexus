@@ -74,7 +74,32 @@ def _make_test_request_stub() -> SimpleNamespace:
     handler is invoked positionally from a unit test that doesn't pass
     a real ``Request``.
     """
-    return SimpleNamespace(state=SimpleNamespace(), cookies={}, _deerflow_test_bypass_auth=True)
+    state = SimpleNamespace(_deerflow_test_bypass_auth=True)
+    return SimpleNamespace(state=state, cookies={}, _deerflow_test_bypass_auth=True)
+
+
+def _request_has_bypass_flag(request: Any) -> bool:
+    """Return True if the request carries the test-bypass flag.
+
+    Checked in two places because the two test invocation paths store
+    it differently:
+
+    * Direct-call tests (``call_unwrapped`` or positional args) get the
+      :func:`_make_test_request_stub` SimpleNamespace, which sets the
+      flag as a plain instance attribute.
+    * TestClient-driven tests go through ``_StubRbacMiddleware``, but
+      Starlette's ``BaseHTTPMiddleware`` rebuilds the Request object
+      between ``dispatch`` and the route handler — instance attributes
+      do not survive that rebuild, only scope-backed ``request.state``
+      does. So the middleware stores the flag on ``request.state``.
+
+    Production requests never carry the flag in either place, so this
+    stays test-only by construction.
+    """
+    if getattr(request, "_deerflow_test_bypass_auth", False):
+        return True
+    state = getattr(request, "state", None)
+    return bool(getattr(state, "_deerflow_test_bypass_auth", False))
 
 
 def _authorize_error_to_http(exc: AuthorizeError) -> HTTPException:
@@ -169,7 +194,7 @@ def require_rbac(
                     return await func(*args, **kwargs)
                 request = kwargs["request"]
 
-            if getattr(request, "_deerflow_test_bypass_auth", False):
+            if _request_has_bypass_flag(request):
                 return await func(*args, **kwargs)
 
             tenant_context = get_tenant_context()

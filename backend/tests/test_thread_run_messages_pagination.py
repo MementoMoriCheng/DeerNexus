@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from _router_auth_helpers import make_authed_test_app
+from _router_auth_helpers import make_rbac_test_app
 from _run_message_pagination_helpers import assert_run_message_page
 from fastapi.testclient import TestClient
 
@@ -20,7 +20,7 @@ from deerflow.runtime.runs.store.memory import MemoryRunStore
 
 def _make_app(event_store=None, run_manager=None):
     """Build a test FastAPI app with stub auth and mocked state."""
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(thread_runs.router)
 
     if event_store is not None:

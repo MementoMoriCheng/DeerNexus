@@ -4,7 +4,7 @@ This test drives the **entire** FastAPI gateway through ``starlette.testclient.T
 
   starlette.testclient.TestClient (real ASGI stack)
     -> AuthMiddleware (real cookie parsing, real JWT decode)
-    -> /api/v1/auth/register endpoint (real password hash + sqlite write)
+    -> /api/v1/auth/initialize endpoint (real password hash + sqlite write)
     -> /api/threads/{id}/runs/stream endpoint (real start_run config-assembly)
     -> background asyncio.create_task(run_agent) (real worker, real Runtime)
     -> langchain.agents.create_agent graph (real, with fake LLM)
@@ -122,6 +122,9 @@ def _reset_process_singletons(monkeypatch: pytest.MonkeyPatch) -> None:
       ``DEER_FLOW_HOME`` at first access.
     - ``deerflow.persistence.engine`` caches the SQLAlchemy engine and
       session factory after the first call to ``init_engine_from_config``.
+    - ``app.gateway.authorize`` caches the ``AuthorizeService`` singleton
+      (PR-031/032): without the reset, a prior test's session factory
+      lingers and ``require_rbac``'s ``authorize()`` reads stale rows.
 
     ``raising=False`` keeps the fixture resilient if upstream renames or
     drops one of these attributes — the test will simply skip that reset
@@ -129,6 +132,8 @@ def _reset_process_singletons(monkeypatch: pytest.MonkeyPatch) -> None:
     to call ``get_app_config()``/``get_paths()`` will surface the real
     incompatibility loudly.
     """
+    from app.gateway import authorize as authorize_module
+    from app.gateway import deps as deps_module
     from deerflow.config import app_config as app_config_module
     from deerflow.config import paths as paths_module
     from deerflow.persistence import engine as engine_module
@@ -140,6 +145,9 @@ def _reset_process_singletons(monkeypatch: pytest.MonkeyPatch) -> None:
         (paths_module, "_paths_singleton"),
         (engine_module, "_engine"),
         (engine_module, "_session_factory"),
+        (authorize_module, "_default_service"),
+        (deps_module, "_cached_local_provider"),
+        (deps_module, "_cached_repo"),
     ):
         monkeypatch.setattr(module, attr, None, raising=False)
 
@@ -215,7 +223,9 @@ def test_real_http_create_agent_lands_in_authenticated_user_dir(
 ):
     """The full real-server contract test.
 
-    1. Register a real user via POST /api/v1/auth/register (also auto-logs in)
+    1. Initialize the first admin via POST /api/v1/auth/initialize (also
+       auto-logs in, seeds the admin OrgMembership + RoleBinding that
+       PR-032's ``require_rbac`` requires).
     2. POST to /api/threads/{tid}/runs/stream with the **exact** body shape the
        frontend (LangGraph SDK) sends during the bootstrap flow.
     3. Wait for the background run to finish.
@@ -238,9 +248,16 @@ def test_real_http_create_agent_lands_in_authenticated_user_dir(
         ),
         TestClient(isolated_app) as client,
     ):
-        # --- 1. Register & auto-login ---
+        # --- 1. Initialize first admin & auto-login ---
+        # PR-032: runtime routers consult AuthorizeService.authorize(), so the
+        # caller needs a seeded OrgMembership + admin RoleBinding. /initialize
+        # (not /register) creates the first admin with those relationships,
+        # running the IAM seed inside the app's own event loop so it commits
+        # cleanly (a manual asyncio seed from this sync TestClient path would
+        # fight the running loop's aiosqlite pool). Each test has an isolated
+        # sqlite DB, so the "first admin only" constraint is scoped to it.
         register = client.post(
-            "/api/v1/auth/register",
+            "/api/v1/auth/initialize",
             json={"email": "e2e-user@example.com", "password": "very-strong-password-123"},
         )
         assert register.status_code == 201, register.text
@@ -248,9 +265,9 @@ def test_real_http_create_agent_lands_in_authenticated_user_dir(
         auth_uid = registered["id"]
         # The endpoint sets both access_token (auth) and csrf_token (CSRF Double
         # Submit Cookie) cookies; the TestClient cookie jar propagates them.
-        assert client.cookies.get("access_token"), "register endpoint must set session cookie"
+        assert client.cookies.get("access_token"), "initialize endpoint must set session cookie"
         csrf_token = client.cookies.get("csrf_token")
-        assert csrf_token, "register endpoint must set csrf_token cookie"
+        assert csrf_token, "initialize endpoint must set csrf_token cookie"
 
         # --- 2. Create a thread (require_existing=True on /runs/stream means
         # we must call POST /api/threads first; the React frontend does the

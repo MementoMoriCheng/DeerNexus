@@ -132,21 +132,33 @@ def sse_event_shapes(resp) -> list[dict]:
 
 
 def drive_gateway(app, *, prompt: str, context: dict) -> list[dict]:
-    """Register -> create thread -> POST /runs/stream; return SSE event shapes.
+    """Initialize admin -> create thread -> POST /runs/stream; return SSE event shapes.
 
     This is the exact wire path the React frontend uses (LangGraph SDK), driven
-    in-process via Starlette's TestClient with the real auth flow.
+    in-process via Starlette's TestClient with the real auth flow. Uses
+    ``/initialize`` (not ``/register``) so the caller lands as the first admin
+    with a seeded OrgMembership + admin RoleBinding — required since PR-032
+    made the runtime routers consult ``AuthorizeService.authorize()`` instead
+    of the flat-grant stub. ``/initialize`` runs inside the app's own event
+    loop, so the IAM seed (admin membership + role binding) commits cleanly —
+    a manual ``asyncio`` seed from the sync TestClient path would fight the
+    running loop's aiosqlite connection pool.
+
+    Each replay test stages an isolated ``DEER_FLOW_HOME`` + sqlite DB and
+    resets the AuthorizeService singleton (see ``_reset_process_singletons``
+    in ``test_replay_golden.py``), so the "first admin only" constraint on
+    ``/initialize`` is scoped to the test's own empty DB.
     """
     from starlette.testclient import TestClient
 
     with TestClient(app) as client:
         reg = client.post(
-            "/api/v1/auth/register",
+            "/api/v1/auth/initialize",
             json={"email": f"e2e-{uuid.uuid4().hex[:8]}@example.com", "password": "very-strong-password-123"},
         )
         assert reg.status_code == 201, reg.text
         csrf = client.cookies.get("csrf_token")
-        assert csrf, "register must set csrf_token cookie"
+        assert csrf, "initialize must set csrf_token cookie"
 
         thread_id = str(uuid.uuid4())
         created = client.post("/api/threads", json={"thread_id": thread_id, "metadata": {}}, headers={"X-CSRF-Token": csrf})

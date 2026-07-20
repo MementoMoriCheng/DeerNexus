@@ -20,7 +20,6 @@ from fastapi import APIRouter, HTTPException, Request
 from langgraph.checkpoint.base import empty_checkpoint, uuid6
 from pydantic import BaseModel, Field, field_validator
 
-from app.gateway.authz import require_auth
 from app.gateway.deps import get_checkpointer
 from app.gateway.internal_auth import get_trusted_internal_owner_user_id
 from app.gateway.rbac import require_rbac
@@ -213,7 +212,7 @@ def _derive_thread_status(checkpoint_tuple) -> str:
 
 
 @router.delete("/{thread_id}", response_model=ThreadDeleteResponse)
-@require_permission("threads", "delete", owner_check=True, require_existing=True)
+@require_rbac(Permission.RUNTIME_THREAD_WRITE, owner_check=True, require_existing=True)
 async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteResponse:
     """Delete local persisted filesystem data for a thread.
 
@@ -360,7 +359,7 @@ async def search_threads(body: ThreadSearchRequest, request: Request) -> list[Th
 
 
 @router.patch("/{thread_id}", response_model=ThreadResponse)
-@require_permission("threads", "write", owner_check=True, require_existing=True)
+@require_rbac(Permission.RUNTIME_THREAD_WRITE, owner_check=True, require_existing=True)
 async def patch_thread(thread_id: str, body: ThreadPatchRequest, request: Request) -> ThreadResponse:
     """Merge metadata into a thread record."""
     from app.gateway.deps import get_thread_store
@@ -389,7 +388,7 @@ async def patch_thread(thread_id: str, body: ThreadPatchRequest, request: Reques
 
 
 @router.get("/{thread_id}", response_model=ThreadResponse)
-@require_permission("threads", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_THREAD_READ, owner_check=True)
 async def get_thread(thread_id: str, request: Request) -> ThreadResponse:
     """Get thread info.
 
@@ -447,7 +446,7 @@ async def get_thread(thread_id: str, request: Request) -> ThreadResponse:
 
 # ---------------------------------------------------------------------------
 @router.get("/{thread_id}/state", response_model=ThreadStateResponse)
-@require_permission("threads", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_THREAD_READ, owner_check=True)
 async def get_thread_state(thread_id: str, request: Request) -> ThreadStateResponse:
     """Get the latest state snapshot for a thread.
 
@@ -499,7 +498,7 @@ async def get_thread_state(thread_id: str, request: Request) -> ThreadStateRespo
 
 
 @router.post("/{thread_id}/state", response_model=ThreadStateResponse)
-@require_permission("threads", "write", owner_check=True, require_existing=True)
+@require_rbac(Permission.RUNTIME_THREAD_WRITE, owner_check=True, require_existing=True)
 async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, request: Request) -> ThreadStateResponse:
     """Update thread state (e.g. for human-in-the-loop resume or title rename).
 
@@ -601,7 +600,7 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
 
 
 @router.post("/{thread_id}/history", response_model=list[HistoryEntry])
-@require_permission("threads", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_THREAD_READ, owner_check=True)
 async def get_thread_history(thread_id: str, body: ThreadHistoryRequest, request: Request) -> list[HistoryEntry]:
     """Get checkpoint history for a thread.
 

@@ -3,7 +3,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from _router_auth_helpers import call_unwrapped, make_authed_test_app
+from _router_auth_helpers import call_unwrapped, make_rbac_test_app
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
@@ -76,7 +76,7 @@ def test_get_artifact_download_false_does_not_force_attachment(tmp_path, monkeyp
 
     monkeypatch.setattr(artifacts_router, "resolve_thread_virtual_path", lambda _thread_id, _path: artifact_path)
 
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(artifacts_router.router)
 
     with TestClient(app) as client:
@@ -94,7 +94,7 @@ def test_get_artifact_download_true_forces_attachment_for_skill_archive(tmp_path
 
     monkeypatch.setattr(artifacts_router, "resolve_thread_virtual_path", lambda _thread_id, _path: skill_path)
 
-    app = make_authed_test_app()
+    app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(artifacts_router.router)
 
     with TestClient(app) as client:

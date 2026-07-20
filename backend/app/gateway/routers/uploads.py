@@ -7,10 +7,11 @@ import stat
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
-from app.gateway.authz import require_permission
 from app.gateway.deps import get_config
+from app.gateway.rbac import require_rbac
 from deerflow.config.app_config import AppConfig
 from deerflow.config.paths import get_paths
+from deerflow.contracts.rbac import Permission
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.sandbox.sandbox_provider import SandboxProvider, get_sandbox_provider
 from deerflow.uploads.manager import (
@@ -211,7 +212,7 @@ def _auto_convert_documents_enabled(app_config: AppConfig) -> bool:
 
 
 @router.post("", response_model=UploadResponse)
-@require_permission("threads", "write", owner_check=True, require_existing=False)
+@require_rbac(Permission.RUNTIME_THREAD_WRITE, owner_check=True, require_existing=False)
 async def upload_files(
     thread_id: str,
     request: Request,
@@ -347,7 +348,7 @@ async def upload_files(
 
 
 @router.get("/limits", response_model=UploadLimits)
-@require_permission("threads", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_THREAD_READ, owner_check=True)
 async def get_upload_limits(
     thread_id: str,
     request: Request,
@@ -358,7 +359,7 @@ async def get_upload_limits(
 
 
 @router.get("/list", response_model=UploadListResponse)
-@require_permission("threads", "read", owner_check=True)
+@require_rbac(Permission.RUNTIME_THREAD_READ, owner_check=True)
 async def list_uploaded_files(thread_id: str, request: Request) -> UploadListResponse:
     """List all files in a thread's uploads directory."""
     try:
@@ -377,7 +378,7 @@ async def list_uploaded_files(thread_id: str, request: Request) -> UploadListRes
 
 
 @router.delete("/{filename}")
-@require_permission("threads", "delete", owner_check=True, require_existing=True)
+@require_rbac(Permission.RUNTIME_THREAD_WRITE, owner_check=True, require_existing=True)
 async def delete_uploaded_file(thread_id: str, filename: str, request: Request) -> dict:
     """Delete a file from a thread's uploads directory."""
     try:
