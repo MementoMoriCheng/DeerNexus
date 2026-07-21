@@ -21,17 +21,19 @@ whole set (e.g. the future ``_authenticate`` rewrite in PR-032/033).
 
 Boundary — what this module deliberately does NOT do (Track C division):
 
-* It does **not** touch ``app/gateway/authz.py``. The ``_ALL_PERMISSIONS``
-  flat-grant stub stays in place until PR-032/033 swap routers onto
-  :func:`authorize`. PR-031 ships with zero router callers by design
-  (pr-split-guide §8 "Router 尚不全部切流").
-* It does **not** implement API Key validation (→ PR-035), ServiceAccount
-  lifecycle (→ PR-034), OIDC group mapping (→ PR-036), or active cache
-  invalidation + SSE re-validation (→ PR-037). The API Key scope parameter is
-  accepted so the signature is stable when PR-035 lands.
+* It does **not** implement API Key validation (→ PR-035), OIDC group
+  mapping (→ PR-036), or active cache invalidation + SSE re-validation
+  (→ PR-037). The API Key scope parameter is accepted so the signature
+  is stable when PR-035 lands. ``invalidate_principal`` is wired (PR-034)
+  for the IAM write path; the SSE re-validation hook is PR-037.
 * It does **not** return role/policy detail to the caller (ADR §6: "授权服务
   返回 allow 或抛稳定错误"). All denials raise :class:`ContractError` with a
   stable code; HTTP status mapping happens at the router layer (PR-032/033).
+* It does **not** plumb ``service_account`` principals through
+  ``TenantResolutionMiddleware`` — that lands with API-key header parsing
+  in PR-035. PR-034's branch is exercised through service-layer unit
+  tests that construct a ``PrincipalRef(type="service_account", ...)``
+  directly (mirrors PR-031's "authorize lands with zero router callers").
 
 Error codes (ADR §12 + testing-strategy §9.2):
 
@@ -71,7 +73,7 @@ from deerflow.contracts import (
     TenantContext,
 )
 from deerflow.contracts.rbac import SYSTEM_PERMISSION_PREFIX
-from deerflow.persistence.iam.model import RoleBindingRow, RoleRow
+from deerflow.persistence.iam.model import RoleBindingRow, RoleRow, ServiceAccountRow
 from deerflow.tenancy import get_membership_any_status, get_org_status
 
 if TYPE_CHECKING:
@@ -266,31 +268,60 @@ class AuthorizeService:
         in MVP — resource-level (Workspace) RBAC is an explicit non-target
         (ADR §17). It will be wired when Track E / Workspace RBAC lands.
 
-        Currently requires a ``user`` principal; ``service_account`` principals
-        are accepted at the cache-key level but their lifecycle (PR-034) is
-        not wired here, so they fall through to the user path and will raise
-        ``AUTHENTICATION_INVALID`` on the missing ``user_id``. PR-034 will
-        extend this branch.
+        Branches on ``tenant_context.principal.type``:
+
+        * ``user`` — original PR-031 path (membership + RoleBindings).
+        * ``service_account`` — PR-034 path. ``ServiceAccountRow.status``
+          is the active-principal gate (no Membership concept); disabled
+          SAs raise ``PRINCIPAL_DISABLED``. The role-bindings JOIN reuses
+          the same ``_fetch_role_permissions`` helper the user path uses
+          (the polymorphic ``(principal_type, principal_id)`` filter was
+          already in place from PR-031).
+        * anything else (``system``) — ``AUTHENTICATION_INVALID``. The
+          ``system:admin`` cross-Org interface (ADR §4.4) is a future PR.
+
+        ``api_key_scopes`` is plumbed through to
+        :meth:`compute_permissions_for_user` /
+        :meth:`compute_permissions_for_service_account`; today no caller
+        passes a non-``None`` value (PR-035 will populate it from a real
+        API-key lookup).
         """
         principal = tenant_context.principal
         org_id = tenant_context.org_id
-
-        if principal.type != "user" or principal.user_id is None:
-            raise AuthorizeError(
-                ErrorCode.AUTHENTICATION_INVALID,
-                "authorize() currently requires a 'user' principal with a user_id; service_account/system principals are later PRs.",
-            )
-
-        # Build a minimal user-like object — authorize() takes TenantContext,
-        # but compute_permissions_for_user expects the auth User shape. We
-        # only read .id and .system_role, so a SimpleNamespace is enough and
-        # avoids forcing callers to materialize a full User row.
-        from types import SimpleNamespace
-
-        user = SimpleNamespace(id=principal.user_id, system_role="user")
         perm_value = permission.value if isinstance(permission, Permission) else str(permission)
 
-        effective = await self.compute_permissions_for_user(user, org_id=org_id, api_key_scopes=api_key_scopes)
+        if principal.type == "user":
+            if principal.user_id is None:
+                raise AuthorizeError(
+                    ErrorCode.AUTHENTICATION_INVALID,
+                    "authorize() requires a 'user' principal to carry a user_id.",
+                )
+            # Build a minimal user-like object — authorize() takes
+            # TenantContext, but compute_permissions_for_user expects the
+            # auth User shape. We only read .id and .system_role, so a
+            # SimpleNamespace is enough and avoids forcing callers to
+            # materialize a full User row.
+            from types import SimpleNamespace
+
+            user = SimpleNamespace(id=principal.user_id, system_role="user")
+            effective = await self.compute_permissions_for_user(user, org_id=org_id, api_key_scopes=api_key_scopes)
+        elif principal.type == "service_account":
+            if not principal.id:
+                raise AuthorizeError(
+                    ErrorCode.AUTHENTICATION_INVALID,
+                    "authorize() requires a 'service_account' principal to carry a non-empty id.",
+                )
+            effective = await self.compute_permissions_for_service_account(
+                service_account_id=principal.id,
+                org_id=org_id,
+                api_key_scopes=api_key_scopes,
+            )
+        else:
+            raise AuthorizeError(
+                ErrorCode.AUTHENTICATION_INVALID,
+                f"authorize() does not yet support principal type {principal.type!r}.",
+            )
+
         if perm_value not in effective:
             raise _denied(
                 f"Principal lacks required permission {perm_value!r}.",
@@ -314,6 +345,63 @@ class AuthorizeService:
         call sites.
         """
         return frozenset(SYSTEM_PERMISSIONS)
+
+    def invalidate_principal(self, *, org_id: str, principal_type: str, principal_id: str) -> None:
+        """Drop the cached effective-permission set for one principal (ADR §11).
+
+        Called by the IAM write path (ServiceAccount disable/enable/delete,
+        RoleBinding create/delete) after the DB commit. The TTL (≤60s) is
+        the fallback if this call is missed, the process crashes between
+        commit and invalidate, or the principal lives behind a different
+        process (cross-process cache coherence is out of scope for the
+        in-memory cache — it lands with PR-037's active-invalidation +
+        distributed cache).
+
+        ``principal_type`` is part of the cache key
+        (:func:`org_cache_key`), so a user and a service_account that
+        happen to share an id cannot collide. ``system`` principals use a
+        separate namespace (:func:`system_cache_key`) and are not
+        invalidated through this entry point.
+        """
+        self._cache.invalidate(org_cache_key(org_id=org_id, principal_type=principal_type, principal_id=principal_id))
+
+    async def compute_permissions_for_service_account(
+        self,
+        *,
+        service_account_id: str,
+        org_id: str,
+        api_key_scopes: frozenset[str] | None = None,
+    ) -> frozenset[str]:
+        """Return the effective permission set for a ServiceAccount principal.
+
+        Mirrors :meth:`compute_permissions_for_user` but on the
+        ServiceAccount branch (ADR §6 intersection formula). Cache key
+        composition uses ``principal_type="service_account"`` so a user
+        and a SA that share an id cannot collide.
+
+        Raises :class:`AuthorizeError` for every ADR §12 terminal state:
+
+        * ``ORG_SUSPENDED`` / ``ORG_DELETING`` — organization_state gate.
+        * ``AUTHENTICATION_INVALID`` — SA missing or belongs to a
+          different Org (cross-Org leakage is hidden as "does not
+          exist", matching the user path's existence-hiding posture).
+        * ``PRINCIPAL_DISABLED`` — ``ServiceAccountRow.status ==
+          "disabled"``. The new auth attempt on a disabled SA must
+          return 403 ``principal_disabled`` (ADR §12).
+
+        ``api_key_scopes`` is the reserved PR-035 hook (today always
+        ``None`` from the router; PR-035's API-key lookup will populate
+        it). Scope narrowing is applied on top of the cached set so a
+        cache hit still respects scopes.
+        """
+        cache_k = org_cache_key(org_id=org_id, principal_type="service_account", principal_id=service_account_id)
+        cached = self._cache.get(cache_k)
+        if cached is not None:
+            return self._apply_scopes(cached, api_key_scopes)
+
+        perms = await self._compute_service_account_permissions(service_account_id=service_account_id, org_id=org_id)
+        self._cache.set(cache_k, perms, ttl_seconds=self._ttl_seconds)
+        return self._apply_scopes(perms, api_key_scopes)
 
     async def _compute_user_permissions(self, *, user_id: str, org_id: str, system_role: str) -> frozenset[str]:
         """DB-backed effective-permission computation for an Org-scoped user.
@@ -365,6 +453,68 @@ class AuthorizeService:
             org_status=org_status,
             system_role=system_role,
             api_key_scopes=None,  # scope narrowing happens at compute_permissions_for_user
+        )
+
+    async def _compute_service_account_permissions(self, *, service_account_id: str, org_id: str) -> frozenset[str]:
+        """DB-backed effective-permission computation for a ServiceAccount principal.
+
+        Same ADR §6 intersection order as :meth:`_compute_user_permissions`,
+        but the "active_principal" dimension is the ``ServiceAccountRow``
+        itself (``status == "active"``), not a Membership row — SAs do not
+        carry Memberships (the ``org_memberships.user_id`` FK is to
+        ``users.id``). Cross-Org access is hidden as ``AUTHENTICATION_INVALID``
+        to mirror the existence-hiding posture of the user path's
+        ``PERMISSION_DENIED`` for missing membership.
+        """
+        # 1. organization_state — suspended/deleting raise the same codes
+        #    as the user path so a single ``_authorize_error_to_http``
+        #    mapping covers both principal types.
+        org_status = await get_org_status(self._sf, org_id=org_id)
+        if org_status is None:
+            raise _denied("Principal has no effective organization scope.")
+        if org_status == "suspended":
+            raise AuthorizeError(ErrorCode.ORG_SUSPENDED, "Organization is suspended.")
+        if org_status == "deleting":
+            raise AuthorizeError(ErrorCode.ORG_DELETING, "Organization is being deleted.")
+        if org_status == "deleted":
+            raise AuthorizeError(ErrorCode.ORG_DELETING, "Organization is deleted.")
+
+        # 2. active_principal — ServiceAccountRow is the principal record.
+        #    Missing / wrong-Org / disabled map to distinct error codes
+        #    (ADR §12). The CHECK constraint on ``status`` limits the
+        #    column to ``active``/``disabled``, so no defensive else is
+        #    needed after the disabled branch.
+        async with self._sf() as session:
+            sa_row = await session.get(ServiceAccountRow, service_account_id)
+        if sa_row is None or sa_row.org_id != org_id:
+            # Existence-hiding: a SA in another Org looks identical to a
+            # non-existent one, so cross-Org callers cannot enumerate.
+            raise AuthorizeError(
+                ErrorCode.AUTHENTICATION_INVALID,
+                "ServiceAccount does not exist in this organization.",
+            )
+        if sa_row.status == "disabled":
+            raise AuthorizeError(
+                ErrorCode.PRINCIPAL_DISABLED,
+                "ServiceAccount is disabled.",
+            )
+
+        # 3. non_expired_role_bindings ∩ union(role.permissions). Same
+        #    JOIN as the user path; the polymorphic filter on
+        #    ``principal_type`` was already parameterised in PR-031.
+        role_perms = await self._fetch_role_permissions(org_id=org_id, principal_type="service_account", principal_id=service_account_id)
+
+        # 4. Delegate the intersection math to the pure function.
+        #    ServiceAccounts are NEVER system-admin: SYSTEM_PERMISSIONS is
+        #    outside the Org-role domain (SYSTEM_PERMISSION_PREFIX write-
+        #    side guard in ``validate_role_permissions`` enforces this at
+        #    binding time), so system_role="user" is correct here.
+        return compute_effective_permissions(
+            membership_status="active",  # SA "active" maps to the active-membership path inside the pure function
+            role_permissions=role_perms,
+            org_status=org_status,
+            system_role="user",
+            api_key_scopes=None,  # scope narrowing happens at compute_permissions_for_service_account
         )
 
     async def _fetch_role_permissions(self, *, org_id: str, principal_type: str, principal_id: str) -> frozenset[str]:

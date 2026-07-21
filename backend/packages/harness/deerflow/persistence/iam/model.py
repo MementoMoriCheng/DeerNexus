@@ -150,6 +150,22 @@ class ServiceAccountRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
+    # ADR-0003 §9.1 traceability fields (added by PR-034 via migration
+    # ``0008_service_account_fields``). All nullable: an existing row
+    # (none at PR-034 entry) and a future minimally-seeded row both
+    # remain valid without these.
+    #
+    # ``owner_user_id`` is the accountability contact — "Owner 是管理
+    # 责任人,不意味着自动拥有该账号权限" (ADR §9.1). Polymorphic
+    # ``String(36)`` UUID with no FK, mirroring the principal convention
+    # throughout the IAM tables. ``expires_at`` is a review-by date, not
+    # a credential expiry — the ServiceAccount does not auto-expire.
+    owner_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    purpose: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    system: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    environment: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

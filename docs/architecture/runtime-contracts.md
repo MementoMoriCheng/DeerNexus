@@ -1041,7 +1041,7 @@ runbook §5.2「Doctor 必须读取明确迁移阶段，不得只根据 Feature 
 
 - **新建 `app/doctor/probes/` 包（5 probe 模块 + `__init__.py`）**，每个 probe `async def probe_xxx(config) -> DoctorCheckResult`，镜像 `tenant_probe.py` 模式（throwaway / 进程内资源，所有失败容错为 FAIL 不抛，无 secret 泄漏——result message 只带 host 标签不带完整 URL/密码）：
   - **`postgres_probe.py::probe_postgres_connectivity`**（`postgres.connectivity`）：throwaway `create_async_engine`（不复用全局 engine，镜像 tenant_probe 隔离契约）→ `SELECT 1` + `SELECT version()` 校验版本 ≥15（runbook §5.1 FAIL 阈值）+ pool 配置信息性报告。backend=sqlite/memory → WARN 跳过（postgres probe 仅对 backend=postgres 有意义）。DB 错误 → FAIL 含 host 不含密码。
-  - **`metrics_probe.py::probe_metrics_presence`**（`metrics.presence`，新 check*id）：进程内调 `generate_metrics_payload()`（**不**做 HTTP `/metrics` 抓取——doctor 是 preflight 门禁常在 gateway 起之前跑），断言 29 个 wired §4 metric 名（`EXPECTED_METRIC_NAMES` tuple 显式列出，pin rename 回归）全在 payload。`observability.metrics.enabled=false` → WARN。缺 wired metric 但只有 `python*_`/`process\__`（doctor 跑在 gateway pod 外）→ WARN（环境条件非 wiring 回归）。缺部分 wired metric（至少有 `http_requests_total`）→ FAIL（rename/调用点回归）。
+  - **`metrics_probe.py::probe_metrics_presence`**（`metrics.presence`，新 check*id）：进程内调 `generate_metrics_payload()`（**不**做 HTTP `/metrics` 抓取——doctor 是 preflight 门禁常在 gateway 起之前跑），断言 29 个 wired §4 metric 名（`EXPECTED_METRIC_NAMES` tuple 显式列出，pin rename 回归）全在 payload。`observability.metrics.enabled=false` → WARN。缺 wired metric 但只有 `python*\_`/`process\_\_`（doctor 跑在 gateway pod 外）→ WARN（环境条件非 wiring 回归）。缺部分 wired metric（至少有 `http_requests_total`）→ FAIL（rename/调用点回归）。
   - **`deployment_evidence_probe.py::probe_deployment_evidence`**（`deployment.evidence_validation`）：纯 config 校验。Profile S → PASS（无额外证据要求）；Profile H 缺 `profile_h_evidence` → FAIL；Profile W 缺 `profile_w_evidence` / `profile_w_rollback_evidence` / `profile_w_soak_hours(>0)` 任一 → FAIL（runbook §5.1 Profile W 最复杂、未记录 dispatch/rollback 是已知事故源）。不做 HTTP 可达性（那是发布流程的事）。
   - **`gateway_security_probe.py::probe_gateway_security`**（`gateway.security_validation`）：读 `DEER_FLOW_GATEWAY_URL` 环境变量（未设 → WARN 跳过，doctor 可独立验证 DB+观测层）。配置了 URL 时用 httpx 探测：`tls_enabled=true` 但 URL 是 `http://` → FAIL（声明与运行时不符）；CORS 声明但响应无 `Access-Control-Allow-Origin` → WARN（preflight 可能仍工作）；CSRF 启用但无 csrf cookie → WARN。httpx 失败 → FAIL 含 host 不含 auth。
   - **`rate_limit_probe.py::probe_rate_limit_retry_after`**（`gateway.rate_limit_retry_after`）：同样依赖 `DEER_FLOW_GATEWAY_URL`（未设或 `rate_limit_enabled=false` → WARN 跳过）。触发 auth login lockout：对 `/api/v1/auth/login/local` 连发 `threshold + 2` 次坏密码（fake user 不可命中真实账号），期望 429 + `Retry-After` 头 → PASS；429 无 Retry-After → WARN；无 429 → FAIL（rate-limit 运行时未生效）。
@@ -1299,3 +1299,47 @@ PR-033 把它们切到 `@require_rbac` + `AuthorizeService.authorize()`,并
 - **memory.py / metrics.py 审计**:这两个 router 当前无 admin gate(memory.py 走 internal_auth header 校验、metrics.py 是 `/metrics` public path)。如未来加 admin 门控,直接挂 `@require_rbac`,无需先走 `require_admin_user` 中转。
 - **`system_role == "admin"` 短路语义重设**:`authorize()` 内部 user 写死 `system_role="user"`(走 cache path),`system_role` 字段只在 `compute_permissions_for_user` 入口读一次(走 admin 短路 `SYSTEM_PERMISSIONS` —— 只含 `system:*` 前缀,不含 `admin:*`)。本 PR 不改这一行为;未来若要让 `system_role="admin"` 跨 Org 走专用接口(ADR §4.4),需 plumb `system_role` through `TenantContext.principal` —— 留给 system-admin 跨 Org PR。
 - **主动失效 / API Key scope / invited-removed → 404 细化**:同 PR-032 §16.38,延后 PR-035/037/multi-Org active phase。
+
+### 16.41 PR-034：ServiceAccount 生命周期 + Authorize 分支（已交付）
+
+PR-034 让 IAM 四表(PR-020B)中的 `service_accounts` 首次**有数据**,让 `role_bindings.principal_type='service_account'` CHECK 约束首次**有调用方**,并完成 ADR §6 `authorize()` 对 `principal_type="service_account"` 的真实分支。这是 PR-020B schema 落地以来的首次"运行时 + 写路径"PR(纯 schema 表此前零数据)。
+
+**Schema 迁移 `0008_service_account_fields`**(expand-only,链自 `0007_builtin_roles`):给 `service_accounts` 加 5 列 ADR §9.1 traceability 字段,全 nullable 不破坏现有行 —— `owner_user_id`(管理责任人,无 FK,沿用 polymorphic 约定)/`purpose`/`system`/`environment`/`expires_at`(到期评审日期,**非**凭证过期)。`status` CHECK 已是 `active`/`disabled`,**不加 `deleted`** —— 删除走硬删 + 同事务清理 bindings/keys(ADR §12)。`test_persistence_bootstrap*.py` 的 HEAD 常量从 `0007_builtin_roles` 同步更新到 `0008_service_account_fields`(3 处)。
+
+**`authorize.py` 三分支重构**:`AuthorizeService.authorize()` 把 PR-031 的 user-only 硬分支(`principal.type != "user"` → `AUTHENTICATION_INVALID`)改成 user / service_account / 其他三分支。新增 `compute_permissions_for_service_account` + `_compute_service_account_permissions`(并行于 user 路径,但 active-principal 维度从 `OrgMembership.status` 换成 `ServiceAccountRow.status` —— SA 无 Membership 概念)。`org_cache_key(org_id, principal_type="service_account", principal_id=sa_id)` 命名空间分离(同 principal_id 在 user / service_account 两个 key 下互不污染,IAM-220 测锁定)。新增 `AuthorizeService.invalidate_principal(org_id, principal_type, principal_id)` 主动失效入口,同时为 PR-037 铺路。
+
+**`rbac.py` 补 `PRINCIPAL_DISABLED` 分支**:此前 disabled SA fall through 到 `PERMISSION_DENIED → 403 "Permission denied"`,状态码巧合正确但响应体错误。本 PR 加 explicit 分支返回 `403 "Principal is disabled"`,与 ADR §12 `principal_disabled` 错误码目录对齐。
+
+**Harness 层 `persistence/iam/repository.py`**(新):纯 DB CRUD(create/get/list/update/set_status/delete_service_account + create/list/delete_role_binding),无 audit / 无 cache / 无 authz(那些是 app 层职责)。`delete_service_account` 在单 `AsyncSession` 内 DELETE role_bindings + delete row,api_keys 走 FK CASCADE —— ADR §12 原子性。Org filter 是强制参数(`ADR §8`)。
+
+**Harness 层 `tenancy/bootstrap.py` 重构**:抽私有 `_ensure_role_binding` polymorphic helper,`ensure_admin_role_binding`(user)+ 新 `ensure_service_account_role_binding`(service*account)都转发,前者签名零变化(向后兼容)。`ensure_admin_role_binding` 仍 emit `admin_role_binding_created` event(保 PR-022 行为),新 helper 不 emit(SA 路径走 router 层的 `service_account*\*` event)。
+
+**Contracts 层 `deerflow/contracts/iam.py`**(新):`ServiceAccountCreateRequest` / `UpdateRequest` / `Response` / `RoleBindingRequest` / `RoleBindingResponse`。`Response` 类用 `from_attributes=True` 直接从 ORM row 投影,避免 API/ORM drift。`UpdateRequest` 故意不含 `status`(lifecycle 走专用 `:disable`/`:enable` endpoint)。
+
+**App 层 `app/gateway/routers/iam.py`**(新,挂 `/api/v1/iam`,10 端点):list/create/get/patch/:disable/:enable/delete + role-bindings 的 list/create/delete。所有读 gate `@require_rbac(Permission.ADMIN_IAM_READ)`,所有写 gate `@require_rbac(Permission.ADMIN_IAM_MANAGE)` —— 两者都只在 `org:admin`(PR-030 registry pin),developer/viewer 全拒。Cross-Org 隔离 404(existence-hiding)。每个写操作 commit 后调 `emit_tenant_event("service_account_*", ...)`(沿用 logger shim,TODO PR-041 真 outbox)+ `get_authorize_service().invalidate_principal(...)`。DELETE 顺序:**先 emit audit(带 sa_id+name)→ 再 repository delete → 再 invalidate**(audit 在删之前保留 ID 痕迹)。
+
+**`_router_auth_helpers.py` 扩展**:`bind_rbac_role` 加 `principal_type`/`principal_id` 参数(默认值向后兼容);新增 `seed_rbac_service_account` + `bootstrap_rbac_service_account`(SA 版的 `bootstrap_rbac`)。
+
+**测试**(共 +69 测,128 测总通过 on PR-034 test set):
+
+- `test_iam_service_account_repository.py`(新,20 测):DB CRUD 全覆盖,含 cross-Org filter、delete 原子清理 bindings、CHECK 拒未知 status/principal_type、role binding polymorphic helper。
+- `test_iam_authorize.py` 扩展(+15 测 IAM-220 系列):active/disabled SA、cross-Org hidden as AUTHENTICATION_INVALID、PRINCIPAL_DISABLED raise、expired binding 排除、suspended org、API Key scope 收窄、cache 命名空间分离(user vs SA 同 id 不撞)、`invalidate_principal` 后重算、`authorize()` 入口三分支、`_authorize_error_to_http` PRINCIPAL_DISABLED→403。
+- `test_rbac_iam_router.py`(新,12 测 IAM-210/211/212):§9.1 角色×能力 6 cell(admin 全允,dev/viewer 全拒)+ §9.2 状态映射 4 + `policy.evaluated` 观测 2。镜像 `test_rbac_admin_routers.py` 结构。
+- `test_iam_router_business.py`(新,12 测 IAM-310~314):create/get/list/patch/disable/enable/delete 完整 lifecycle、cross-Org 404 隔离、409 重名 / 404 缺失 / 400 等错误路径、role binding lifecycle + delete cascade、audit event emit + cache invalidate 顺序断言。
+- `test_iam_schema.py` 扩展(+2 测):5 新列 nullable parity、owner_user_id 可重复(无 unique);新增 `test_service_account_fields_round_trip`(0008 ↔ 0007 双向)。
+
+**ADR §15 验收**(详见 ADR 文档勾选):2 项新勾 + 1 项注释,加上 PR-033 已勾的 2 项,共 4/11 项。
+
+**`alembic` 双向验证**:`upgrade head` → `downgrade 0007_builtin_roles` → `upgrade head` round-trip 成功,test_iam_schema 显式覆盖。
+
+### 16.42 PR-034 不包含
+
+**严格不越界**:
+
+- **API Key 全套**:本 PR **不**实现 `AuthMiddleware` 的 `X-Api-Key` header 解析、`ApiKeyRow` 写入 / `key_hash` 恒定时间校验 / mint-rotate-revoke 端点。ServiceAccount 可以创建 / 绑定角色 / 在 service 层被 `authorize()` 验证,但**还不能在生产 HTTP 路径被触达** —— `tenant.py:resolve_principal` 仍只发 `type="user"`,等 PR-035 的 API Key 中间件分支才会发 `type="service_account"`。这与 PR-031「authorize 落地但零 router 调用方」的切分哲学一致:本 PR 的 authorize 分支靠 service-layer 单测(直接构造 `PrincipalRef(type="service_account", ...)`)覆盖,PR-035 落地后端到端可触达。
+- **`tenant.py` resolver 分支**:`resolve_principal` / `resolve_tenant_context` 仍 user-only。SA 分支与 API Key header 解析强耦合,归 PR-035。
+- **`AuditEvent` 真 outbox**:沿用 `emit_tenant_event` logger shim(同 PR-022 模式),每个 emit 调用标 `TODO(PR-041)`。真 `audit_events` 表 + outbox publisher 是 PR-041。
+- **主动失效 SSE re-validation**:`invalidate_principal` 单进程内同步,跨进程协调 + SSE 60s re-validation 是 PR-037。
+- **`system:admin` SA**:ADR §4.4 + §8 禁止把 `system:admin` 作为普通 RoleBinding。本 PR 无需额外 guard —— `validate_role_permissions` 写侧禁止 system perms 进 Org 角色(注册表层强制),SA 只能绑 Org 角色,自动满足。是否允许 SA 持 `system:admin` 跨 Org 操作,future PR。
+- **rate limiting**(ADR §9.3):`org_id + service_account_id` / `org_id + api_key_id` / `source_ip` 三元限流延后到 PR-035(API Key 落地后才有 rate-limit 维度可挂)+ 平台限流 PR。
+- **frontend IAM 管理 UI**:前端目前只有 Org Console(runs/usage/audit),无 principal 管理页。本 PR 后端 API 已就位,前端页面是后续 Track D/E UI PR。
