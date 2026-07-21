@@ -227,12 +227,12 @@ authorize(
 
 ## 7. Membership 状态
 
-| 状态 | 可绑定 TenantContext | HTTP 语义 |
-| --- | --- | --- |
-| `invited` | 否 | 视为无活动 Org 范围，404 |
-| `active` | 是 | 继续 RBAC |
-| `suspended` | 否 | 403 `permission_denied` |
-| `removed` | 否 | 视为无活动 Org 范围，404 |
+| 状态        | 可绑定 TenantContext | HTTP 语义                |
+| ----------- | -------------------- | ------------------------ |
+| `invited`   | 否                   | 视为无活动 Org 范围，404 |
+| `active`    | 是                   | 继续 RBAC                |
+| `suspended` | 否                   | 403 `permission_denied`  |
+| `removed`   | 否                   | 视为无活动 Org 范围，404 |
 
 规则：
 
@@ -369,17 +369,17 @@ MVP 默认 `additive`：
 
 ## 12. 403 / 404 与错误码
 
-| 场景 | 响应 |
-| --- | --- |
-| 无效 / 过期凭证 | 401 `authentication_invalid` |
-| User / ServiceAccount disabled | 403 `principal_disabled` |
-| revoked / expired API Key，或已删除 ServiceAccount 的 Key | 401 `authentication_invalid` |
-| invited / removed Membership | 404；响应不得使用 `permission_denied` 暴露 Org 范围 |
-| suspended Membership | 403 `permission_denied` |
-| 跨 Org 资源 | 404 |
-| 当前 Org 内资源存在但权限不足 | 403 `permission_denied` |
-| Suspended Org 新 Run / 发布 | 403 `org_suspended` |
-| Deleting Org 普通写 / 新 Run / 发布 | 403 `org_deleting` |
+| 场景                                                      | 响应                                                |
+| --------------------------------------------------------- | --------------------------------------------------- |
+| 无效 / 过期凭证                                           | 401 `authentication_invalid`                        |
+| User / ServiceAccount disabled                            | 403 `principal_disabled`                            |
+| revoked / expired API Key，或已删除 ServiceAccount 的 Key | 401 `authentication_invalid`                        |
+| invited / removed Membership                              | 404；响应不得使用 `permission_denied` 暴露 Org 范围 |
+| suspended Membership                                      | 403 `permission_denied`                             |
+| 跨 Org 资源                                               | 404                                                 |
+| 当前 Org 内资源存在但权限不足                             | 403 `permission_denied`                             |
+| Suspended Org 新 Run / 发布                               | 403 `org_suspended`                                 |
+| Deleting Org 普通写 / 新 Run / 发布                       | 403 `org_deleting`                                  |
 
 错误响应不包含角色详情、另一个 Org 的资源存在性或策略全文。
 
@@ -430,6 +430,10 @@ MVP 默认 `additive`：
 - [ ] Viewer 无法创建 Run 或打开 Admin Console
 - [ ] Developer 无法 IAM、Audit 或 prod promote
 - [ ] API Key scope 只能收窄 ServiceAccount 权限
+      （**部分通过**：PR-031 落地了 scope 收窄逻辑 `compute_effective_permissions(api_key_scopes=...)`，
+      PR-034 在 `compute_permissions_for_service_account` 路径复用该 hook；
+      但真实 API Key 凭证路径 [X-Api-Key header 解析 + key_hash 恒定时间校验 + mint/rotate/revoke]
+      延后 PR-035，故本项暂不勾选，等 PR-035 端到端落地后再勾）
 - [ ] invited / suspended / removed Membership 语义通过
 - [ ] Membership、角色、主体和 Key 撤销 P99 ≤60 秒
 - [ ] 最后 org:admin 保护通过
@@ -439,6 +443,15 @@ MVP 默认 `additive`：
       `@require_rbac`，无内联 `system_role == "admin"` 判断残留）
 - [x] 旧 flat permission 放行路径已删除或被 Feature Flag 完全关闭（PR-033：
       `authz.py` 整体删除，`_ALL_PERMISSIONS` flat-grant 不再存在）
+- [x] ServiceAccount active / disabled 状态映射通过（PR-034：`authorize()`
+      service_account 分支 + `PRINCIPAL_DISABLED` → 403 `principal_disabled`，
+      `test_iam_authorize.py::TestAuthorizeServiceAccount` 锁定）
+- [x] ServiceAccount 删除事务性撤销全部 role bindings（PR-034：
+      `delete_service_account` 单 `AsyncSession` 同事务 DELETE bindings + row，
+      `test_iam_service_account_repository.py::TestDelete::test_delete_clears_role_bindings_same_transaction`
+      锁定；API Key CASCADE 走 FK，schema 已就位）
+- [ ] API Key 端到端 mint / rotate / revoke（PR-035）
+- [ ] 撤权 P99 ≤60 秒（PR-037 主动失效 + SSE re-validation）
 - [ ] RBAC 正反向矩阵和双 Org 测试进入 CI
 
 ---

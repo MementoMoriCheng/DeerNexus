@@ -40,6 +40,7 @@ from app.gateway.authorize_cache import (
     org_cache_key,
     system_cache_key,
 )
+from app.gateway.rbac import _authorize_error_to_http
 from deerflow.contracts import (
     BUILTIN_ROLE_PERMISSIONS,
     ORG_ADMIN_ROLE_NAME,
@@ -48,8 +49,10 @@ from deerflow.contracts import (
     SYSTEM_PERMISSIONS,
     ErrorCode,
     Permission,
+    PrincipalRef,
+    TenantContext,
 )
-from deerflow.persistence.iam.model import RoleBindingRow
+from deerflow.persistence.iam.model import RoleBindingRow, ServiceAccountRow
 from deerflow.persistence.orgs.model import OrganizationRow, OrgMembershipRow
 from deerflow.persistence.user.model import UserRow
 from deerflow.tenancy import (
@@ -162,6 +165,95 @@ async def _bootstrap(
 
 def _service(sf, *, cache=None) -> AuthorizeService:
     return AuthorizeService(sf, cache=cache)
+
+
+# ---------------------------------------------------------------------------
+# ServiceAccount seed helpers (PR-034)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_service_account(
+    sf,
+    *,
+    org_id: str = ORG_ID,
+    sa_id: str = "sa-test",
+    name: str = "sa-test",
+    status: str = "active",
+) -> ServiceAccountRow:
+    """Insert one ServiceAccountRow. Idempotent on sa_id."""
+    async with sf() as session:
+        if (existing := await session.get(ServiceAccountRow, sa_id)) is not None:
+            return existing
+        sa = ServiceAccountRow(id=sa_id, org_id=org_id, name=name, status=status)
+        session.add(sa)
+        await session.commit()
+        await session.refresh(sa)
+    return sa
+
+
+async def _bind_service_account_role(
+    sf,
+    *,
+    org_id: str = ORG_ID,
+    sa_id: str = "sa-test",
+    role_name: str,
+    expires_at: datetime | None = None,
+) -> None:
+    """Bind a ServiceAccount principal to a builtin role."""
+    from sqlalchemy import select
+
+    from deerflow.persistence.iam.model import RoleRow
+
+    async with sf() as session:
+        role = (await session.execute(select(RoleRow).where(RoleRow.name == role_name, RoleRow.is_system.is_(True)))).scalar_one()
+        binding = RoleBindingRow(
+            id=uuid4().hex,
+            org_id=org_id,
+            principal_type="service_account",
+            principal_id=sa_id,
+            role_id=role.id,
+            expires_at=expires_at,
+        )
+        session.add(binding)
+        await session.commit()
+
+
+async def _bootstrap_service_account(
+    sf,
+    *,
+    org_id: str = ORG_ID,
+    sa_id: str = "sa-test",
+    role_name: str | None = None,
+    org_status: str = "active",
+    sa_status: str = "active",
+) -> ServiceAccountRow:
+    """One-shot seed: org + builtin roles + ServiceAccount + optional binding."""
+    await _seed_org(sf, org_id=org_id, status=org_status)
+    await ensure_builtin_roles(sf)
+    sa = await _seed_service_account(sf, org_id=org_id, sa_id=sa_id, status=sa_status)
+    if role_name is not None:
+        await _bind_service_account_role(sf, org_id=org_id, sa_id=sa_id, role_name=role_name)
+    return sa
+
+
+def _sa_principal_context(
+    *,
+    sa_id: str = "sa-test",
+    org_id: str = ORG_ID,
+) -> TenantContext:
+    """Build a TenantContext carrying a ``service_account`` principal.
+
+    Mirrors what PR-035's API-key middleware will produce once it lands.
+    ``user_id`` is left ``None`` because the PrincipalRef validator
+    forbids a non-user principal from carrying one.
+    """
+    return TenantContext(
+        org_id=org_id,
+        principal=PrincipalRef(id=sa_id, type="service_account"),
+        auth_method="api_key",
+        request_id="test-sa-authz",
+        issued_at=datetime.now(UTC),
+    )
 
 
 # ===========================================================================
@@ -594,3 +686,191 @@ class TestAuthorizeServiceCache:
         org_key = org_cache_key(org_id=ORG_ID, principal_type="user", principal_id=USER_ID)
         assert cache.get(sys_key) == frozenset(SYSTEM_PERMISSIONS)
         assert cache.get(org_key) is None
+
+
+# ===========================================================================
+# IAM-220 — ServiceAccount principal authorize path (PR-034)
+# ===========================================================================
+
+
+class TestAuthorizeServiceAccount:
+    """Authorize-side coverage for ``principal_type="service_account"``.
+
+    PR-034 added the service_account branch to
+    :meth:`AuthorizeService.authorize`. These tests drive it through
+    ``compute_permissions_for_service_account`` directly (the router
+    path lands in PR-035 with API-key header parsing).
+
+    ADR §6 intersection for a service principal drops the
+    ``active_membership`` dimension (SAs do not have Memberships) and
+    replaces it with ``ServiceAccountRow.status == "active"``.
+    """
+
+    @pytest.mark.anyio
+    async def test_active_sa_with_binding_yields_role_perms(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_DEVELOPER_ROLE_NAME)
+        perms = await _service(sf).compute_permissions_for_service_account(service_account_id="sa-test", org_id=ORG_ID)
+        assert perms == frozenset(p.value for p in BUILTIN_ROLE_PERMISSIONS[ORG_DEVELOPER_ROLE_NAME])
+
+    @pytest.mark.anyio
+    async def test_active_sa_without_binding_yields_empty_set(self, sf):
+        await _bootstrap_service_account(sf, role_name=None)
+        perms = await _service(sf).compute_permissions_for_service_account(service_account_id="sa-test", org_id=ORG_ID)
+        assert perms == frozenset()
+
+    @pytest.mark.anyio
+    async def test_admin_role_grants_admin_permissions(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_ADMIN_ROLE_NAME)
+        perms = await _service(sf).compute_permissions_for_service_account(service_account_id="sa-test", org_id=ORG_ID)
+        assert Permission.ADMIN_IAM_MANAGE.value in perms
+        assert Permission.RUNTIME_RUN_CREATE.value in perms
+
+    @pytest.mark.anyio
+    async def test_disabled_sa_raises_principal_disabled(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_ADMIN_ROLE_NAME, sa_status="disabled")
+        with pytest.raises(AuthorizeError) as exc_info:
+            await _service(sf).compute_permissions_for_service_account(service_account_id="sa-test", org_id=ORG_ID)
+        assert exc_info.value.code == ErrorCode.PRINCIPAL_DISABLED
+
+    @pytest.mark.anyio
+    async def test_wrong_org_sa_raises_authentication_invalid(self, sf):
+        """Cross-Org access is hidden as ``AUTHENTICATION_INVALID``.
+
+        A SA exists in ORG_ID but the caller claims org_id="other-org".
+        To reach the SA-org-mismatch branch we have to clear the
+        org_status gate first, so seed a second active Org. The lookup
+        then finds the SA by primary key (ignoring org_id), and the
+        ``sa.org_id != org_id`` mismatch raises AUTHENTICATION_INVALID.
+        The caller cannot distinguish "wrong Org" from "missing" —
+        matching the existence-hiding posture of the user path.
+        """
+        await _bootstrap_service_account(sf, role_name=ORG_ADMIN_ROLE_NAME)
+        await _seed_org(sf, org_id="other-org", status="active")
+        with pytest.raises(AuthorizeError) as exc_info:
+            await _service(sf).compute_permissions_for_service_account(service_account_id="sa-test", org_id="other-org")
+        assert exc_info.value.code == ErrorCode.AUTHENTICATION_INVALID
+
+    @pytest.mark.anyio
+    async def test_missing_sa_raises_authentication_invalid(self, sf):
+        await _seed_org(sf)
+        await ensure_builtin_roles(sf)
+        with pytest.raises(AuthorizeError) as exc_info:
+            await _service(sf).compute_permissions_for_service_account(service_account_id="never-existed", org_id=ORG_ID)
+        assert exc_info.value.code == ErrorCode.AUTHENTICATION_INVALID
+
+    @pytest.mark.anyio
+    async def test_expired_binding_excluded(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_VIEWER_ROLE_NAME)
+        await _bind_service_account_role(
+            sf,
+            role_name=ORG_DEVELOPER_ROLE_NAME,
+            expires_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        perms = await _service(sf).compute_permissions_for_service_account(service_account_id="sa-test", org_id=ORG_ID)
+        # Only the non-expired viewer binding counts.
+        assert perms == frozenset(p.value for p in BUILTIN_ROLE_PERMISSIONS[ORG_VIEWER_ROLE_NAME])
+
+    @pytest.mark.anyio
+    async def test_suspended_org_raises_org_suspended(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_ADMIN_ROLE_NAME, org_status="suspended")
+        with pytest.raises(AuthorizeError) as exc_info:
+            await _service(sf).compute_permissions_for_service_account(service_account_id="sa-test", org_id=ORG_ID)
+        assert exc_info.value.code == ErrorCode.ORG_SUSPENDED
+
+    @pytest.mark.anyio
+    async def test_api_key_scopes_narrow_sa_perms(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_ADMIN_ROLE_NAME)
+        perms = await _service(sf).compute_permissions_for_service_account(
+            service_account_id="sa-test",
+            org_id=ORG_ID,
+            api_key_scopes=frozenset({Permission.RUNTIME_RUN_READ.value}),
+        )
+        assert perms == {Permission.RUNTIME_RUN_READ.value}
+
+
+class TestAuthorizeServiceAccountCache:
+    """Cache namespace separation + invalidation for service principals."""
+
+    @pytest.mark.anyio
+    async def test_sa_and_user_with_same_id_do_not_collide(self, sf):
+        # Same id value, different principal_type → different cache keys
+        # (org_cache_key includes principal_type as a key dimension).
+        await _seed_org(sf)
+        await ensure_builtin_roles(sf)
+        await _seed_user(sf, user_id="shared-id")
+        await _seed_membership(sf, user_id="shared-id")
+        await _bind_role(sf, user_id="shared-id", role_name=ORG_VIEWER_ROLE_NAME)
+        await _seed_service_account(sf, sa_id="shared-id")
+        await _bind_service_account_role(sf, sa_id="shared-id", role_name=ORG_DEVELOPER_ROLE_NAME)
+
+        cache = InMemoryPermissionCache()
+        service = _service(sf, cache=cache)
+        user_perms = await service.compute_permissions_for_user(_user(user_id="shared-id"), org_id=ORG_ID)
+        sa_perms = await service.compute_permissions_for_service_account(service_account_id="shared-id", org_id=ORG_ID)
+        assert user_perms != sa_perms
+        assert user_perms == frozenset(p.value for p in BUILTIN_ROLE_PERMISSIONS[ORG_VIEWER_ROLE_NAME])
+        assert sa_perms == frozenset(p.value for p in BUILTIN_ROLE_PERMISSIONS[ORG_DEVELOPER_ROLE_NAME])
+
+    @pytest.mark.anyio
+    async def test_invalidate_principal_drops_entry(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_VIEWER_ROLE_NAME)
+        cache = InMemoryPermissionCache()
+        service = _service(sf, cache=cache)
+
+        first = await service.compute_permissions_for_service_account(service_account_id="sa-test", org_id=ORG_ID)
+        assert cache.get(org_cache_key(org_id=ORG_ID, principal_type="service_account", principal_id="sa-test")) == first
+
+        service.invalidate_principal(org_id=ORG_ID, principal_type="service_account", principal_id="sa-test")
+        assert cache.get(org_cache_key(org_id=ORG_ID, principal_type="service_account", principal_id="sa-test")) is None
+
+        # Add a developer binding between calls — after invalidation the new
+        # binding must show up in the recomputed set.
+        await _bind_service_account_role(sf, role_name=ORG_DEVELOPER_ROLE_NAME)
+        second = await service.compute_permissions_for_service_account(service_account_id="sa-test", org_id=ORG_ID)
+        assert Permission.RUNTIME_RUN_CREATE.value in second  # developer-only
+
+
+class TestAuthorizeEntryPointServiceAccount:
+    """Drive ``AuthorizeService.authorize()`` (not the compute_* helper).
+
+    Confirms the principal-type dispatch in ``authorize()`` routes a
+    ``service_account`` principal through the new branch, and that the
+    resulting decision matches the underlying ``compute_*`` helper.
+    """
+
+    @pytest.mark.anyio
+    async def test_authorize_allows_granted_permission(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_DEVELOPER_ROLE_NAME)
+        service = _service(sf)
+        ctx = _sa_principal_context()
+        # RUNTIME_RUN_CREATE is in org:developer → allow.
+        await service.authorize(ctx, Permission.RUNTIME_RUN_CREATE)
+
+    @pytest.mark.anyio
+    async def test_authorize_denies_missing_permission(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_VIEWER_ROLE_NAME)
+        service = _service(sf)
+        ctx = _sa_principal_context()
+        # ADMIN_IAM_MANAGE is org:admin-only; viewer does not carry it.
+        with pytest.raises(AuthorizeError) as exc_info:
+            await service.authorize(ctx, Permission.ADMIN_IAM_MANAGE)
+        assert exc_info.value.code == ErrorCode.PERMISSION_DENIED
+
+    @pytest.mark.anyio
+    async def test_authorize_denies_disabled_sa(self, sf):
+        await _bootstrap_service_account(sf, role_name=ORG_ADMIN_ROLE_NAME, sa_status="disabled")
+        service = _service(sf)
+        ctx = _sa_principal_context()
+        with pytest.raises(AuthorizeError) as exc_info:
+            await service.authorize(ctx, Permission.RUNTIME_RUN_CREATE)
+        assert exc_info.value.code == ErrorCode.PRINCIPAL_DISABLED
+
+
+class TestPrincipalDisabledHttpStatusMapping:
+    """``_authorize_error_to_http`` maps PRINCIPAL_DISABLED → 403."""
+
+    def test_principal_disabled_returns_403(self):
+        exc = AuthorizeError(ErrorCode.PRINCIPAL_DISABLED, "ServiceAccount is disabled.")
+        http_exc = _authorize_error_to_http(exc)
+        assert http_exc.status_code == 403
+        assert "disabled" in http_exc.detail.lower()

@@ -283,25 +283,32 @@ async def ensure_admin_membership(
     return row
 
 
-async def ensure_admin_role_binding(
+async def _ensure_role_binding(
     sf: async_sessionmaker[AsyncSession],
     *,
     org_id: str,
-    user_id: str,
+    principal_type: str,
+    principal_id: str,
     role_id: str,
 ) -> RoleBindingRow:
-    """Idempotently bind the admin user to the system admin role in the org.
+    """Idempotent RoleBinding insert, polymorphic on ``principal_type``.
 
-    ``role_id`` is a real FK→``roles.id`` (CASCADE) and must already be
-    committed; ``org_id`` / ``principal_id`` are soft references (data-model
-    §5.2, no FK). Probes by the ``(org_id, principal_type, principal_id,
-    role_id)`` unique constraint.
+    Shared body of :func:`ensure_admin_role_binding` (user principal) and
+    :func:`ensure_service_account_role_binding` (service_account principal).
+    Probes the ``(org_id, principal_type, principal_id, role_id)`` unique
+    constraint before inserting. ``role_id`` is a real FK→``roles.id``
+    (CASCADE) and must already be committed; ``org_id`` /
+    ``principal_id`` are soft references (data-model §5.2, no FK).
+
+    Extracted by PR-034 to support ServiceAccount bindings without
+    duplicating the probe-or-insert logic — the ADR §8 unique constraint
+    is the same shape for both principal types.
     """
     async with sf() as session:
         stmt = select(RoleBindingRow).where(
             RoleBindingRow.org_id == org_id,
-            RoleBindingRow.principal_type == "user",
-            RoleBindingRow.principal_id == user_id,
+            RoleBindingRow.principal_type == principal_type,
+            RoleBindingRow.principal_id == principal_id,
             RoleBindingRow.role_id == role_id,
         )
         existing = (await session.execute(stmt)).scalar_one_or_none()
@@ -311,14 +318,41 @@ async def ensure_admin_role_binding(
         row = RoleBindingRow(
             id=_new_id(),
             org_id=org_id,
-            principal_type="user",
-            principal_id=user_id,
+            principal_type=principal_type,
+            principal_id=principal_id,
             role_id=role_id,
         )
         session.add(row)
         await session.commit()
         await session.refresh(row)
+    return row
 
+
+async def ensure_admin_role_binding(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    user_id: str,
+    role_id: str,
+) -> RoleBindingRow:
+    """Idempotently bind the admin user to the system admin role in the org.
+
+    Thin wrapper over :func:`_ensure_role_binding` for the ``user`` principal
+    type. Preserved for the two existing call sites
+    (``app.gateway.app._ensure_default_org`` lifespan hook and
+    ``app.gateway.routers.auth._establish_admin_tenant_relationships``) so
+    they keep working without signature changes. Re-emits the
+    ``admin_role_binding_created`` tenant event to preserve the pre-PR-034
+    audit trail (the shared helper does not emit so the SA path can emit
+    its own event name).
+    """
+    row = await _ensure_role_binding(
+        sf,
+        org_id=org_id,
+        principal_type="user",
+        principal_id=user_id,
+        role_id=role_id,
+    )
     emit_tenant_event(
         "admin_role_binding_created",
         org_id=org_id,
@@ -328,12 +362,36 @@ async def ensure_admin_role_binding(
     return row
 
 
+async def ensure_service_account_role_binding(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    service_account_id: str,
+    role_id: str,
+) -> RoleBindingRow:
+    """Idempotently bind a ServiceAccount to ``role_id`` in ``org_id``.
+
+    PR-034 sister of :func:`ensure_admin_role_binding` for the
+    ``service_account`` principal type. Used by the IAM router's
+    create-binding endpoint when an admin grants a ServiceAccount an Org
+    role (and by tests seeding a SA principal for ``authorize()``).
+    """
+    return await _ensure_role_binding(
+        sf,
+        org_id=org_id,
+        principal_type="service_account",
+        principal_id=service_account_id,
+        role_id=role_id,
+    )
+
+
 __all__ = [
     "SYSTEM_ADMIN_ROLE_NAME",
     "ensure_admin_membership",
     "ensure_admin_role_binding",
     "ensure_builtin_roles",
     "ensure_default_org",
+    "ensure_service_account_role_binding",
     "ensure_system_admin_role",
     "ensure_validation_org",
 ]

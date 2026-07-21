@@ -122,6 +122,14 @@ def _authorize_error_to_http(exc: AuthorizeError) -> HTTPException:
         return HTTPException(status_code=403, detail="Organization is suspended")
     if code == ErrorCode.ORG_DELETING:
         return HTTPException(status_code=403, detail="Organization is being deleted")
+    if code == ErrorCode.PRINCIPAL_DISABLED:
+        # ADR §12: disabled User / ServiceAccount → 403 principal_disabled.
+        # Without this branch a disabled SA fell through to the
+        # PERMISSION_DENIED fallthrough, which happened to return 403 but
+        # with the wrong response body ("Permission denied" instead of
+        # "Principal is disabled"). The dedicated branch keeps the body
+        # aligned with the ADR's error-code catalogue.
+        return HTTPException(status_code=403, detail="Principal is disabled")
     # PERMISSION_DENIED (and any future deny code): default 403.
     detail = f"Permission denied: {permission}" if permission else "Permission denied"
     return HTTPException(status_code=403, detail=detail)

@@ -415,11 +415,20 @@ async def bind_rbac_role(
     sf,
     *,
     org_id: str = RBAC_DEFAULT_ORG_ID,
-    user_id: str = RBAC_DEFAULT_USER_ID,
+    user_id: str | None = None,
     role_name: str,
     expires_at: datetime | None = None,
+    principal_type: str = "user",
+    principal_id: str | None = None,
 ) -> None:
-    """Bind ``user_id`` to the builtin ``role_name`` in ``org_id``.
+    """Bind ``principal_id`` to the builtin ``role_name`` in ``org_id``.
+
+    Polymorphic on ``principal_type`` (PR-034 added ``service_account``).
+    Defaults preserve the pre-PR-034 ``bind_rbac_role(sf, user_id=..., role_name=...)``
+    shape — when ``principal_type="user"`` and ``principal_id`` is
+    omitted, the supplied ``user_id`` is used as the principal id. Pass
+    ``principal_type="service_account"`` (and a ``principal_id``) to
+    bind a ServiceAccount principal.
 
     Requires :func:`seed_rbac_builtin_roles` to have run first (the
     lookup is by ``(name, is_system)``).
@@ -428,18 +437,101 @@ async def bind_rbac_role(
 
     from deerflow.persistence.iam.model import RoleBindingRow, RoleRow
 
+    if principal_id is None:
+        if user_id is None:
+            raise ValueError("bind_rbac_role requires either principal_id or user_id")
+        principal_id = user_id
+
     async with sf() as session:
         role = (await session.execute(select(RoleRow).where(RoleRow.name == role_name, RoleRow.is_system.is_(True)))).scalar_one()
         binding = RoleBindingRow(
             id=uuid4().hex,
             org_id=org_id,
-            principal_type="user",
-            principal_id=user_id,
+            principal_type=principal_type,
+            principal_id=principal_id,
             role_id=role.id,
             expires_at=expires_at,
         )
         session.add(binding)
         await session.commit()
+
+
+async def seed_rbac_service_account(
+    sf,
+    *,
+    org_id: str = RBAC_DEFAULT_ORG_ID,
+    name: str = "sa-test",
+    status: str = "active",
+    owner_user_id: str | None = None,
+    purpose: str | None = None,
+    system: str | None = None,
+    environment: str | None = None,
+    expires_at: datetime | None = None,
+):
+    """Insert one ``ServiceAccountRow`` (PR-034). Returns the row.
+
+    Idempotent on ``(org_id, name)``: if a row with the same name exists
+    in the Org, returns it as-is (does NOT mutate its status/fields).
+    """
+    from sqlalchemy import select
+
+    import deerflow.persistence.models  # noqa: F401 — register ORM
+    from deerflow.persistence.iam.model import ServiceAccountRow
+
+    async with sf() as session:
+        existing = (
+            await session.execute(
+                select(ServiceAccountRow).where(
+                    ServiceAccountRow.org_id == org_id,
+                    ServiceAccountRow.name == name,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        row = ServiceAccountRow(
+            id=uuid4().hex,
+            org_id=org_id,
+            name=name,
+            status=status,
+            owner_user_id=owner_user_id,
+            purpose=purpose,
+            system=system,
+            environment=environment,
+            expires_at=expires_at,
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+    return row
+
+
+async def bootstrap_rbac_service_account(
+    sf,
+    *,
+    org_id: str = RBAC_DEFAULT_ORG_ID,
+    name: str = "sa-test",
+    role_name: str,
+    status: str = "active",
+):
+    """One-shot IAM seed for a ServiceAccount principal (PR-034).
+
+    Sister of :func:`bootstrap_rbac` for service principals. Seeds the
+    Org + builtin roles + the ServiceAccount row + its role binding.
+    Returns the :class:`ServiceAccountRow` (the caller needs its ``id``
+    to construct a ``PrincipalRef(type="service_account", id=sa.id)``).
+    """
+    await seed_rbac_org(sf, org_id=org_id)
+    await seed_rbac_builtin_roles(sf)
+    sa = await seed_rbac_service_account(sf, org_id=org_id, name=name, status=status)
+    await bind_rbac_role(
+        sf,
+        org_id=org_id,
+        role_name=role_name,
+        principal_type="service_account",
+        principal_id=sa.id,
+    )
+    return sa
 
 
 async def seed_rbac_builtin_roles(sf) -> None:

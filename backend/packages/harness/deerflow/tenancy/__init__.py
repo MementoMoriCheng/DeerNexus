@@ -18,6 +18,7 @@ from deerflow.tenancy.bootstrap import (
     ensure_admin_role_binding,
     ensure_builtin_roles,
     ensure_default_org,
+    ensure_service_account_role_binding,
     ensure_system_admin_role,
     ensure_validation_org,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "ensure_admin_role_binding",
     "ensure_builtin_roles",
     "ensure_default_org",
+    "ensure_service_account_role_binding",
     "ensure_system_admin_role",
     "ensure_validation_org",
     "get_active_membership",

@@ -218,6 +218,48 @@ class TestServiceAccountConstraints:
             with pytest.raises(IntegrityError):
                 await session.commit()
 
+    @pytest.mark.anyio
+    async def test_pr_034_traceability_columns_nullable(self, engine):
+        """PR-034 (0008_service_account_fields) added 5 nullable columns.
+
+        A row constructed without any of them must commit cleanly. The
+        ORM defaults to ``None`` so this is also a parity check that the
+        ORM mirrors the migration's nullability.
+        """
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        async with AsyncSession(engine) as session:
+            row = _svc(id="sa-1", org_id="org-1", name="bot")
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+        assert row.owner_user_id is None
+        assert row.purpose is None
+        assert row.system is None
+        assert row.environment is None
+        assert row.expires_at is None
+
+    @pytest.mark.anyio
+    async def test_owner_user_id_not_unique_multiple_sas_share_owner(self, engine):
+        """ADR §9.1: ``owner_user_id`` is accountability only, not a 1:1.
+
+        One owner can be the accountable contact for many SAs (a team
+        lead overseeing several CI runners, for example). There is no
+        unique constraint on ``owner_user_id``.
+        """
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        async with AsyncSession(engine) as session:
+            session.add(_svc(id="sa-1", org_id="org-1", name="bot-a"))
+            session.add(_svc(id="sa-2", org_id="org-1", name="bot-b"))
+            await session.commit()  # must NOT raise
+
+        async with AsyncSession(engine) as session:
+            from sqlalchemy import select
+
+            rows = (await session.execute(select(ServiceAccountRow).where(ServiceAccountRow.org_id == "org-1"))).scalars().all()
+        assert len(rows) == 2
+
 
 # ===========================================================================
 # api_keys constraints
@@ -388,5 +430,53 @@ class TestMigrationRoundTrip:
             # Downgrade again proves the seed is reversible.
             await asyncio.to_thread(alembic_command.downgrade, cfg, "0006_enforce_org_not_null")
             assert await _builtin_role_count() == 0
+        finally:
+            await close_engine()
+
+    @pytest.mark.anyio
+    async def test_service_account_fields_round_trip(self, tmp_path: Path):
+        """``0008_service_account_fields`` adds 5 columns and is reversible.
+
+        PR-034: the revision adds ``owner_user_id`` / ``purpose`` /
+        ``system`` / ``environment`` / ``expires_at`` to
+        ``service_accounts``. Downgrade to ``0007_builtin_roles`` must
+        drop all five; re-upgrade must restore them (pr-split-guide §7
+        independently-upgradable).
+        """
+        import asyncio
+
+        import alembic.command as alembic_command
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from deerflow.persistence.bootstrap import _get_alembic_config
+        from deerflow.persistence.engine import close_engine, get_engine, init_engine
+
+        url = f"sqlite+aiosqlite:///{tmp_path / 'sa_fields_roundtrip.db'}"
+        await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+        try:
+            cfg = _get_alembic_config(get_engine())
+
+            async def _column_names() -> set[str]:
+                engine = create_async_engine(url)
+                try:
+                    async with engine.connect() as conn:
+                        result = await conn.execute(text("PRAGMA table_info(service_accounts)"))
+                        return {row[1] for row in result}
+                finally:
+                    await engine.dispose()
+
+            # Fresh bootstrap has the columns (create_all provisions
+            # them from the ORM). Downgrade to 0007 drops all five.
+            await asyncio.to_thread(alembic_command.downgrade, cfg, "0007_builtin_roles")
+            after_down = await _column_names()
+            for col in ("owner_user_id", "purpose", "system", "environment", "expires_at"):
+                assert col not in after_down, f"{col} survived downgrade to 0007"
+
+            # Re-upgrade restores them.
+            await asyncio.to_thread(alembic_command.upgrade, cfg, "head")
+            after_up = await _column_names()
+            for col in ("owner_user_id", "purpose", "system", "environment", "expires_at"):
+                assert col in after_up, f"{col} missing after re-upgrade to head"
         finally:
             await close_engine()

@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0007_builtin_roles"
+HEAD = "0008_service_account_fields"
 BASELINE = "0001_baseline"
 
 

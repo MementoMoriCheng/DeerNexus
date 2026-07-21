@@ -21,6 +21,7 @@ from app.gateway.routers import (
     channel_connections,
     channels,
     feedback,
+    iam,
     mcp,
     memory,
     models,
@@ -569,6 +570,13 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # runs / usage endpoints scoped to the caller's active Org; gated by
     # ``@require_rbac(Permission.ADMIN_CONSOLE_READ)`` (PR-033).
     app.include_router(admin_router.router)
+
+    # IAM ServiceAccount API (PR-034) is mounted at /api/v1/iam.
+    # ServiceAccount lifecycle + role-binding CRUD, gated by
+    # ``@require_rbac(Permission.ADMIN_IAM_READ)`` /
+    # ``Permission.ADMIN_IAM_MANAGE`` (both org:admin-only). Shares the
+    # admin:* permission domain with the Org Console.
+    app.include_router(iam.router)
 
     # Feedback API is mounted at /api/threads/{thread_id}/runs/{run_id}/feedback
     app.include_router(feedback.router)
