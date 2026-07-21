@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 _SECRET_FILE = ".jwt_secret"
+_API_KEY_PEPPER_FILE = ".api_key_pepper"
 
 
 class AuthConfig(BaseModel):
@@ -27,17 +28,35 @@ class AuthConfig(BaseModel):
     token_expiry_days: int = Field(default=7, ge=1, le=30)
     oauth_github_client_id: str | None = Field(default=None)
     oauth_github_client_secret: str | None = Field(default=None)
+    api_key_pepper: str = Field(
+        default="",
+        description=(
+            "Server-side pepper for API key HMAC (PR-035). SHOULD be set via "
+            "AUTH_API_KEY_PEPPER. Empty string is the test/default sentinel: "
+            "``get_auth_config``'s loader auto-generates + persists a stable "
+            "value when the env var is unset, so direct "
+            "``AuthConfig(jwt_secret=...)`` test constructions keep working. "
+            "NOT reused as jwt_secret (defense-in-depth)."
+        ),
+    )
 
 
 _auth_config: AuthConfig | None = None
 
 
-def _load_or_create_secret() -> str:
-    """Load persisted JWT secret from ``{base_dir}/.jwt_secret``, or generate and persist a new one."""
+def _load_or_create_secret(secret_filename: str, *, env_hint: str) -> str:
+    """Load a persisted secret from ``{base_dir}/<filename>``, or generate and persist a new one.
+
+    Shared body of the JWT secret + API key pepper loaders. Each secret
+    is persisted in its own file under 0o600 so a deploy that loses its
+    env vars still converges on a stable secret across restarts. The
+    ``env_hint`` is used in the warning log so an operator knows which
+    env var to set in production.
+    """
     from deerflow.config.paths import get_paths
 
     paths = get_paths()
-    secret_file = paths.base_dir / _SECRET_FILE
+    secret_file = paths.base_dir / secret_filename
 
     try:
         if secret_file.exists():
@@ -45,7 +64,7 @@ def _load_or_create_secret() -> str:
             if secret:
                 return secret
     except OSError as exc:
-        raise RuntimeError(f"Failed to read JWT secret from {secret_file}. Set AUTH_JWT_SECRET explicitly or fix DEER_FLOW_HOME/base directory permissions so DeerFlow can read its persisted auth secret.") from exc
+        raise RuntimeError(f"Failed to read secret from {secret_file}. Set {env_hint} explicitly or fix DEER_FLOW_HOME/base directory permissions so DeerFlow can read its persisted auth secret.") from exc
 
     secret = secrets.token_urlsafe(32)
     try:
@@ -54,7 +73,7 @@ def _load_or_create_secret() -> str:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(secret)
     except OSError as exc:
-        raise RuntimeError(f"Failed to persist JWT secret to {secret_file}. Set AUTH_JWT_SECRET explicitly or fix DEER_FLOW_HOME/base directory permissions so DeerFlow can store a stable auth secret.") from exc
+        raise RuntimeError(f"Failed to persist secret to {secret_file}. Set {env_hint} explicitly or fix DEER_FLOW_HOME/base directory permissions so DeerFlow can store a stable auth secret.") from exc
     return secret
 
 
@@ -67,7 +86,7 @@ def get_auth_config() -> AuthConfig:
         load_dotenv()
         jwt_secret = os.environ.get("AUTH_JWT_SECRET")
         if not jwt_secret:
-            jwt_secret = _load_or_create_secret()
+            jwt_secret = _load_or_create_secret(_SECRET_FILE, env_hint="AUTH_JWT_SECRET")
             os.environ["AUTH_JWT_SECRET"] = jwt_secret
             logger.warning(
                 "⚠ AUTH_JWT_SECRET is not set — using an auto-generated secret "
@@ -75,7 +94,17 @@ def get_auth_config() -> AuthConfig:
                 "For production, add AUTH_JWT_SECRET to your .env file: "
                 'python -c "import secrets; print(secrets.token_urlsafe(32))"'
             )
-        _auth_config = AuthConfig(jwt_secret=jwt_secret)
+        api_key_pepper = os.environ.get("AUTH_API_KEY_PEPPER")
+        if not api_key_pepper:
+            api_key_pepper = _load_or_create_secret(_API_KEY_PEPPER_FILE, env_hint="AUTH_API_KEY_PEPPER")
+            os.environ["AUTH_API_KEY_PEPPER"] = api_key_pepper
+            logger.warning(
+                "⚠ AUTH_API_KEY_PEPPER is not set — using an auto-generated pepper "
+                "persisted to .api_key_pepper. Existing API keys will verify across "
+                "restarts. For production, add AUTH_API_KEY_PEPPER to your .env file: "
+                'python -c "import secrets; print(secrets.token_urlsafe(32))"'
+            )
+        _auth_config = AuthConfig(jwt_secret=jwt_secret, api_key_pepper=api_key_pepper)
     return _auth_config
 
 

@@ -30,12 +30,12 @@ delete implicitly removes dependent keys.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from deerflow.persistence.iam.model import RoleBindingRow, ServiceAccountRow
+from deerflow.persistence.iam.model import ApiKeyRow, RoleBindingRow, ServiceAccountRow
 
 #: Status values allowed by the ``ck_service_accounts_status`` CHECK.
 #: ``deleted`` is NOT a row state — SA deletion is a hard DELETE (ADR §12
@@ -51,6 +51,13 @@ _ALLOWED_STATUSES: frozenset[str] = frozenset({SERVICE_ACCOUNT_ACTIVE, SERVICE_A
 #: explicit at the call site (matches ADR §9.1 "active ↔ disabled → deleted"
 #: state machine).
 _UPDATABLE_FIELDS: frozenset[str] = frozenset({"name", "description", "owner_user_id", "purpose", "system", "environment", "expires_at"})
+
+#: Sampling window for ``touch_api_key_last_used``. At most one ``UPDATE``
+#: per Key per window so a high-QPS API-key-authenticated request stream
+#: does not turn into a per-request DB write. Matches the ADR §11 60s
+#: cache/TTL granularity — anything finer buys nothing because cached
+#: authz decisions are refreshed on at most the same cadence.
+_LAST_USED_SAMPLE_WINDOW = timedelta(seconds=60)
 
 
 def _new_id() -> str:
@@ -310,16 +317,199 @@ async def delete_role_binding(
         await session.commit()
 
 
+# ---------------------------------------------------------------------------
+# API Key CRUD (PR-035)
+# ---------------------------------------------------------------------------
+#
+# ``api_keys.service_account_id`` IS a real FK with ``ondelete=CASCADE``
+# (0004_iam_tables), so SA deletion implicitly removes dependent keys.
+# ``key_prefix`` is the lookup key (unique index ``uq_api_keys_key_prefix``)
+# and ``key_hash`` is the HMAC-SHA256(pepper, plaintext) hex digest — the
+# plaintext is NEVER persisted (ADR §9.2).
+
+
+async def create_api_key(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    service_account_id: str,
+    key_prefix: str,
+    key_hash: str,
+    scopes: list[str],
+    expires_at: datetime,
+    created_by: str | None = None,
+) -> ApiKeyRow:
+    """Insert one ``ApiKeyRow``. ``revoked_at`` starts ``None``.
+
+    The ``key_hash`` MUST already be HMAC'd by the caller
+    (``app.gateway.auth.api_key.hash_api_key``); this layer never sees
+    the plaintext. The unique ``key_prefix`` constraint raises
+    ``IntegrityError`` on collision; the app layer retries once with a
+    fresh prefix, then surfaces 409 if it still collides.
+    """
+    row = ApiKeyRow(
+        id=_new_id(),
+        org_id=org_id,
+        service_account_id=service_account_id,
+        key_prefix=key_prefix,
+        key_hash=key_hash,
+        scopes=list(scopes),
+        expires_at=expires_at,
+    )
+    # ``created_by`` is not on ApiKeyRow today (no column); the actor is
+    # carried in the audit payload by the router. Kept as a parameter so
+    # a future migration adding the column does not break callers.
+    del created_by
+    async with sf() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+    return row
+
+
+async def get_api_key(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    api_key_id: str,
+) -> ApiKeyRow | None:
+    """Return the row by primary key, or ``None``. Caller MUST scope by org_id."""
+    async with sf() as session:
+        return await session.get(ApiKeyRow, api_key_id)
+
+
+async def get_api_key_by_prefix(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    key_prefix: str,
+) -> ApiKeyRow | None:
+    """Look up by ``key_prefix``. Auth-middleware path.
+
+    The unique index ``uq_api_keys_key_prefix`` guarantees at most one
+    match. Cross-Org scope is NOT applied here — the middleware reads
+    the row's ``org_id`` / ``service_account_id`` to drive subsequent
+    checks (SA row, SA status, etc.). Callers that need to scope should
+    use :func:`get_api_key` + a manual ``org_id`` comparison.
+    """
+    async with sf() as session:
+        return (await session.execute(select(ApiKeyRow).where(ApiKeyRow.key_prefix == key_prefix))).scalar_one_or_none()
+
+
+async def list_api_keys(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    service_account_id: str,
+) -> list[ApiKeyRow]:
+    """All keys for one SA in one Org. ADR §8 Org filter is required.
+
+    Ordered by ``created_at`` descending so the newest keys (most
+    relevant for an operator looking for "what's active") come first.
+    """
+    async with sf() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(ApiKeyRow)
+                    .where(
+                        ApiKeyRow.org_id == org_id,
+                        ApiKeyRow.service_account_id == service_account_id,
+                    )
+                    .order_by(ApiKeyRow.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return list(rows)
+
+
+async def revoke_api_key(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    api_key_id: str,
+    org_id: str,
+) -> ApiKeyRow | None:
+    """Set ``revoked_at = now`` on one key. Idempotent.
+
+    Returns the updated row, or ``None`` if the key does not exist (or
+    belongs to a different Org — existence-hiding via ``org_id`` filter,
+    ADR §8). The app layer treats ``None`` as 204 anyway because revocation
+    is idempotent: a repeated revoke after a partial failure must not
+    surface as an error to the client.
+
+    Setting ``revoked_at`` multiple times is harmless — the column is
+    monotonic (we do not reset it). ADR §9.2 line 299 "revoked / expired
+    Key 不可恢复" forbids un-revoking, which the absence of an un-revoke
+    endpoint enforces structurally.
+    """
+    now = datetime.now(UTC)
+    async with sf() as session:
+        row = (
+            await session.execute(
+                select(ApiKeyRow).where(
+                    ApiKeyRow.id == api_key_id,
+                    ApiKeyRow.org_id == org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        if row.revoked_at is None:
+            row.revoked_at = now
+            await session.commit()
+            await session.refresh(row)
+        return row
+
+
+async def touch_api_key_last_used(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    api_key_id: str,
+) -> None:
+    """Sampling UPDATE on ``last_used_at`` (PR-035 ADR §9.2 observability).
+
+    At most one write per :data:`_LAST_USED_SAMPLE_WINDOW` per key, so
+    a high-QPS request stream does not turn into per-request DB writes.
+    The WHERE clause is the sampling gate: a row whose ``last_used_at``
+    is already within the window is not touched. The condition
+    ``last_used_at IS NULL OR last_used_at < :cutoff`` is evaluated by
+    the DB, avoiding a read-modify-write race across concurrent
+    requests (whichever request wins the race updates; the loser's
+    UPDATE matches zero rows and is a cheap no-op).
+
+    Fire-and-forget from the auth middleware: this function swallows
+    nothing — the caller wraps it in ``try/except`` + ``asyncio.shield``
+    so an observability-column write failure never fails the request.
+    """
+    cutoff = datetime.now(UTC) - _LAST_USED_SAMPLE_WINDOW
+    async with sf() as session:
+        await session.execute(
+            update(ApiKeyRow)
+            .where(
+                ApiKeyRow.id == api_key_id,
+                (ApiKeyRow.last_used_at.is_(None)) | (ApiKeyRow.last_used_at < cutoff),
+            )
+            .values(last_used_at=datetime.now(UTC))
+        )
+        await session.commit()
+
+
 __all__ = [
     "SERVICE_ACCOUNT_ACTIVE",
     "SERVICE_ACCOUNT_DISABLED",
+    "create_api_key",
     "create_role_binding",
     "create_service_account",
     "delete_role_binding",
     "delete_service_account",
+    "get_api_key",
+    "get_api_key_by_prefix",
     "get_service_account",
+    "list_api_keys",
     "list_role_bindings",
     "list_service_accounts",
+    "revoke_api_key",
     "set_service_account_status",
+    "touch_api_key_last_used",
     "update_service_account",
 ]

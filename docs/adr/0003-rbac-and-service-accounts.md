@@ -429,11 +429,13 @@ MVP 默认 `additive`：
 - [ ] 三个内置 Org 角色权限与本文一致
 - [ ] Viewer 无法创建 Run 或打开 Admin Console
 - [ ] Developer 无法 IAM、Audit 或 prod promote
-- [ ] API Key scope 只能收窄 ServiceAccount 权限
-      （**部分通过**：PR-031 落地了 scope 收窄逻辑 `compute_effective_permissions(api_key_scopes=...)`，
-      PR-034 在 `compute_permissions_for_service_account` 路径复用该 hook；
-      但真实 API Key 凭证路径 [X-Api-Key header 解析 + key_hash 恒定时间校验 + mint/rotate/revoke]
-      延后 PR-035，故本项暂不勾选，等 PR-035 端到端落地后再勾）
+- [x] API Key scope 只能收窄 ServiceAccount 权限
+      （PR-035：`AuthMiddleware` 解析 `X-Api-Key` / `Authorization: Bearer` +
+      `key_hash` 恒定时间校验，`TenantContext.api_key_scopes` 经 `rbac.py`
+      传入 `authorize()`，PR-034 的 `compute_permissions_for_service_account`
+      `_apply_scopes` 在 cache 边界之后做收窄 —— 缓存 stores SA full pre-scope
+      set，Key 任何变更不影响缓存值。e2e 测
+      `test_api_key_auth_middleware.py::TestApiKeyScopeNarrowingE2E` 锁定。）
 - [ ] invited / suspended / removed Membership 语义通过
 - [ ] Membership、角色、主体和 Key 撤销 P99 ≤60 秒
 - [ ] 最后 org:admin 保护通过
@@ -450,7 +452,10 @@ MVP 默认 `additive`：
       `delete_service_account` 单 `AsyncSession` 同事务 DELETE bindings + row，
       `test_iam_service_account_repository.py::TestDelete::test_delete_clears_role_bindings_same_transaction`
       锁定；API Key CASCADE 走 FK，schema 已就位）
-- [ ] API Key 端到端 mint / rotate / revoke（PR-035）
+- [x] API Key 端到端 mint / rotate / revoke（PR-035：mint/list/revoke 三端点 +
+      `X-Api-Key`/`Authorization: Bearer` 解析 + `key_hash` HMAC-SHA256(pepper)
+      恒定时间校验 + 明文一次性返回 + 采样式 `last_used_at`。轮换 = create +
+      revoke ≤24h 组合,无专用 `:rotate` 端点 —— 见 runtime-contracts §16.44）
 - [ ] 撤权 P99 ≤60 秒（PR-037 主动失效 + SSE re-validation）
 - [ ] RBAC 正反向矩阵和双 Org 测试进入 CI
 

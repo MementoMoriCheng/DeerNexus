@@ -1,7 +1,8 @@
-"""IAM ServiceAccount API (PR-034).
+"""IAM ServiceAccount API (PR-034) + API Key endpoints (PR-035).
 
-Ten endpoints for ServiceAccount lifecycle and role bindings, mounted at
-``/api/v1/iam``:
+Thirteen endpoints mounted at ``/api/v1/iam``:
+
+ServiceAccount lifecycle (PR-034):
 
 * ``GET    /service-accounts``                       — list (Org-scoped)
 * ``POST   /service-accounts``                       — create
@@ -13,6 +14,12 @@ Ten endpoints for ServiceAccount lifecycle and role bindings, mounted at
 * ``GET    /service-accounts/{sa_id}/role-bindings`` — list bindings
 * ``POST   /service-accounts/{sa_id}/role-bindings`` — bind a role
 * ``DELETE /service-accounts/{sa_id}/role-bindings/{binding_id}`` — unbind
+
+API Key lifecycle (PR-035):
+
+* ``POST   /service-accounts/{sa_id}/api-keys``          — mint (returns plaintext ONCE)
+* ``GET    /service-accounts/{sa_id}/api-keys``          — list (no plaintext, no hash)
+* ``DELETE /service-accounts/{sa_id}/api-keys/{key_id}`` — revoke (idempotent)
 
 Gating (ADR §4): all reads use ``Permission.ADMIN_IAM_READ``, all writes
 use ``Permission.ADMIN_IAM_MANAGE``. Both are carried only by
@@ -28,11 +35,25 @@ Deletion is hard (no tombstone) and runs in a single transaction with
 role-binding cleanup and api-key CASCADE (ADR §12 "ServiceAccount 删除
 必须与全部 Key 撤销在同一受控事务完成").
 
+API Key rules (ADR §9.2):
+
+* Plaintext is returned exactly once on mint; the DB stores only
+  ``key_hash`` (HMAC-SHA256(pepper, plaintext)). The read path never
+  surfaces plaintext or hash.
+* ``scopes`` is required, non-empty, and must be a subset of the
+  registry's ``Permission`` values (no ``system:*``). Scope narrowing
+  is applied per-request at the ``authorize()`` boundary, NOT cached
+  per-key, so Key create/revoke do not invalidate the SA's cache.
+* Rotation = create new + revoke old within 24h (ADR §9.2 ≤24h overlap)
+  — there is no dedicated ``:rotate`` endpoint; the audit log shows a
+  ``api_key_created`` + ``api_key_revoked`` pair.
+
 Audit: every mutation emits a ``service_account_*`` /
-``service_account_role_binding_*`` event through the ``emit_tenant_event``
-logger shim (PR-041 will replace the shim with the real AuditEvent
-outbox — TODO marker in each call). Cache invalidation runs after the
-commit via :meth:`AuthorizeService.invalidate_principal` (ADR §11).
+``service_account_role_binding_*`` / ``api_key_*`` event through the
+``emit_tenant_event`` logger shim (PR-041 will replace the shim with
+the real AuditEvent outbox — TODO marker in each call). Cache
+invalidation runs after the commit via
+:meth:`AuthorizeService.invalidate_principal` (ADR §11).
 
 Cross-Org isolation (ADR §8 "列表与查询强制 Org 过滤"): every endpoint
 takes the caller's ``org_id`` from the bound ``TenantContext`` and
@@ -41,12 +62,10 @@ existence-hiding, matching the posture established in PR-031/032/033.
 
 What this router deliberately does NOT do (PR boundary):
 
-* It does not implement API Key mint/rotate/revoke — PR-035. Today a
-  ServiceAccount can be created and granted roles but cannot
-  authenticate via an API key; the ``authorize()`` service_account
-  branch is exercised through service-layer tests that construct a
-  ``PrincipalRef(type="service_account", ...)`` directly.
 * It does not emit real AuditEvent outbox rows — PR-041.
+* It does not implement rate limiting (ADR §9.3) — platform limiter PR.
+* It does not emit a dedicated ``api_key_rotated`` event — rotation is
+  the composition of ``api_key_created`` + ``api_key_revoked`` (≤24h).
 """
 
 from __future__ import annotations
@@ -56,26 +75,35 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy.exc import IntegrityError
 
+from app.gateway.auth.api_key import generate_api_key
 from app.gateway.authorize import get_authorize_service
 from app.gateway.rbac import require_rbac
 from deerflow.contracts import Permission, get_tenant_context
 from deerflow.contracts.iam import (
+    ApiKeyCreateRequest,
+    ApiKeyCreateResponse,
+    ApiKeyResponse,
     ServiceAccountCreateRequest,
     ServiceAccountResponse,
     ServiceAccountRoleBindingRequest,
     ServiceAccountRoleBindingResponse,
     ServiceAccountUpdateRequest,
 )
+from deerflow.contracts.rbac import SYSTEM_PERMISSION_PREFIX, validate_role_permissions
 from deerflow.persistence.iam import (
     SERVICE_ACCOUNT_ACTIVE,
     SERVICE_ACCOUNT_DISABLED,
+    create_api_key,
     create_role_binding,
     create_service_account,
     delete_role_binding,
     delete_service_account,
+    get_api_key,
     get_service_account,
+    list_api_keys,
     list_role_bindings,
     list_service_accounts,
+    revoke_api_key,
     set_service_account_status,
     update_service_account,
 )
@@ -371,6 +399,194 @@ async def delete_sa_role_binding(request: Request, sa_id: str, binding_id: str) 
         payload={"sa_id": sa_id, "binding_id": binding_id},
     )
     await delete_role_binding(_sf(request), binding_id=binding_id, org_id=org_id)
+    get_authorize_service().invalidate_principal(org_id=org_id, principal_type="service_account", principal_id=sa_id)
+
+
+# ---------------------------------------------------------------------------
+# API Key lifecycle (PR-035)
+# ---------------------------------------------------------------------------
+#
+# ADR §9.2 governs the Key rules. The plaintext is returned EXACTLY ONCE
+# from the mint endpoint and never persisted; the DB stores only
+# ``key_hash = HMAC-SHA256(pepper, plaintext)``. ``scopes`` is required
+# and validated against the Permission registry (no ``system:*``). The
+# cache is NOT invalidated on Key create/revoke because scope narrowing
+# happens AFTER the cache boundary in
+# :meth:`AuthorizeService.compute_permissions_for_service_account` —
+# the cached value is the SA's full pre-scope set, unaffected by any
+# Key mutation. The revoke path still calls ``invalidate_principal``
+# defensively (matches ADR §11 line "API Key ... 变更主动失效"
+# letter-for-letter and future-proofs against a refactor).
+
+
+def _validate_scopes(scopes: list[str]) -> None:
+    """Reject empty / unknown / system-prefixed scope strings (ADR §9.2)."""
+    if not scopes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="API Key scopes must be non-empty (ADR §9.2).",
+        )
+    for scope in scopes:
+        if not isinstance(scope, str) or not scope:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"API Key scope entry {scope!r} is invalid.",
+            )
+        if scope.startswith(SYSTEM_PERMISSION_PREFIX):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"API Key scope {scope!r} carries the system: prefix; system permissions cannot be granted to a ServiceAccount.",
+            )
+    try:
+        validate_role_permissions(scopes, is_system=False)
+    except Exception as exc:  # noqa: BLE001 — PermissionValidationError carries a stable code
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"API Key scope validation failed: {exc}",
+        ) from exc
+
+
+def _to_api_key_response(row) -> ApiKeyResponse:
+    return ApiKeyResponse.model_validate(row)
+
+
+@router.post(
+    "/service-accounts/{sa_id}/api-keys",
+    response_model=ApiKeyCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+@require_rbac(Permission.ADMIN_IAM_MANAGE)
+async def mint_sa_api_key(
+    request: Request,
+    sa_id: str,
+    body: ApiKeyCreateRequest,
+) -> ApiKeyCreateResponse:
+    """Mint a new API Key. The plaintext is returned EXACTLY ONCE.
+
+    ADR §9.2: ``scopes`` must be non-empty + subset of the SA's
+    effective permissions. The plaintext is generated server-side,
+    returned in this response, and never persisted — only its HMAC
+    lands in ``api_keys.key_hash``. ``409 Conflict`` on a ``key_prefix``
+    collision (retried once internally; surfacing 409 means a genuine
+    random collision or a misbehaving RNG).
+    """
+    org_id = _require_org_id(request)
+    actor = _actor_id(request)
+    sa = await get_service_account(_sf(request), service_account_id=sa_id)
+    if sa is None or sa.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
+    _validate_scopes(body.scopes)
+
+    # Mint + insert. Retry once on a prefix collision (2^48 space,
+    # collision probability is negligible; the retry keeps the user-facing
+    # 409 for a *repeated* collision which would indicate a real bug).
+    plaintext, key_prefix, key_hash = generate_api_key()
+    try:
+        row = await create_api_key(
+            _sf(request),
+            org_id=org_id,
+            service_account_id=sa_id,
+            key_prefix=key_prefix,
+            key_hash=key_hash,
+            scopes=body.scopes,
+            expires_at=body.expires_at,
+        )
+    except IntegrityError:
+        plaintext, key_prefix, key_hash = generate_api_key()
+        try:
+            row = await create_api_key(
+                _sf(request),
+                org_id=org_id,
+                service_account_id=sa_id,
+                key_prefix=key_prefix,
+                key_hash=key_hash,
+                scopes=body.scopes,
+                expires_at=body.expires_at,
+            )
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="API Key prefix collision after retry; please retry the request.",
+            ) from exc
+
+    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
+    # The payload MUST NOT contain the plaintext or the hash (ADR §9.2 line 302).
+    emit_tenant_event(
+        "api_key_created",
+        org_id=org_id,
+        principal_id=actor,
+        payload={
+            "key_id": row.id,
+            "key_prefix": row.key_prefix,
+            "sa_id": sa_id,
+            "scopes": list(body.scopes),
+            "expires_at": body.expires_at.isoformat(),
+        },
+    )
+    return ApiKeyCreateResponse(
+        id=row.id,
+        org_id=row.org_id,
+        service_account_id=row.service_account_id,
+        key_prefix=row.key_prefix,
+        scopes=list(row.scopes),
+        expires_at=row.expires_at,
+        revoked_at=row.revoked_at,
+        created_at=row.created_at,
+        last_used_at=row.last_used_at,
+        plaintext_key=plaintext,
+    )
+
+
+@router.get(
+    "/service-accounts/{sa_id}/api-keys",
+    response_model=list[ApiKeyResponse],
+)
+@require_rbac(Permission.ADMIN_IAM_READ)
+async def list_sa_api_keys(request: Request, sa_id: str) -> list[ApiKeyResponse]:
+    """List API Keys for a SA. NEVER returns plaintext or hash."""
+    org_id = _require_org_id(request)
+    sa = await get_service_account(_sf(request), service_account_id=sa_id)
+    if sa is None or sa.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
+    rows = await list_api_keys(_sf(request), org_id=org_id, service_account_id=sa_id)
+    return [_to_api_key_response(r) for r in rows]
+
+
+@router.delete(
+    "/service-accounts/{sa_id}/api-keys/{key_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@require_rbac(Permission.ADMIN_IAM_MANAGE)
+async def revoke_sa_api_key(request: Request, sa_id: str, key_id: str) -> None:
+    """Revoke an API Key. Idempotent: 204 even if the key is already revoked.
+
+    Sets ``revoked_at = now`` (the row is retained for audit). ADR §9.2
+    line 299 forbids un-revoking; the absence of an un-revoke endpoint
+    enforces this structurally.
+
+    Cross-Org: a key under a SA in another Org looks identical to a
+    missing key (404), matching the existence-hiding posture.
+    """
+    org_id = _require_org_id(request)
+    actor = _actor_id(request)
+    sa = await get_service_account(_sf(request), service_account_id=sa_id)
+    if sa is None or sa.org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
+    # Confirm the key belongs to this SA in this Org before revoking —
+    # otherwise a caller could revoke a foreign-Org key by guessing the id.
+    key = await get_api_key(_sf(request), api_key_id=key_id)
+    if key is None or key.org_id != org_id or key.service_account_id != sa_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API Key not found.")
+    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
+    emit_tenant_event(
+        "api_key_revoked",
+        org_id=org_id,
+        principal_id=actor,
+        payload={"key_id": key_id, "key_prefix": key.key_prefix, "sa_id": sa_id},
+    )
+    await revoke_api_key(_sf(request), api_key_id=key_id, org_id=org_id)
+    # Defensive invalidation (no-op per cache-walk-through, but matches
+    # ADR §11 "API Key ... 变更主动失效" wording letter-for-letter).
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="service_account", principal_id=sa_id)
 
 
