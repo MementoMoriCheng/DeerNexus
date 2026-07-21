@@ -291,7 +291,11 @@ def require_rbac(
 
             if not skip_authorize:
                 try:
-                    await get_authorize_service().authorize(tenant_context, permission)
+                    await get_authorize_service().authorize(
+                        tenant_context,
+                        permission,
+                        api_key_scopes=tenant_context.api_key_scopes,
+                    )
                 except AuthorizeError as exc:
                     emit_event(
                         "policy.evaluated",
@@ -303,6 +307,7 @@ def require_rbac(
                         org_id=tenant_context.org_id,
                         principal_id=tenant_context.principal.user_id,
                         auth_method=tenant_context.auth_method,
+                        api_key_id=getattr(request.state, "api_key_id", None),
                     )
                     raise _authorize_error_to_http(exc) from exc
 
@@ -317,6 +322,7 @@ def require_rbac(
                 principal_id=tenant_context.principal.user_id,
                 auth_method=tenant_context.auth_method,
                 internal_bypass=skip_authorize,
+                api_key_id=getattr(request.state, "api_key_id", None),
             )
 
             # Owner check for thread-specific resources. Same logic as

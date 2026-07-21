@@ -78,6 +78,18 @@ class TenantContext(BaseModel):
     auth_method: AuthMethod = Field(
         description="How the principal was authenticated.",
     )
+    api_key_scopes: frozenset[str] | None = Field(
+        default=None,
+        description=(
+            "API Key scopes carried for a service_account principal (PR-035). "
+            "``None`` means no API Key is in play → universe (the intersection "
+            "leaves the SA's full permission set untouched). A non-``None`` "
+            "value intersects, which can only narrow (ADR §6 line 'API Key "
+            "scope 只能收窄'). Carried on the trusted context so "
+            "``@require_rbac`` can forward it to ``authorize()`` without "
+            "re-reading request state."
+        ),
+    )
     request_id: str = Field(
         min_length=1,
         description="Per-request correlation id; never empty.",

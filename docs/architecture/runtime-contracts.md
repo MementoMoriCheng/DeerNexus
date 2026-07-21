@@ -1343,3 +1343,52 @@ PR-034 让 IAM 四表(PR-020B)中的 `service_accounts` 首次**有数据**,让 
 - **`system:admin` SA**:ADR §4.4 + §8 禁止把 `system:admin` 作为普通 RoleBinding。本 PR 无需额外 guard —— `validate_role_permissions` 写侧禁止 system perms 进 Org 角色(注册表层强制),SA 只能绑 Org 角色,自动满足。是否允许 SA 持 `system:admin` 跨 Org 操作,future PR。
 - **rate limiting**(ADR §9.3):`org_id + service_account_id` / `org_id + api_key_id` / `source_ip` 三元限流延后到 PR-035(API Key 落地后才有 rate-limit 维度可挂)+ 平台限流 PR。
 - **frontend IAM 管理 UI**:前端目前只有 Org Console(runs/usage/audit),无 principal 管理页。本 PR 后端 API 已就位,前端页面是后续 Track D/E UI PR。
+
+### 16.43 PR-035:API Key 凭证路径(已交付)
+
+PR-035 让 PR-034 的 `authorize()` `service_account` 分支**在生产 HTTP 路径端到端可触达**。交付 ADR-0003 §9.2 Key 全套 MUST:`X-Api-Key` / `Authorization: Bearer` header 解析、`key_hash` 恒定时间校验、mint / list / revoke 端点、明文一次性返回、scope 收窄、过期 / 撤销、审计。
+
+**Schema 零变更**:`api_keys` 表(PR-020B 的 `0004_iam_tables`)已经有 PR-035 需要的全部列(`id`/`org_id`/`service_account_id` FK CASCADE/`key_prefix` String(16) unique/`key_hash` String(255)/`scopes` JSON/`expires_at` NOT NULL/`revoked_at` nullable/`created_at`/`last_used_at`)。无新 migration,无 ORM 变更。
+
+**新模块 `app/gateway/auth/api_key.py`**:版本化 hash 模板,但用 HMAC-SHA256 + pepper(不用 bcrypt —— API key 高频鉴权,bcrypt ~100ms/call 会累积)。明文格式 `dk_live_<prefix8>_<secret43>`(60 chars):`dk_live_` 是 8-char 可读前缀,`<prefix8>` 是 DB `key_prefix` lookup 键(正好 String(16) 列宽),`<secret43>` 是 `secrets.token_urlsafe(32)` = 256 bits 熵。`key_hash = HMAC-SHA256(pepper, plaintext).hex()`(64 chars,String(255) 富余),版本前缀 `$dfakv1$`。校验用 `hmac.compare_digest`(codebase 已用 3 处,PR-035 复用)。
+
+**新 env `AUTH_API_KEY_PEPPER`**(`auth/config.py`):镜像 `AUTH_JWT_SECRET` 模式(env 优先 → 否则 auto-generate + persist 到 `.api_key_pepper`)。**不与 JWT secret 复用**(defense-in-depth:JWT 实现 bug 不应泄露 HMAC pepper)。`AuthConfig.api_key_pepper` 加 default="" 让现有 `AuthConfig(jwt_secret=...)` 测试构造不破坏。
+
+**`AuthMiddleware` API-key 分支**(`auth_middleware.py:88` 之后,`internal_user` 解析之前 —— 外部入口优先):`_strip_bearer` helper 处理 `Authorization: Bearer <key>` 形式;`_resolve_api_key` 走 ADR §12 完整序列(existence via `get_api_key_by_prefix` → hash `verify_api_key` 恒定时间 → expiry → revocation,任一失败 → 401 `authentication_invalid` → SA `disabled` → 403 `principal_disabled`)。成功后 stamp `request.state.user`(SA-backed SimpleNamespace 满足现有 `getattr(user, "id")` 模式) + `AUTH_SOURCE_API_KEY` + 4 个 `request.state.api_key_*` 字段(`api_key_id`/`api_key_org_id`/`api_key_scopes`/`service_account_id`)。`touch_api_key_last_used` 采样式 fire-and-forget(每 key 每 60s 至多 1 次 UPDATE,符合 ADR §11 TTL 颗粒度,swallow exception)。SQLite tzinfo 剥离问题用 `astimezone(UTC)` 兜底。
+
+**`tenant.py` SA 分支**:`resolve_principal(user, request, auth_source)` 加 API_KEY 分支 emit `PrincipalRef(type="service_account", id=sa_id)` 无 `user_id`(PrincipalRef validator 强制)。`resolve_tenant_context` 在 phase 检查之前 short-circuit SA path:org_id 来自 `request.state.api_key_org_id`(Key row 本身编码 org 归属,与 multi_org.phase 无关),跳过 `get_active_membership`(SA 无 Membership)。`_BOOTSTRAP_AUTH_METHOD_MAP` 加 `"api_key": "api_key"`(`AuthMethod` 字面量已 reserved)。`AUTH_SOURCE_API_KEY = "api_key"` 常量加到 `auth_disabled.py` + `tenant.py`。
+
+**`TenantContext.api_key_scopes: frozenset[str] | None = Field(default=None)`**(`contracts/context.py`):trusted carrier 新字段,`None` = universe。frozen pydantic model + frozenset 原生支持。
+
+**`rbac.py` 一行改动**:`authorize(tenant_context, permission, api_key_scopes=tenant_context.api_key_scopes)` —— PR-031 已落地的 hook 终于在生产路径被填充。`policy.evaluated` event 加 `api_key_id=getattr(request.state, "api_key_id", None)` kwarg 用于观测。
+
+**Harness 层 `persistence/iam/repository.py` 加 6 个 helper**:`create_api_key` / `get_api_key` / `get_api_key_by_prefix`(auth-middleware lookup)/ `list_api_keys`(Org-scoped)/ `revoke_api_key`(idempotent,monotonic)/ `touch_api_key_last_used`(采样式)。导出到 `persistence/iam/__init__.py`。
+
+**Contracts 层 `deerflow/contracts/iam.py` 加 3 个 envelope**:`ApiKeyCreateRequest`(scopes 必填非空 pydantic `min_length=1`,router 层 `validate_role_permissions` 拒未知 + system 前缀)/ `ApiKeyResponse`(读 envelope,NO plaintext,NO hash —— field set 本身是 guard)/ `ApiKeyCreateResponse(ApiKeyResponse)`(加 `plaintext_key`,只在 POST 201 返回)。
+
+**App 层 `routers/iam.py` 加 3 个端点**(`POST/GET/DELETE /api/v1/iam/service-accounts/{sa_id}/api-keys[/...]`):mint 返回 plaintext 一次性 + 前缀碰撞重试一次 → 409;list 不带 plaintext/hash;revoke 幂等(204 on already-revoked)+ cross-Org 404(existence-hiding)+ 防御性 `invalidate_principal`(no-op 但符合 ADR §11 字面)。audit payload 严禁带 plaintext/hash(`_FORBIDDEN_PAYLOAD_KEYS` 已含 `"api_key"`/`"key_hash"` 做 defense-in-depth)。
+
+**测试**(+58 测):
+
+- `test_api_key_crypto.py`(新,14):明文格式 / 版本化 hash / 恒定时间 verify / pepper 隔离 / malformed fail-closed / 10k 样本无 prefix 碰撞。
+- `test_api_key_repository.py`(新,17):CRUD + Org filter + revoke 幂等 monotonic + touch 采样 + SA delete FK CASCADE 回归锚。
+- `test_api_key_auth_middleware.py`(新,13):ADR §12 完整序列 + e2e scope 收窄 + session cookie fallback + `policy.evaluated` 带 `api_key_id`。
+- `test_api_key_router_business.py`(新,14):mint/list/revoke lifecycle + plaintext-once + scope 校验 + cross-Org 404 + audit 不含 plaintext + revoke 调 invalidate_principal。
+- `test_plaintext_redaction.py`(新,7):`ApiKeyResponse` field set lock / `_FORBIDDEN_PAYLOAD_KEYS` / 源码 grep 断言 router + middleware 不 log plaintext。
+
+**ADR §15 验收**(详见 ADR):「API Key scope 只能收窄 ServiceAccount 权限」从 partial 注释改全勾 + 「API Key 端到端 mint / rotate / revoke」勾选(用 create + revoke 组合实现轮换)。共 6/11 项。
+
+**`alembic` 零变更**:`api_keys` 表 PR-020B 已就位,无双向 round-trip 需要。
+
+### 16.44 PR-035 不包含
+
+**严格不越界**:
+
+- **Rate limiting**(ADR §9.3 三元限流 `org_id + service_account_id` / `org_id + api_key_id` / `source_ip`):PR-035 让限流维度**可挂**(AuthMiddleware 已 stamp `api_key_id` + `service_account_id` + `source_ip` 可从 request 取),但限流器本身是平台限流 follow-up PR。
+- **专用 `:rotate` 端点**:用户确认用 create + revoke 组合实现"轮换"(ADR §9.2 ≤24h 重叠期由运维实践保证,审计日志是 `api_key_created` + `api_key_revoked` 事件对,无独立 `_rotated` 事件)。
+- **`AuditEvent` 真 outbox**:沿用 `emit_tenant_event` logger shim(PR-041)。
+- **主动失效 SSE re-validation**:`invalidate_principal` 单进程内同步,跨进程协调 + SSE 60s re-validation 是 PR-037。PR-035 的 Key create/revoke 路径**理论上无需** invalidate(scope 收窄在 cache boundary 之后,Key 任何变更不影响 SA full pre-scope set),但 revoke 路径仍**防御性**调用(no-op 但符合 ADR §11 字面,future-proof 反重构)。
+- **异常使用审计**(ADR §13 `repeated authentication failure / suspicious key use`):需要重复检测状态机,follow-up。PR-035 只在 auth 失败时 emit 普通 401 response。
+- **前端 IAM/API Key 管理 UI**:Track D/E UI PR。
+- **`description` 字段持久化**:`ApiKeyCreateRequest.description` 仅用于 audit payload,不存 DB(`ApiKeyRow` 无此列)。未来若 UI 需要,加 migration。
+- **`Authorization: Bearer` 与未来 JWT Bearer 的歧义**:本 PR 用 `dk_live_` 前缀区分 API key vs JWT(JWT 有 `.` 分隔)。若未来引入 JWT Bearer,需在 `_strip_bearer` 后做格式分支。

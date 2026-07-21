@@ -62,11 +62,13 @@ logger = logging.getLogger(__name__)
 AUTH_SOURCE_SESSION = "session"
 AUTH_SOURCE_INTERNAL = "internal"
 AUTH_SOURCE_AUTH_DISABLED = "auth_disabled"
+AUTH_SOURCE_API_KEY = "api_key"
 
 _BOOTSTRAP_AUTH_METHOD_MAP: dict[str, AuthMethod] = {
     AUTH_SOURCE_SESSION: "session",
     AUTH_SOURCE_INTERNAL: "internal",
     AUTH_SOURCE_AUTH_DISABLED: "internal",
+    AUTH_SOURCE_API_KEY: "api_key",
 }
 
 # Paths that never require a tenant context (mirror AuthMiddleware public set).
@@ -103,13 +105,32 @@ def _resolve_request_id(request: Request) -> str:
     return uuid.uuid4().hex
 
 
-def resolve_principal(user: object, request: Request) -> PrincipalRef:
+def resolve_principal(user: object, request: Request, auth_source: str = AUTH_SOURCE_SESSION) -> PrincipalRef:
     """Map an authenticated principal to a contract :class:`PrincipalRef`.
 
-    For trusted internal calls carrying ``X-DeerFlow-Owner-User-Id`` the
-    ``user_id`` is taken from that header (already trusted post-auth), naming
-    the real owning user rather than the synthetic internal principal.
+    Three branches:
+
+    * **API Key** (``auth_source == AUTH_SOURCE_API_KEY``): emit
+      ``PrincipalRef(type="service_account", id=sa_id)`` with NO
+      ``user_id`` (the PrincipalRef validator at
+      ``contracts/identity.py:60-62`` enforces this). The SA id was
+      stamped on ``request.state.service_account_id`` by
+      :class:`AuthMiddleware` after the API-key hash verified.
+    * **Trusted internal** with ``X-DeerFlow-Owner-User-Id``: ``user_id``
+      comes from that header (already trusted post-auth), naming the
+      real owning user rather than the synthetic internal principal.
+    * **Session cookie** (the original PR-013 path): ``user_id`` is the
+      authenticated user's id.
     """
+    if auth_source == AUTH_SOURCE_API_KEY:
+        sa_id = getattr(request.state, "service_account_id", None)
+        if not sa_id:
+            # AuthMiddleware must stamp service_account_id before the
+            # tenant resolver runs; reaching here means a misconfigured
+            # stack. Fail closed rather than synthesise a principal.
+            raise RuntimeError("AUTH_SOURCE_API_KEY but request.state.service_account_id is unset; AuthMiddleware must stamp it after a successful API-key verification.")
+        return PrincipalRef(type="service_account", id=str(sa_id))
+
     owner_user_id = get_trusted_internal_owner_user_id(request)
     user_id = owner_user_id if owner_user_id else str(getattr(user, "id"))
     return PrincipalRef(
@@ -148,7 +169,27 @@ async def resolve_tenant_context(
     """
     config = get_gateway_config()
     auth_method = _BOOTSTRAP_AUTH_METHOD_MAP.get(auth_source, "internal")
-    principal = resolve_principal(user, request)
+    principal = resolve_principal(user, request, auth_source)
+
+    # API Key path: org_id + scopes come from the verified ApiKeyRow that
+    # AuthMiddleware stamped on request.state. The SA carries no
+    # OrgMembership (the org_memberships.user_id FK is to users.id), so
+    # the membership-based path below would crash on principal.user_id
+    # being None. Short-circuit before the phase check: the API key
+    # already encodes the Org binding, so multi_org.phase is irrelevant
+    # to org resolution for service principals.
+    if auth_source == AUTH_SOURCE_API_KEY:
+        org_id = getattr(request.state, "api_key_org_id", None)
+        if not org_id:
+            raise RuntimeError("AUTH_SOURCE_API_KEY but request.state.api_key_org_id is unset; AuthMiddleware must stamp it after a successful API-key verification.")
+        return TenantContext(
+            org_id=org_id,
+            principal=principal,
+            auth_method=auth_method,
+            api_key_scopes=getattr(request.state, "api_key_scopes", None),
+            request_id=request_id,
+            issued_at=datetime.now(UTC),
+        )
 
     phase = current_multi_org_phase()
     if phase == "disabled":
