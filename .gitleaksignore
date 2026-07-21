@@ -6,3 +6,13 @@
 7f796e870d5782c8d5f3bb2a7192a50fce66d7e1:backend/tests/test_setup_agent_e2e_user_isolation.py:generic-api-key:215
 7f796e870d5782c8d5f3bb2a7192a50fce66d7e1:backend/tests/test_update_agent_e2e_user_isolation.py:generic-api-key:170
 7f796e870d5782c8d5f3bb2a7192a50fce66d7e1:docs/superpowers/plans/2026-06-12-telegram-streaming.md:generic-api-key:23
+# PR-035 (API Key credential path) — test fixtures seed fake ApiKeyRow
+# rows whose ``key_prefix``/``key_hash`` literals trigger gitleaks'
+# generic-api-key heuristic. The literals are obviously fake (predictable
+# ASCII, no entropy) — they exist to exercise the unique-prefix constraint
+# and the hash-verify path. Reviewed and confirmed non-secrets.
+5508c2f958805200dfbd7b5fcc95c4ab7744fff5:backend/tests/test_api_key_router_business.py:generic-api-key:245
+5508c2f958805200dfbd7b5fcc95c4ab7744fff5:backend/tests/test_api_key_repository.py:generic-api-key:63
+5508c2f958805200dfbd7b5fcc95c4ab7744fff5:backend/tests/test_api_key_repository.py:generic-api-key:84
+5508c2f958805200dfbd7b5fcc95c4ab7744fff5:backend/tests/test_api_key_repository.py:generic-api-key:95
+5508c2f958805200dfbd7b5fcc95c4ab7744fff5:backend/tests/test_api_key_repository.py:generic-api-key:96
