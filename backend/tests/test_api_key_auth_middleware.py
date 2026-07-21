@@ -50,12 +50,18 @@ async def sf(tmp_path: Path):
 
 @pytest.fixture(autouse=True)
 def _fixed_pepper():
-    """Pin the pepper so hashes computed in tests verify in the middleware."""
+    """Pin the pepper so hashes computed in tests verify in the middleware.
+
+    Saves / restores the global ``AuthConfig`` singleton so other test
+    modules see their own (or the default) config after this fixture
+    tears down.
+    """
     from app.gateway.auth import config as auth_config
 
+    saved = auth_config._auth_config  # type: ignore[attr-defined]
     auth_config.set_auth_config(auth_config.AuthConfig(jwt_secret="jwt-test", api_key_pepper="test-pepper-fixed"))
     yield
-    auth_config._auth_config = None  # type: ignore[attr-defined]
+    auth_config._auth_config = saved  # type: ignore[attr-defined]
 
 
 async def _seed_world(sf, *, sa_status: str = "active", role_name: str = ORG_DEVELOPER_ROLE_NAME):

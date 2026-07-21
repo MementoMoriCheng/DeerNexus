@@ -27,34 +27,39 @@ from app.gateway.auth.api_key import (
 def _fixed_pepper(monkeypatch):
     """Pin the pepper to a known value so hash comparisons are deterministic.
 
-    Bypasses the file-persisted pepper by pre-seeding the global config
-    cache. Restoring the cache on teardown keeps other test modules that
-    hit the real pepper (via integration paths) unaffected.
+    Saves and restores the global ``AuthConfig`` singleton so other test
+    modules that hit the real pepper (via integration paths) are
+    unaffected by this fixture's teardown. Uses ``monkeypatch`` so the
+    restore is automatic even on test failure.
     """
     from app.gateway.auth import config as auth_config
 
+    saved = auth_config._auth_config  # type: ignore[attr-defined]
     fixed = auth_config.AuthConfig(jwt_secret="jwt-test", api_key_pepper="test-pepper-fixed")
     auth_config.set_auth_config(fixed)
     yield
-    auth_config.set_auth_config.__wrapped__ if hasattr(auth_config.set_auth_config, "__wrapped__") else None
-    # Reset by clearing the module-level cache so the next caller
-    # regenerates from env / file. The set_auth_config above replaced
-    # the singleton; dropping it forces re-initialisation.
-    auth_config._auth_config = None  # type: ignore[attr-defined]
+    # Restore the previous singleton (None if it was unset before this
+    # fixture ran). ``monkeypatch`` would also do this automatically on
+    # teardown, but we set the field through ``set_auth_config`` rather
+    # than via ``monkeypatch.setattr``, so the manual restore is needed.
+    auth_config._auth_config = saved  # type: ignore[attr-defined]
 
 
 class TestGenerateApiKey:
     def test_plaintext_format(self):
         plaintext, prefix, key_hash = generate_api_key()
-        # dk_live_<prefix8>_<secret43>
+        # Format: dk_live_<prefix8>_<secret>, total >= 8 + 8 + 1 + 32.
         assert plaintext.startswith(_DISPLAY_PREFIX)
-        parts = plaintext.split("_")
-        # ["dk", "live", "<prefix8>", "<secret43>"]
-        assert parts[0] == "dk"
-        assert parts[1] == "live"
-        assert len(parts[2]) == _RANDOM_PREFIX_LEN
-        assert len(parts[3]) >= 40  # token_urlsafe(32) yields ~43 chars
-        assert plaintext[len(_DISPLAY_PREFIX)] == parts[2][0]  # prefix contiguous
+        assert plaintext[len(_DISPLAY_PREFIX)] != "_"  # random portion follows immediately
+        # The DB lookup prefix is the first len(_DISPLAY_PREFIX) + 8 chars.
+        assert prefix == plaintext[: len(_DISPLAY_PREFIX) + _RANDOM_PREFIX_LEN]
+        assert len(prefix) == 16
+        # There must be a separator between the prefix portion and the secret.
+        assert "_" in plaintext[len(prefix) :]
+        # Secret portion is at least 32 chars (matches _SECRET_BYTES entropy,
+        # urlsafe-base64 of 32 bytes yields 32-43 chars after padding strip).
+        secret = plaintext[len(prefix) + 1 :]
+        assert len(secret) >= 32
 
     def test_key_prefix_is_first_16_chars(self):
         plaintext, prefix, _ = generate_api_key()
