@@ -438,8 +438,8 @@ MVP 默认 `additive`：
       `test_api_key_auth_middleware.py::TestApiKeyScopeNarrowingE2E` 锁定。）
 - [ ] invited / suspended / removed Membership 语义通过
 - [ ] Membership、角色、主体和 Key 撤销 P99 ≤60 秒
-- [ ] 最后 org:admin 保护通过
-- [ ] OIDC allowlist group 映射通过
+- [x] 最后 org:admin 保护通过（PR-036：`assert_not_last_admin` policy primitive —— sole-admin removal refuses + audited；additive mapping provably preserves the last admin）
+- [x] OIDC allowlist group 映射通过（PR-036：`oidc_group_mappings` allowlist table + `apply_group_mapping` additive engine；8 条 §10 规则全覆盖；mock-IdP E2E 证明映射 binding 落地后 `AuthorizeService` 放行）
 - [ ] system-admin 跨 Org 操作走专用接口并审计
 - [x] Router 无手写角色判断（PR-033：9 个 `require_admin_user` call site 全切到
       `@require_rbac`，无内联 `system_role == "admin"` 判断残留）
