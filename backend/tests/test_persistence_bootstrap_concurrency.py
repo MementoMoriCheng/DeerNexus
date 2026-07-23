@@ -28,7 +28,7 @@ from deerflow.persistence.bootstrap import bootstrap_schema
 pytestmark = pytest.mark.asyncio
 
 
-HEAD = "0009_oidc_group_mappings"
+HEAD = "0010_audit_events"
 
 
 def _url(tmp_path: Path) -> str:
