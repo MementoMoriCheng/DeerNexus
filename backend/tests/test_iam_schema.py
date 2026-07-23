@@ -30,7 +30,7 @@ from deerflow.persistence.iam.model import (
     ServiceAccountRow,
 )
 
-IAM_TABLES = {"roles", "role_bindings", "service_accounts", "api_keys"}
+IAM_TABLES = {"roles", "role_bindings", "service_accounts", "api_keys", "oidc_group_mappings"}
 _EXPIRES = datetime.now(UTC) + timedelta(days=30)
 
 
@@ -478,5 +478,62 @@ class TestMigrationRoundTrip:
             after_up = await _column_names()
             for col in ("owner_user_id", "purpose", "system", "environment", "expires_at"):
                 assert col in after_up, f"{col} missing after re-upgrade to head"
+        finally:
+            await close_engine()
+
+    @pytest.mark.anyio
+    async def test_oidc_group_mappings_round_trip(self, tmp_path: Path):
+        """``0009_oidc_group_mappings`` creates the allowlist table and is reversible.
+
+        PR-036: the revision adds the ``oidc_group_mappings`` table
+        (ADR-0003 §10 6-field config model). Downgrade to
+        ``0008_service_account_fields`` must drop the whole table;
+        re-upgrade must restore it. The fresh-DB ``create_all`` path
+        provisions the table from the ORM, so this round-trip exercises
+        the legacy-upgrade branch (pr-split-guide §7 independently-
+        upgradable).
+        """
+        import asyncio
+
+        import alembic.command as alembic_command
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from deerflow.persistence.bootstrap import _get_alembic_config
+        from deerflow.persistence.engine import close_engine, get_engine, init_engine
+
+        url = f"sqlite+aiosqlite:///{tmp_path / 'oidc_mappings_roundtrip.db'}"
+        await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+        try:
+            cfg = _get_alembic_config(get_engine())
+
+            async def _table_exists() -> bool:
+                engine = create_async_engine(url)
+                try:
+                    async with engine.connect() as conn:
+                        result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='oidc_group_mappings'"))
+                        return result.first() is not None
+                finally:
+                    await engine.dispose()
+
+            # Fresh bootstrap has the table (create_all provisions it from ORM).
+            assert await _table_exists() is True
+
+            # Downgrade to 0008 drops the table entirely.
+            await asyncio.to_thread(alembic_command.downgrade, cfg, "0008_service_account_fields")
+            assert await _table_exists() is False
+
+            # Re-upgrade restores it.
+            await asyncio.to_thread(alembic_command.upgrade, cfg, "head")
+            assert await _table_exists() is True
+
+            # The mode CHECK + allowlist unique constraint are present.
+            engine = create_async_engine(url)
+            try:
+                async with engine.connect() as conn:
+                    cols = await conn.run_sync(lambda c: {col["name"] for col in sa.inspect(c).get_columns("oidc_group_mappings")})
+                    assert {"issuer", "group_claim", "group_value", "target_org_id", "target_role_id", "mode"} <= cols
+            finally:
+                await engine.dispose()
         finally:
             await close_engine()

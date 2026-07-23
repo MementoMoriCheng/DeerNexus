@@ -25,6 +25,7 @@ from deerflow.persistence.channel_connections.model import (
 from deerflow.persistence.feedback.model import FeedbackRow
 from deerflow.persistence.iam.model import (
     ApiKeyRow,
+    OidcGroupMappingRow,
     RoleBindingRow,
     RoleRow,
     ServiceAccountRow,
@@ -48,6 +49,7 @@ __all__ = [
     "ChannelOAuthStateRow",
     "ExternalIdentityRow",
     "FeedbackRow",
+    "OidcGroupMappingRow",
     "OrgMembershipRow",
     "OrganizationRow",
     "RoleBindingRow",

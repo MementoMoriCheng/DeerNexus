@@ -1,4 +1,4 @@
-"""DB CRUD for the IAM control-plane tables (PR-034).
+"""DB CRUD for the IAM control-plane tables (PR-034 / PR-036).
 
 Pure data-access layer — no audit, no cache, no authz. The app layer
 (``app/gateway/routers/iam.py``) is responsible for emitting audit
@@ -32,10 +32,15 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from deerflow.persistence.iam.model import ApiKeyRow, RoleBindingRow, ServiceAccountRow
+from deerflow.persistence.iam.model import (
+    ApiKeyRow,
+    OidcGroupMappingRow,
+    RoleBindingRow,
+    ServiceAccountRow,
+)
 
 #: Status values allowed by the ``ck_service_accounts_status`` CHECK.
 #: ``deleted`` is NOT a row state — SA deletion is a hard DELETE (ADR §12
@@ -58,6 +63,20 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset({"name", "description", "owner_use
 #: cache/TTL granularity — anything finer buys nothing because cached
 #: authz decisions are refreshed on at most the same cadence.
 _LAST_USED_SAMPLE_WINDOW = timedelta(seconds=60)
+
+#: ``OidcGroupMappingRow.mode`` values allowed by the
+#: ``ck_oidc_group_mappings_mode`` CHECK (ADR-0003 §10). MVP ships
+#: ``additive`` only; ``authoritative`` is stored but the mapping service
+#: refuses to enact it (ADR §10 "authoritative 模式需单独启用").
+MAPPING_MODE_ADDITIVE = "additive"
+MAPPING_MODE_AUTHORITATIVE = "authoritative"
+_ALLOWED_MAPPING_MODES: frozenset[str] = frozenset({MAPPING_MODE_ADDITIVE, MAPPING_MODE_AUTHORITATIVE})
+
+#: Fields the app layer may PATCH on an OIDC group mapping via
+#: ``update_oidc_group_mapping``. ``mode`` is included so an operator can
+#: flip a rule to ``authoritative`` in storage (the service still refuses
+#: to *enact* authoritative until a future "separately enabled" PR).
+_MAPPING_UPDATABLE_FIELDS: frozenset[str] = frozenset({"group_claim", "group_value", "target_role_id", "mode", "description"})
 
 
 def _new_id() -> str:
@@ -317,6 +336,45 @@ async def delete_role_binding(
         await session.commit()
 
 
+async def count_user_bindings_for_role(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    role_id: str,
+    exclude_principal_id: str | None = None,
+) -> int:
+    """Count non-expired ``user``-principal bindings for ``role_id`` in ``org_id``.
+
+    Last-admin guard read (ADR-0003 §7). ``exclude_principal_id`` removes
+    the principal under consideration from the count so the caller can
+    ask "after removing this user, how many admins remain?" — when that
+    would hit zero, the removal must be refused by the policy layer.
+
+    ``service_account`` principals are excluded by the ``principal_type``
+    filter: a machine identity holding ``org:admin`` is not a human admin
+    and does not satisfy "at least one human admin remains".
+
+    Reads only (no commit). An expired binding (``expires_at <= now``)
+    does not count — a role whose only holder is expired is effectively
+    empty for the purposes of last-admin protection.
+    """
+    now = datetime.now(UTC)
+    async with sf() as session:
+        stmt = (
+            select(func.count())
+            .select_from(RoleBindingRow)
+            .where(
+                RoleBindingRow.org_id == org_id,
+                RoleBindingRow.role_id == role_id,
+                RoleBindingRow.principal_type == "user",
+                (RoleBindingRow.expires_at.is_(None)) | (RoleBindingRow.expires_at > now),
+            )
+        )
+        if exclude_principal_id is not None:
+            stmt = stmt.where(RoleBindingRow.principal_id != exclude_principal_id)
+        return int((await session.execute(stmt)).scalar_one())
+
+
 # ---------------------------------------------------------------------------
 # API Key CRUD (PR-035)
 # ---------------------------------------------------------------------------
@@ -494,22 +552,173 @@ async def touch_api_key_last_used(
         await session.commit()
 
 
+# ---------------------------------------------------------------------------
+# OIDC group-mapping CRUD (PR-036) — ADR-0003 §10
+# ---------------------------------------------------------------------------
+#
+# The row set IS the allowlist (§10 rule 1). Pure data access: the
+# service layer (``deerflow.tenancy.oidc_group_mapping``) enforces the
+# "target role must not carry system permissions" guard (rule 3) before
+# insert — this layer only persists what it is told. The
+# ``uq_oidc_group_mappings_issuer_group_org_role`` unique constraint
+# raises ``IntegrityError`` on a duplicate allowlist entry.
+
+
+async def create_oidc_group_mapping(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    issuer: str,
+    group_claim: str,
+    group_value: str,
+    target_org_id: str,
+    target_role_id: str,
+    mode: str = MAPPING_MODE_ADDITIVE,
+    description: str | None = None,
+    created_by: str | None = None,
+) -> OidcGroupMappingRow:
+    """Insert one ``OidcGroupMappingRow`` (one allowlist entry).
+
+    The ``(issuer, group_value, target_org_id, target_role_id)`` unique
+    constraint raises ``IntegrityError`` on collision; the app layer maps
+    that to 409. ``mode`` defaults to ``additive`` (the MVP default per
+    ADR §10). The service layer MUST validate that ``target_role_id``
+    points at a real, non-system role before calling (rule 3).
+    """
+    row = OidcGroupMappingRow(
+        id=_new_id(),
+        issuer=issuer,
+        group_claim=group_claim,
+        group_value=group_value,
+        target_org_id=target_org_id,
+        target_role_id=target_role_id,
+        mode=mode,
+        description=description,
+        created_by=created_by,
+    )
+    async with sf() as session:
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+    return row
+
+
+async def get_oidc_group_mapping(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    mapping_id: str,
+) -> OidcGroupMappingRow | None:
+    """Return the row by primary key, or ``None``. Caller MUST scope by ``org_id``."""
+    async with sf() as session:
+        return await session.get(OidcGroupMappingRow, mapping_id)
+
+
+async def list_oidc_group_mappings(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str | None = None,
+    issuer: str | None = None,
+) -> list[OidcGroupMappingRow]:
+    """List mapping rows, optionally scoped by ``org_id`` and/or ``issuer``.
+
+    ADR §8 "列表与查询强制 Org 过滤" — pass ``org_id`` for the admin
+    listing (a cross-Org system-admin view is the only caller that omits
+    it today). Ordered by ``created_at`` for stable display.
+
+    The mapping engine calls this with ``issuer`` only (it needs every
+    target-org row for one issuer to evaluate the allowlist), so
+    ``org_id`` is optional here unlike the other list helpers — the
+    engine applies its own org scoping against the user's membership.
+    """
+    async with sf() as session:
+        stmt = select(OidcGroupMappingRow)
+        if org_id is not None:
+            stmt = stmt.where(OidcGroupMappingRow.target_org_id == org_id)
+        if issuer is not None:
+            stmt = stmt.where(OidcGroupMappingRow.issuer == issuer)
+        stmt = stmt.order_by(OidcGroupMappingRow.created_at.asc())
+        rows = (await session.execute(stmt)).scalars().all()
+    return list(rows)
+
+
+async def update_oidc_group_mapping(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    mapping_id: str,
+    **fields: object,
+) -> OidcGroupMappingRow:
+    """PATCH the updatable fields on an OIDC group-mapping row.
+
+    Only members of :data:`_MAPPING_UPDATABLE_FIELDS` are honoured —
+    ``target_org_id`` and ``issuer`` are deliberately NOT patchable: a
+    rule's identity (which issuer, which org) is immutable; to retarget
+    delete + recreate so the audit trail shows the change cleanly.
+    Unknown keys raise ``ValueError``.
+
+    Raises ``ValueError`` if the row does not exist (the app layer maps
+    that to 404 for existence-hiding).
+    """
+    bad = set(fields) - _MAPPING_UPDATABLE_FIELDS
+    if bad:
+        raise ValueError(f"update_oidc_group_mapping rejects non-updatable fields: {sorted(bad)}")
+
+    async with sf() as session:
+        row = await session.get(OidcGroupMappingRow, mapping_id)
+        if row is None:
+            raise ValueError(f"OidcGroupMapping {mapping_id!r} not found")
+        for key, value in fields.items():
+            setattr(row, key, value)
+        await session.commit()
+        await session.refresh(row)
+    return row
+
+
+async def delete_oidc_group_mapping(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    mapping_id: str,
+    org_id: str,
+) -> None:
+    """Delete one mapping row, scoped by ``target_org_id``.
+
+    Returns silently if the mapping does not exist or belongs to another
+    Org (the app layer has already emitted the audit event). The Org
+    filter is on ``target_org_id`` — that is the scoping column for this
+    table, mirroring ``org_id`` on the other IAM tables.
+    """
+    async with sf() as session:
+        await session.execute(
+            delete(OidcGroupMappingRow).where(
+                OidcGroupMappingRow.id == mapping_id,
+                OidcGroupMappingRow.target_org_id == org_id,
+            )
+        )
+        await session.commit()
+
+
 __all__ = [
+    "MAPPING_MODE_ADDITIVE",
+    "MAPPING_MODE_AUTHORITATIVE",
     "SERVICE_ACCOUNT_ACTIVE",
     "SERVICE_ACCOUNT_DISABLED",
+    "count_user_bindings_for_role",
     "create_api_key",
+    "create_oidc_group_mapping",
     "create_role_binding",
     "create_service_account",
+    "delete_oidc_group_mapping",
     "delete_role_binding",
     "delete_service_account",
     "get_api_key",
     "get_api_key_by_prefix",
+    "get_oidc_group_mapping",
     "get_service_account",
     "list_api_keys",
+    "list_oidc_group_mappings",
     "list_role_bindings",
     "list_service_accounts",
     "revoke_api_key",
     "set_service_account_status",
     "touch_api_key_last_used",
+    "update_oidc_group_mapping",
     "update_service_account",
 ]

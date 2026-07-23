@@ -183,10 +183,135 @@ class ApiKeyCreateResponse(ApiKeyResponse):
     )
 
 
+# ---------------------------------------------------------------------------
+# OIDC group-mapping contracts (PR-036) — ADR-0003 §10
+# ---------------------------------------------------------------------------
+#
+# Envelopes for the ``/api/v1/iam/oidc-group-mappings`` admin CRUD + the
+# ``:preview`` dry-run endpoint. The 6-field config model (ADR §10) maps
+# 1:1 to the create-request fields. ``mode`` defaults to ``additive``
+# (the MVP default); ``authoritative`` is stored but the mapping service
+# refuses to enact it (ADR §10 "authoritative 模式需单独启用").
+#
+# ADR §10 rule 3 (no system permissions) is enforced by the router at
+# create/update time: it looks up ``target_role_id`` and rejects if the
+# role carries any ``system:*`` permission. The contract layer cannot do
+# that check (it has no DB access), so the validation is a router
+# responsibility and ``target_role_id`` is an opaque string here.
+
+
+class OidcGroupMappingCreateRequest(BaseModel):
+    """Body of ``POST /api/v1/iam/oidc-group-mappings``.
+
+    Maps 1:1 to the ADR §10 6-field config model. ``mode`` defaults to
+    ``additive``; the router validates ``target_role_id`` references a
+    real, non-system role (rule 3) before persisting.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    issuer: str = Field(min_length=1, max_length=500, description="OIDC issuer URL (must match the verified token ``iss`` claim).")
+    group_claim: str = Field(min_length=1, max_length=120, description="Claim NAME carrying group membership (e.g. ``groups``).")
+    group_value: str = Field(min_length=1, max_length=200, description="Group value within ``group_claim`` that this rule matches.")
+    target_org_id: str = Field(min_length=1, max_length=36)
+    target_role_id: str = Field(min_length=1, max_length=36, description="Existing role id; the router rejects a system-permission role (ADR §10 rule 3).")
+    mode: str = Field(default="additive", description="``additive`` (default) or ``authoritative`` (stored; not enacted in MVP).")
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class OidcGroupMappingUpdateRequest(BaseModel):
+    """Body of ``PATCH /api/v1/iam/oidc-group-mappings/{id}``.
+
+    ``issuer`` and ``target_org_id`` are deliberately absent (immutable —
+    a rule's identity is fixed; retarget = delete + recreate for a clean
+    audit trail). ``target_role_id`` IS patchable and the router
+    re-validates rule 3 on update.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    group_claim: str | None = Field(default=None, min_length=1, max_length=120)
+    group_value: str | None = Field(default=None, min_length=1, max_length=200)
+    target_role_id: str | None = Field(default=None, min_length=1, max_length=36)
+    mode: str | None = Field(default=None, description="``additive`` or ``authoritative``.")
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class OidcGroupMappingResponse(BaseModel):
+    """Response envelope for OIDC group-mapping reads.
+
+    Projected directly off :class:`~deerflow.persistence.iam.model.OidcGroupMappingRow`
+    via ``from_attributes`` so the API surface and the ORM cannot drift.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    issuer: str
+    group_claim: str
+    group_value: str
+    target_org_id: str
+    target_role_id: str
+    mode: str
+    description: str | None
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OidcMappingPreviewRequest(BaseModel):
+    """Body of ``POST /api/v1/iam/oidc-group-mappings:preview`` (dry-run).
+
+    The IdP-agnostic claim shape the operator wants to simulate: an
+    ``issuer`` and the ``groups`` list the user presented. The router
+    resolves the caller's own ``user_id`` + active-membership org, so no
+    user_id is in the request — the preview always runs against the
+    caller, never an arbitrary target (avoiding a "dry-run as
+    reconnaissance" abuse vector).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    issuer: str = Field(min_length=1, max_length=500)
+    groups: list[str] = Field(min_length=1, description="Non-empty group claim list to simulate.")
+
+
+class _PreviewOutcome(BaseModel):
+    """One mapping rule's disposition in a preview result."""
+
+    group_value: str
+    target_role_id: str
+    target_org_id: str
+    applied: bool
+    reason: str = ""
+
+
+class OidcMappingPreviewResponse(BaseModel):
+    """Response envelope for the dry-run preview.
+
+    A projection of :class:`~deerflow.tenancy.oidc_group_mapping.MappingResult`
+    — ``planned``/``applied``/``skipped`` are all present so the operator
+    sees the full disposition regardless of mode. In a dry-run ``applied``
+    is always empty (nothing is written).
+    """
+
+    user_id: str
+    issuer: str
+    dry_run: bool
+    planned: list[_PreviewOutcome] = Field(default_factory=list)
+    applied: list[_PreviewOutcome] = Field(default_factory=list)
+    skipped: list[_PreviewOutcome] = Field(default_factory=list)
+
+
 __all__ = [
     "ApiKeyCreateRequest",
     "ApiKeyCreateResponse",
     "ApiKeyResponse",
+    "OidcGroupMappingCreateRequest",
+    "OidcGroupMappingResponse",
+    "OidcGroupMappingUpdateRequest",
+    "OidcMappingPreviewRequest",
+    "OidcMappingPreviewResponse",
     "ServiceAccountCreateRequest",
     "ServiceAccountRoleBindingRequest",
     "ServiceAccountRoleBindingResponse",

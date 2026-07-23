@@ -208,3 +208,71 @@ class ApiKeyRow(Base):
         UniqueConstraint("key_prefix", name="uq_api_keys_key_prefix"),
         Index("idx_api_keys_org_sa", "org_id", "service_account_id"),
     )
+
+
+class OidcGroupMappingRow(Base):
+    """Allowlist rule mapping an OIDC ``(issuer, group)`` claim to a Role (ADR-0003 §10, PR-036).
+
+    Each row is one entry in the ADR §10 6-field config model::
+
+        issuer
+        group_claim        # the claim NAME to read (e.g. "groups")
+        group_value        # the group value to match within that claim
+        target_org_id
+        target_role_id
+        mode: additive | authoritative
+
+    The set of rows **is** the allowlist (ADR §10 rule 1: "仅 allowlist 中的
+    issuer / group 可映射"). An unmatched ``(issuer, group)`` is never mapped.
+    MVP ships ``additive`` only; ``authoritative`` is stored but the mapping
+    service refuses to enact it (ADR §10 "authoritative 模式需单独启用") —
+    the column exists so a future "separately enabled" mode can be switched
+    on without a schema change.
+
+    ``target_role_id`` is a soft reference (no FK), mirroring the polymorphic
+    principal convention used by ``role_bindings`` — integrity is enforced at
+    write time by the service (rule 3: the target role must not carry system
+    permissions). ``target_org_id`` is likewise a soft reference so a mapping
+    rule can target an org without coupling to the orgs table.
+    """
+
+    __tablename__ = "oidc_group_mappings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    # The OIDC issuer URL (must match the verified token ``iss`` claim). Free
+    # string — exact-match against the allowlist at apply time.
+    issuer: Mapped[str] = mapped_column(String(500), nullable=False)
+    # The NAME of the claim carrying group membership (e.g. "groups",
+    # "member_of"). PR-036 reads a list-valued claim; the name is configurable
+    # per rule because IdPs vary.
+    group_claim: Mapped[str] = mapped_column(String(120), nullable=False)
+    # The specific group VALUE within ``group_claim`` that this rule matches.
+    group_value: Mapped[str] = mapped_column(String(200), nullable=False)
+    target_org_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    target_role_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="additive")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
+    row_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('additive', 'authoritative')",
+            name="ck_oidc_group_mappings_mode",
+        ),
+        # The allowlist uniqueness: one role target per (issuer, group, org).
+        # Two rules may target the SAME group with different roles (union,
+        # ADR §10 rule 4); they just cannot target the same role twice.
+        UniqueConstraint(
+            "issuer",
+            "group_value",
+            "target_org_id",
+            "target_role_id",
+            name="uq_oidc_group_mappings_issuer_group_org_role",
+        ),
+        Index("idx_oidc_group_mappings_issuer", "issuer"),
+        Index("idx_oidc_group_mappings_org", "target_org_id"),
+    )
