@@ -468,6 +468,17 @@ async def sse_consumer(
     Observability (PR-063): bumps ``active_sse_connections`` on entry / dec
     on exit, and observes ``sse_first_business_event_seconds`` for the first
     non-heartbeat business event relative to run creation (§4.2 / §6.4).
+
+    Revocation re-validation (PR-037, ADR §11 line 364): a long-lived SSE
+    connection re-confirms the caller's authorization at least every
+    :data:`_SSE_REVALIDATE_INTERVAL` seconds AND before yielding each
+    business event. A mid-stream revocation (Membership suspended, role
+    binding deleted, SA disabled, API key revoked) raises ``AuthorizeError``
+    on the re-check; the stream emits a ``revoked`` close frame and breaks,
+    so the existing ``finally`` cancels the run. No business event is
+    yielded after the revocation is observed (testing-strategy §17 line 610).
+    The ``force_refresh=True`` flag bypasses the ≤60s authz cache so the
+    revocation is seen immediately, not up to the TTL.
     """
     from deerflow.observability.metrics import (
         dec_active_sse_connections,
@@ -481,16 +492,45 @@ async def sse_consumer(
     first_business_event_recorded = bool(last_event_id)
     run_created_epoch = _record_created_epoch(record)
     inc_active_sse_connections()
+
+    # Build the re-validation context once. Uses the run's stamped
+    # ``user_id`` / ``org_id`` (set in ``start_run`` from the resolved
+    # tenant context, PR-024) so the re-check matches the original caller
+    # even if the contextvar has rotated. Skipped entirely when the run
+    # has no user principal (internal/system runs) — those have no
+    # revocable user authorization.
+    revalidate_ctx = _build_sse_revalidation_context(record)
+    last_revalidate = time.monotonic() if revalidate_ctx is not None else None
+
     try:
         async for entry in bridge.subscribe(record.run_id, last_event_id=last_event_id):
             if await request.is_disconnected():
                 break
 
-            if entry is HEARTBEAT_SENTINEL:
+            is_heartbeat = entry is HEARTBEAT_SENTINEL
+            is_end = entry is END_SENTINEL
+
+            # Re-validate before yielding a heartbeat OR a business event
+            # (ADR §11: "每 60 秒或在发送下一条业务事件前"). END frames are
+            # the terminal marker, not a business event, so they bypass the
+            # re-check and close the stream normally.
+            if revalidate_ctx is not None and not is_end:
+                due = last_revalidate is None or (time.monotonic() - last_revalidate) >= _SSE_REVALIDATE_INTERVAL
+                # Force a re-check on every business event (the "发送下一条
+                # 业务事件前" clause), and on heartbeats at most every
+                # _SSE_REVALIDATE_INTERVAL (the "每 60 秒" clause). This
+                # bounds the worst case to min(heartbeat_interval, 60s).
+                if not is_heartbeat or due:
+                    if not await _sse_revalidate(revalidate_ctx, record):
+                        yield format_sse("revoked", {"reason": "authorization_revoked"})
+                        break
+                    last_revalidate = time.monotonic()
+
+            if is_heartbeat:
                 yield ": heartbeat\n\n"
                 continue
 
-            if entry is END_SENTINEL:
+            if is_end:
                 yield format_sse("end", None, event_id=entry.id or None)
                 return
 
@@ -505,6 +545,80 @@ async def sse_consumer(
         if record.status in (RunStatus.pending, RunStatus.running):
             if record.on_disconnect == DisconnectMode.cancel:
                 await run_mgr.cancel(record.run_id)
+
+
+#: Maximum interval between SSE re-validation checks (ADR §11 "至少每 60 秒").
+#: The bridge heartbeat (default 15s) is the wake-up cadence; this bound
+#: ensures the re-check runs at least this often even during event-heavy
+#: streams, and the per-business-event gate closes the stream immediately
+#: when a revocation lands between heartbeats.
+_SSE_REVALIDATE_INTERVAL = 60.0
+
+
+def _build_sse_revalidation_context(record: RunRecord):
+    """Build a ``TenantContext`` for mid-stream re-validation, or ``None``.
+
+    Returns ``None`` when the run has no user principal (``record.user_id``
+    is empty) — internal/system runs have no revocable user authorization,
+    so the re-validation gate is skipped for them. Also returns ``None``
+    when ``record.org_id`` is missing (defensive; ``start_run`` always
+    stamps it for user runs, PR-024).
+
+    The returned context is a minimal shape sufficient for
+    ``AuthorizeService.authorize``: ``org_id`` + a ``user`` ``PrincipalRef``
+    carrying ``user_id``. The ``auth_method`` / ``request_id`` / ``issued_at``
+    are placeholders (re-validation does not depend on them — authorize()
+    only reads ``principal`` + ``org_id``).
+    """
+    from datetime import UTC, datetime
+
+    from deerflow.contracts import PrincipalRef, TenantContext
+
+    user_id = record.user_id
+    org_id = record.org_id
+    if not user_id or not org_id:
+        return None
+    return TenantContext(
+        org_id=org_id,
+        principal=PrincipalRef(type="user", id=user_id, user_id=user_id),
+        auth_method="session",
+        request_id=f"sse-revalidate-{record.run_id}",
+        issued_at=datetime.now(UTC),
+    )
+
+
+async def _sse_revalidate(tenant_context, record: RunRecord) -> bool:
+    """Re-run the run-read authorization for the SSE caller (PR-037).
+
+    Returns ``True`` if the caller is still authorized to read the run's
+    stream, ``False`` if a mid-stream revocation (Membership suspended, role
+    binding removed, etc.) has withdrawn ``RUNTIME_RUN_READ``. Failures that
+    are clearly not authorization denials (DB outage, config error) are
+    treated as ``True`` (best-effort keep-stream-open) so an observability
+    hiccup cannot DoS active streams — the ≤60s TTL remains the correctness
+    bound, and such failures are logged at WARNING.
+    """
+    from app.gateway.authorize import AuthorizeError, get_authorize_service
+    from deerflow.contracts import Permission
+
+    try:
+        await get_authorize_service().authorize(
+            tenant_context,
+            Permission.RUNTIME_RUN_READ,
+            force_refresh=True,
+        )
+        return True
+    except AuthorizeError as exc:
+        logger.info(
+            "sse re-validation denied; closing stream run_id=%s org_id=%s code=%s",
+            record.run_id,
+            record.org_id,
+            exc.code.value if hasattr(exc.code, "value") else exc.code,
+        )
+        return False
+    except Exception:  # noqa: BLE001 — observability must not kill the stream
+        logger.warning("sse re-validation errored; keeping stream open run_id=%s", record.run_id, exc_info=True)
+        return True
 
 
 def _record_created_epoch(record: RunRecord) -> float | None:

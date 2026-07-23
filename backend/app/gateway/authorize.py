@@ -21,11 +21,12 @@ whole set (e.g. the future ``_authenticate`` rewrite in PR-032/033).
 
 Boundary — what this module deliberately does NOT do (Track C division):
 
-* It does **not** implement API Key validation (→ PR-035), OIDC group
-  mapping (→ PR-036), or active cache invalidation + SSE re-validation
-  (→ PR-037). The API Key scope parameter is accepted so the signature
-  is stable when PR-035 lands. ``invalidate_principal`` is wired (PR-034)
-  for the IAM write path; the SSE re-validation hook is PR-037.
+* It does **not** implement API Key validation (→ PR-035) or OIDC group
+  mapping (→ PR-036). Those landed in their own PRs. ``invalidate_principal``
+  is wired for the IAM write path (PR-034/035) and the SSE re-validation
+  guard lives in ``app.gateway.services.sse_consumer`` (PR-037); the
+  ``force_refresh`` parameter (PR-037) lets that guard bypass a stale
+  cache entry on demand.
 * It does **not** return role/policy detail to the caller (ADR §6: "授权服务
   返回 allow 或抛稳定错误"). All denials raise :class:`ContractError` with a
   stable code; HTTP status mapping happens at the router layer (PR-032/033).
@@ -218,6 +219,7 @@ class AuthorizeService:
         *,
         org_id: str,
         api_key_scopes: frozenset[str] | None = None,
+        force_refresh: bool = False,
     ) -> frozenset[str]:
         """Return the effective permission set for ``user`` within ``org_id``.
 
@@ -230,6 +232,12 @@ class AuthorizeService:
         ``api_key_scopes`` is the reserved PR-035 hook: pass ``None`` for
         interactive sessions (no narrowing), or a scope set when the caller
         has already validated an API Key (PR-035 will populate this).
+
+        ``force_refresh`` (PR-037, ADR §11 "高风险操作可以强制读取最新授权
+        状态") bypasses the cache read: the DB is always re-queried and the
+        cache entry overwritten with the fresh value. The SSE re-validation
+        path passes ``True`` so a mid-stream revocation is observed
+        immediately rather than up to the ≤60s TTL.
         """
         user_id = str(user.id)
         system_role = getattr(user, "system_role", "user") or "user"
@@ -238,17 +246,19 @@ class AuthorizeService:
         # cache namespace (ADR §11).
         if system_role == "admin":
             key = system_cache_key(principal_id=user_id)
-            cached = self._cache.get(key)
-            if cached is not None:
-                return self._apply_scopes(cached, api_key_scopes)
+            if not force_refresh:
+                cached = self._cache.get(key)
+                if cached is not None:
+                    return self._apply_scopes(cached, api_key_scopes)
             perms = self._compute_admin_permissions()
             self._cache.set(key, perms, ttl_seconds=self._ttl_seconds)
             return self._apply_scopes(perms, api_key_scopes)
 
         cache_k = org_cache_key(org_id=org_id, principal_type="user", principal_id=user_id)
-        cached = self._cache.get(cache_k)
-        if cached is not None:
-            return self._apply_scopes(cached, api_key_scopes)
+        if not force_refresh:
+            cached = self._cache.get(cache_k)
+            if cached is not None:
+                return self._apply_scopes(cached, api_key_scopes)
 
         perms = await self._compute_user_permissions(user_id=user_id, org_id=org_id, system_role=system_role)
         self._cache.set(cache_k, perms, ttl_seconds=self._ttl_seconds)
@@ -261,6 +271,7 @@ class AuthorizeService:
         resource_ref: object | None = None,  # noqa: ARG002 — reserved for future resource-level checks
         *,
         api_key_scopes: frozenset[str] | None = None,
+        force_refresh: bool = False,
     ) -> None:
         """ADR §6 uniform entry point: allow (return None) or raise ``ContractError``.
 
@@ -285,6 +296,11 @@ class AuthorizeService:
         :meth:`compute_permissions_for_service_account`; today no caller
         passes a non-``None`` value (PR-035 will populate it from a real
         API-key lookup).
+
+        ``force_refresh`` (PR-037, ADR §11 "高风险操作可以强制读取最新授权
+        状态") is forwarded to the chosen ``compute_permissions_*`` so the
+        cache read is bypassed. The SSE re-validation guard passes ``True``
+        to observe mid-stream revocations immediately.
         """
         principal = tenant_context.principal
         org_id = tenant_context.org_id
@@ -304,7 +320,7 @@ class AuthorizeService:
             from types import SimpleNamespace
 
             user = SimpleNamespace(id=principal.user_id, system_role="user")
-            effective = await self.compute_permissions_for_user(user, org_id=org_id, api_key_scopes=api_key_scopes)
+            effective = await self.compute_permissions_for_user(user, org_id=org_id, api_key_scopes=api_key_scopes, force_refresh=force_refresh)
         elif principal.type == "service_account":
             if not principal.id:
                 raise AuthorizeError(
@@ -315,6 +331,7 @@ class AuthorizeService:
                 service_account_id=principal.id,
                 org_id=org_id,
                 api_key_scopes=api_key_scopes,
+                force_refresh=force_refresh,
             )
         else:
             raise AuthorizeError(
@@ -359,11 +376,23 @@ class AuthorizeService:
 
         ``principal_type`` is part of the cache key
         (:func:`org_cache_key`), so a user and a service_account that
-        happen to share an id cannot collide. ``system`` principals use a
-        separate namespace (:func:`system_cache_key`) and are not
-        invalidated through this entry point.
+        happen to share an id cannot collide. ``system`` principals use
+        a separate namespace (:func:`system_cache_key`) and are not
+        invalidated through this entry point — use
+        :meth:`invalidate_system_admin` for those.
         """
         self._cache.invalidate(org_cache_key(org_id=org_id, principal_type=principal_type, principal_id=principal_id))
+
+    def invalidate_system_admin(self, *, principal_id: str) -> None:
+        """Drop the cached system-admin permission set for one principal (PR-037).
+
+        Companion to :meth:`invalidate_principal` for the independent
+        system-admin namespace (ADR §11). A ``system_role`` flip
+        ``admin → user`` leaves a stale ``SYSTEM_PERMISSIONS``-filled
+        entry live for up to the 60s TTL otherwise; this drops it
+        immediately so the SLO holds for system-admin demotions too.
+        """
+        self._cache.invalidate(system_cache_key(principal_id=principal_id))
 
     async def compute_permissions_for_service_account(
         self,
@@ -371,6 +400,7 @@ class AuthorizeService:
         service_account_id: str,
         org_id: str,
         api_key_scopes: frozenset[str] | None = None,
+        force_refresh: bool = False,
     ) -> frozenset[str]:
         """Return the effective permission set for a ServiceAccount principal.
 
@@ -393,11 +423,15 @@ class AuthorizeService:
         ``None`` from the router; PR-035's API-key lookup will populate
         it). Scope narrowing is applied on top of the cached set so a
         cache hit still respects scopes.
+
+        ``force_refresh`` (PR-037) bypasses the cache read, mirroring
+        the user path — used by the SSE re-validation guard.
         """
         cache_k = org_cache_key(org_id=org_id, principal_type="service_account", principal_id=service_account_id)
-        cached = self._cache.get(cache_k)
-        if cached is not None:
-            return self._apply_scopes(cached, api_key_scopes)
+        if not force_refresh:
+            cached = self._cache.get(cache_k)
+            if cached is not None:
+                return self._apply_scopes(cached, api_key_scopes)
 
         perms = await self._compute_service_account_permissions(service_account_id=service_account_id, org_id=org_id)
         self._cache.set(cache_k, perms, ttl_seconds=self._ttl_seconds)

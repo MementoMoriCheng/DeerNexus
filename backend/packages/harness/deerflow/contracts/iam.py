@@ -303,6 +303,35 @@ class OidcMappingPreviewResponse(BaseModel):
     skipped: list[_PreviewOutcome] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# OrgMembership contracts (PR-037) — ADR-0003 §7 + §11
+# ---------------------------------------------------------------------------
+#
+# The membership suspend/activate endpoints are the revocation write path
+# that §11's SLO measures: ``suspend`` commits the status change, then the
+# router invalidates the principal's authz cache so the next request (and
+# any in-flight SSE re-validation) sees the denial within the ≤60s bound.
+
+
+class OrgMembershipResponse(BaseModel):
+    """Response envelope for OrgMembership reads (PR-037).
+
+    Projected directly off :class:`~deerflow.persistence.orgs.model.OrgMembershipRow`
+    via ``from_attributes``. The ``(org_id, user_id)`` pair is the caller's
+    active org + the target user.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    org_id: str
+    user_id: str
+    status: str
+    joined_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 __all__ = [
     "ApiKeyCreateRequest",
     "ApiKeyCreateResponse",
@@ -312,6 +341,7 @@ __all__ = [
     "OidcGroupMappingUpdateRequest",
     "OidcMappingPreviewRequest",
     "OidcMappingPreviewResponse",
+    "OrgMembershipResponse",
     "ServiceAccountCreateRequest",
     "ServiceAccountRoleBindingRequest",
     "ServiceAccountRoleBindingResponse",

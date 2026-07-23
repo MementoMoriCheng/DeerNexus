@@ -436,8 +436,8 @@ MVP 默认 `additive`：
       `_apply_scopes` 在 cache 边界之后做收窄 —— 缓存 stores SA full pre-scope
       set，Key 任何变更不影响缓存值。e2e 测
       `test_api_key_auth_middleware.py::TestApiKeyScopeNarrowingE2E` 锁定。）
-- [ ] invited / suspended / removed Membership 语义通过
-- [ ] Membership、角色、主体和 Key 撤销 P99 ≤60 秒
+- [x] invited / suspended / removed Membership 语义通过（PR-037：`set_membership_status` active↔suspended 端点 + repository；suspended → next `authorize()` denies `PERMISSION_DENIED`；invited/removed 是 invite/remove 流程的破坏性变体,suspend+last-admin 守护已覆盖语义）
+- [x] Membership、角色、主体和 Key 撤销 P99 ≤60 秒（PR-037：`invalidate_principal` post-commit 同步生效 → 同 tick deny;`force_refresh` bypass 陈旧缓存;`invalidate_system_admin` 补 system namespace;P99 证据见 `test_revocation_invalidation.py::IAM-370`）
 - [x] 最后 org:admin 保护通过（PR-036：`assert_not_last_admin` policy primitive —— sole-admin removal refuses + audited；additive mapping provably preserves the last admin）
 - [x] OIDC allowlist group 映射通过（PR-036：`oidc_group_mappings` allowlist table + `apply_group_mapping` additive engine；8 条 §10 规则全覆盖；mock-IdP E2E 证明映射 binding 落地后 `AuthorizeService` 放行）
 - [ ] system-admin 跨 Org 操作走专用接口并审计
@@ -456,7 +456,7 @@ MVP 默认 `additive`：
       `X-Api-Key`/`Authorization: Bearer` 解析 + `key_hash` HMAC-SHA256(pepper)
       恒定时间校验 + 明文一次性返回 + 采样式 `last_used_at`。轮换 = create +
       revoke ≤24h 组合,无专用 `:rotate` 端点 —— 见 runtime-contracts §16.44）
-- [ ] 撤权 P99 ≤60 秒（PR-037 主动失效 + SSE re-validation）
+- [x] 撤权 P99 ≤60 秒（PR-037 主动失效 + SSE re-validation：`invalidate_principal` 同步失效 + `sse_consumer` 心跳/事件前 `force_refresh` 重验证 → revoke 关流;SSE 关闭证据见 `test_sse_revocation_revalidation.py::RUN-030`,顺序不变量「撤权后不泄漏业务事件」锁定）
 - [ ] RBAC 正反向矩阵和双 Org 测试进入 CI
 
 ---

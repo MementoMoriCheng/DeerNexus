@@ -41,6 +41,7 @@ from deerflow.persistence.iam.model import (
     RoleBindingRow,
     ServiceAccountRow,
 )
+from deerflow.persistence.orgs.model import OrgMembershipRow
 
 #: Status values allowed by the ``ck_service_accounts_status`` CHECK.
 #: ``deleted`` is NOT a row state — SA deletion is a hard DELETE (ADR §12
@@ -49,6 +50,15 @@ from deerflow.persistence.iam.model import (
 SERVICE_ACCOUNT_ACTIVE = "active"
 SERVICE_ACCOUNT_DISABLED = "disabled"
 _ALLOWED_STATUSES: frozenset[str] = frozenset({SERVICE_ACCOUNT_ACTIVE, SERVICE_ACCOUNT_DISABLED})
+
+#: Status values allowed by the ``ck_org_memberships_status`` CHECK
+#: (data-model §4.5). The caller-facing lifecycle helpers
+#: (``set_membership_status``) only exercise ``active ↔ suspended``;
+#: ``invited`` / ``removed`` are reached by invite / remove flows not
+#: in this PR's scope.
+MEMBERSHIP_ACTIVE = "active"
+MEMBERSHIP_SUSPENDED = "suspended"
+_ALLOWED_MEMBERSHIP_STATUSES: frozenset[str] = frozenset({MEMBERSHIP_ACTIVE, MEMBERSHIP_SUSPENDED})
 
 #: Fields the app layer may PATCH on a ServiceAccount via ``update_service_account``.
 #: ``status`` is deliberately NOT in this set — it has its own
@@ -376,6 +386,83 @@ async def count_user_bindings_for_role(
 
 
 # ---------------------------------------------------------------------------
+# OrgMembership lifecycle (PR-037) — ADR-0003 §7 + §11
+# ---------------------------------------------------------------------------
+#
+# Status mutation reuses the existing ``ck_org_memberships_status`` CHECK
+# (invited/active/suspended/removed, data-model §4.5). No migration. The
+# caller-facing endpoints exercise only ``active ↔ suspended`` (suspend
+# re-enables authorization revocation; activate restores). ``invited`` /
+# ``removed`` are reached by invite / remove flows not in this PR's scope.
+
+
+async def set_membership_status(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    user_id: str,
+    status: str,
+) -> OrgMembershipRow:
+    """Transition a membership's ``status``. Only ``active`` / ``suspended``.
+
+    ADR §7: a suspended membership is the revocation mechanism — the next
+    ``authorize()`` after this commit sees ``status != "active"`` and denies
+    (PR-031 ``_compute_user_permissions`` raises ``PERMISSION_DENIED``). The
+    caller MUST invalidate the principal's authz cache post-commit so the
+    revocation takes effect immediately rather than up to the ≤60s TTL
+    (ADR §11 SLO).
+
+    The row is looked up by the ``(org_id, user_id)`` UNIQUE constraint.
+    Raises ``ValueError`` if no such membership exists (the app layer maps
+    that to 404 — existence-hiding, matching the rest of the IAM API).
+    """
+    if status not in _ALLOWED_MEMBERSHIP_STATUSES:
+        raise ValueError(f"Unknown membership status {status!r}; allowed: {sorted(_ALLOWED_MEMBERSHIP_STATUSES)}")
+    async with sf() as session:
+        row = (
+            await session.execute(
+                select(OrgMembershipRow).where(
+                    OrgMembershipRow.org_id == org_id,
+                    OrgMembershipRow.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise ValueError(f"Membership for org={org_id!r} user={user_id!r} not found")
+        if row.status == status:
+            # Idempotent: re-suspending an already-suspended membership is a
+            # no-op (matches the SA status helpers' posture).
+            return row
+        row.status = status
+        await session.commit()
+        await session.refresh(row)
+    return row
+
+
+async def get_membership(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    user_id: str,
+) -> OrgMembershipRow | None:
+    """Return the ``(org_id, user_id)`` membership row, or ``None``.
+
+    Thin lookup helper for the membership router (used to read the current
+    status before a transition and to confirm existence for 404 mapping).
+    Reads only (no commit).
+    """
+    async with sf() as session:
+        return (
+            await session.execute(
+                select(OrgMembershipRow).where(
+                    OrgMembershipRow.org_id == org_id,
+                    OrgMembershipRow.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+
+# ---------------------------------------------------------------------------
 # API Key CRUD (PR-035)
 # ---------------------------------------------------------------------------
 #
@@ -698,6 +785,8 @@ async def delete_oidc_group_mapping(
 __all__ = [
     "MAPPING_MODE_ADDITIVE",
     "MAPPING_MODE_AUTHORITATIVE",
+    "MEMBERSHIP_ACTIVE",
+    "MEMBERSHIP_SUSPENDED",
     "SERVICE_ACCOUNT_ACTIVE",
     "SERVICE_ACCOUNT_DISABLED",
     "count_user_bindings_for_role",
@@ -710,6 +799,7 @@ __all__ = [
     "delete_service_account",
     "get_api_key",
     "get_api_key_by_prefix",
+    "get_membership",
     "get_oidc_group_mapping",
     "get_service_account",
     "list_api_keys",
@@ -717,6 +807,7 @@ __all__ = [
     "list_role_bindings",
     "list_service_accounts",
     "revoke_api_key",
+    "set_membership_status",
     "set_service_account_status",
     "touch_api_key_last_used",
     "update_oidc_group_mapping",
