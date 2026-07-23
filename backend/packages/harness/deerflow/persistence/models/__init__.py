@@ -17,7 +17,7 @@ its storage implementation lives in ``deerflow.runtime.events.store.db`` and
 there is no matching entity directory.
 """
 
-from deerflow.persistence.audit.model import AuditEventRow
+from deerflow.persistence.audit.model import AuditEventRow, AuditOutboxRow
 from deerflow.persistence.channel_connections.model import (
     ChannelConnectionRow,
     ChannelConversationRow,
@@ -46,6 +46,7 @@ from deerflow.persistence.user.model import UserRow
 __all__ = [
     "ApiKeyRow",
     "AuditEventRow",
+    "AuditOutboxRow",
     "ChannelConnectionRow",
     "ChannelConversationRow",
     "ChannelCredentialRow",

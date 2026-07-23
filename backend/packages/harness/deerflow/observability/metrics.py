@@ -39,8 +39,9 @@ counters per §7.1 "不在缺少真实基线时伪设精确告警"):
 * §4.5 Sandbox hardening: ``sandbox_oom_total``, ``sandbox_quarantine_total``,
   ``sandbox_timeout_total``, ``sandbox_cleanup_failure_total`` — need OOM
   detection / quarantine / timeout (Track E).
-* §4.6 Data & Audit: ``redis_*`` (no Redis client), ``audit_outbox_*`` /
-  ``audit_archive_lag_seconds`` (blocked on PR-041 outbox),
+* §4.6 Data & Audit: ``redis_*`` (no Redis client),
+  ``audit_outbox_*`` / ``audit_dead_letter_*`` (PR-041 — now registered),
+  ``audit_archive_lag_seconds`` (no archive job — PR-045),
   ``usage_ingest_lag_seconds``, ``object_digest_mismatch_total``,
   ``backup_last_success_timestamp`` (no infra).
 * §4.4 ``model_cost_amount`` (no price table), ``policy_decisions_total``
@@ -843,6 +844,105 @@ def registry_health() -> bool:
 
 
 # ===========================================================================
+# §4.6 Audit-outbox metrics (PR-041)
+# ===========================================================================
+#
+# ADR-0005 §14 + observability-and-slo §4.6. These were deferred in the initial
+# metrics registry ("blocked on PR-041 outbox") because they have no producer
+# until the outbox worker exists. PR-041's worker
+# (app.gateway.audit_worker._publish_backlog_metrics) pushes these once per
+# drain pass. All are label-less (no org_id — §4.1 cardinality rule), matching
+# the ADR's "指标不以 org_id 作为无界公共标签".
+
+
+@lru_cache(maxsize=8)
+def _audit_outbox_pending(registry: Any) -> Any:
+    return _make_gauge(
+        "audit_outbox_pending",
+        "Claimable pending audit-outbox rows (ADR-0005 §14). Backlog over threshold → Class A fail-closed.",
+        (),
+        registry,
+    )
+
+
+@lru_cache(maxsize=8)
+def _audit_outbox_oldest_age_seconds(registry: Any) -> Any:
+    return _make_gauge(
+        "audit_outbox_oldest_age_seconds",
+        "Age in seconds of the oldest claimable pending audit-outbox row (ADR-0005 §14). >5min → P2 alert.",
+        (),
+        registry,
+    )
+
+
+@lru_cache(maxsize=8)
+def _audit_publish_total(registry: Any) -> Any:
+    return _make_counter(
+        "audit_publish_total",
+        "Audit-outbox publish attempts by outcome (ADR-0005 §14).",
+        ("outcome",),
+        registry,
+    )
+
+
+@lru_cache(maxsize=8)
+def _audit_dead_letter_total(registry: Any) -> Any:
+    return _make_counter(
+        "audit_dead_letter_total",
+        "Audit-outbox rows that reached the dead-letter threshold (ADR-0005 §14). >0 → P2 alert.",
+        (),
+        registry,
+    )
+
+
+@lru_cache(maxsize=8)
+def _audit_dead_letter_count(registry: Any) -> Any:
+    # Current dead-letter count (gauge) for operators who want the live value
+    # rather than the cumulative counter. Distinct name so both scrape.
+    return _make_gauge(
+        "audit_dead_letter_count",
+        "Current dead-letter audit-outbox rows (ADR-0005 §14, live gauge vs the cumulative counter).",
+        (),
+        registry,
+    )
+
+
+def set_audit_outbox_pending(count: int, registry: Any = None) -> None:
+    try:
+        _audit_outbox_pending(_registry_or_default(registry)).labels(**_with_constants({})).set(count)
+    except Exception:  # noqa: BLE001
+        logger.debug("set_audit_outbox_pending failed", exc_info=True)
+
+
+def set_audit_outbox_oldest_age(seconds: float, registry: Any = None) -> None:
+    try:
+        _audit_outbox_oldest_age_seconds(_registry_or_default(registry)).labels(**_with_constants({})).set(seconds)
+    except Exception:  # noqa: BLE001
+        logger.debug("set_audit_outbox_oldest_age failed", exc_info=True)
+
+
+def inc_audit_publish(*, outcome: str, registry: Any = None) -> None:
+    try:
+        _audit_publish_total(_registry_or_default(registry)).labels(**_with_constants({"outcome": outcome})).inc()
+    except Exception:  # noqa: BLE001
+        logger.debug("inc_audit_publish failed", exc_info=True)
+
+
+def inc_audit_dead_letter(registry: Any = None) -> None:
+    try:
+        _audit_dead_letter_total(_registry_or_default(registry)).labels(**_with_constants({})).inc()
+    except Exception:  # noqa: BLE001
+        logger.debug("inc_audit_dead_letter failed", exc_info=True)
+
+
+def set_audit_dead_letter_count(count: int, registry: Any = None) -> None:
+    try:
+        _audit_dead_letter_count(_registry_or_default(registry)).labels(**_with_constants({})).set(count)
+    except Exception:  # noqa: BLE001
+        logger.debug("set_audit_dead_letter_count failed", exc_info=True)
+
+
+# ===========================================================================
 # Test-only utilities — NOT for production call sites
 # ===========================================================================
 
@@ -870,6 +970,8 @@ def reset_accessor_caches_for_tests() -> None:
 __all__ = [
     "ALLOWED_LABELS",
     "dec_active_sse_connections",
+    "inc_audit_dead_letter",
+    "inc_audit_publish",
     "generate_metrics_payload",
     "inc_active_sse_connections",
     "inc_db_transaction_failure",
@@ -893,6 +995,9 @@ __all__ = [
     "reset_accessor_caches_for_tests",
     "set_db_pool_stats",
     "set_run_reconcile_backlog",
+    "set_audit_dead_letter_count",
+    "set_audit_outbox_oldest_age",
+    "set_audit_outbox_pending",
     "set_sandbox_active",
     "set_sandbox_pending",
     "set_worker_active",

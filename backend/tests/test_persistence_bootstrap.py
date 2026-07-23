@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0010_audit_events"
+HEAD = "0011_audit_outbox"
 BASELINE = "0001_baseline"
 
 

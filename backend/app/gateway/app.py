@@ -368,7 +368,60 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("No IM channels configured or channel service failed to start")
 
+        # Register the outbox-backed AuditSink + start the drain worker (PR-041).
+        # The engine is up (inside langgraph_runtime), so get_session_factory()
+        # is available. The sink lights up every emit_tenant_event call site
+        # (PR-034/035/036/037's 28+ callers) to durable outbox delivery; the
+        # worker drains audit_outbox → audit_events. Both are best-effort: a
+        # failure here is logged, not fatal (the app still serves traffic with
+        # the logger-only fallback).
+        audit_worker_stop: asyncio.Event | None = None
+        audit_worker_task: asyncio.Task[None] | None = None
+        try:
+            from app.gateway.audit_sink import get_audit_sink
+            from app.gateway.audit_worker import run_audit_worker
+            from deerflow.persistence.engine import get_session_factory
+            from deerflow.tenancy.audit_events import set_tenant_event_sink
+
+            sf = get_session_factory()
+            if sf is not None:
+                set_tenant_event_sink(get_audit_sink())
+                audit_worker_stop = asyncio.Event()
+                audit_worker_task = asyncio.create_task(
+                    run_audit_worker(sf, stop_event=audit_worker_stop),
+                    name="audit-outbox-worker",
+                )
+                logger.info("Audit outbox worker started")
+            else:
+                logger.warning("No session factory; audit outbox worker not started (logger-only fallback)")
+        except Exception:
+            logger.exception("Failed to start audit outbox worker; events fall back to logger")
+
         yield
+
+        # Stop the audit outbox worker first (bounded) so it does not race the
+        # engine teardown (langgraph_runtime closes the engine below).
+        if audit_worker_task is not None:
+            if audit_worker_stop is not None:
+                audit_worker_stop.set()
+            try:
+                await asyncio.wait_for(audit_worker_task, timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+            except TimeoutError:
+                audit_worker_task.cancel()
+                logger.warning(
+                    "Audit outbox worker shutdown exceeded %.1fs; cancelling.",
+                    _SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                logger.exception("Audit outbox worker shutdown raised")
+            # Always clear the registered sink so a post-shutdown emit (rare)
+            # falls back to logger rather than touching a closing engine.
+            try:
+                from deerflow.tenancy.audit_events import set_tenant_event_sink
+
+                set_tenant_event_sink(None)
+            except Exception:
+                logger.debug("clearing audit sink on shutdown failed", exc_info=True)
 
         # Stop channel service on shutdown (bounded to prevent worker hang)
         try:
