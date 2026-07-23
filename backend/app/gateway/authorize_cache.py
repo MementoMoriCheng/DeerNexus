@@ -1,14 +1,17 @@
-"""In-memory permission cache for the Authorize Service (PR-031).
+"""In-memory permission cache for the Authorize Service (PR-031 / PR-037).
 
 ADR-0003 §11 mandates a ≤60-second TTL on cached permission sets, keyed by
 ``org_id + principal_type + principal_id`` (the cache stores the whole
 effective set, not per-permission entries). The active-invalidation half
-(listening for Membership / RoleBinding / ServiceAccount / API Key changes,
-SSE re-validation, P99 revocation evidence) is PR-037's deliverable; this
-module only provides:
+(``AuthorizeService.invalidate_principal`` / ``invalidate_system_admin``
+called from the IAM write path after commit, plus the SSE re-validation
+guard in ``app.gateway.services.sse_consumer``) is wired in PR-034/035/037.
+This module provides:
 
-* a :class:`PermissionCache` Protocol so PR-037 can drop in a Redis-backed
-  implementation without touching the Authorize Service;
+* a :class:`PermissionCache` Protocol so a future Redis-backed cross-process
+  implementation can drop in without touching the Authorize Service (the
+  in-memory cache is single-process; cross-process coherence rides the
+  ≤60s TTL fallback, which ADR §11 permits: "主动失效失败时仍不得超过 60 秒");
 * an :class:`InMemoryPermissionCache` suitable for single-process deployments
   and tests, honouring the 60-second TTL fallback and the system-admin
   independent namespace (ADR §11).

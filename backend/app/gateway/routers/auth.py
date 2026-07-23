@@ -508,7 +508,22 @@ async def _establish_admin_tenant_relationships(user_id: str) -> None:
     try:
         await ensure_admin_membership(sf, org_id=org_id, user_id=user_id)
         role = await ensure_system_admin_role(sf)
-        await ensure_admin_role_binding(sf, org_id=org_id, user_id=user_id, role_id=role.id)
+        _binding, created = await ensure_admin_role_binding(sf, org_id=org_id, user_id=user_id, role_id=role.id)
+        # PR-037 (ADR §11): a brand-new user-principal binding must drop the
+        # principal's authz cache so the granted permissions are observed on
+        # the next request, not up to the ≤60s TTL. For the /initialize path
+        # the user has no cached entry yet (never authorized), so this is
+        # defensive — but a future caller that re-binds an existing user
+        # benefits immediately.
+        if created:
+            from app.gateway.authorize import get_authorize_service
+
+            try:
+                get_authorize_service().invalidate_principal(org_id=org_id, principal_type="user", principal_id=user_id)
+            except RuntimeError:
+                # AuthorizeService not yet constructible (memory backend /
+                # not initialised). Non-fatal — the TTL remains the bound.
+                logger.debug("skip invalidate_principal in _establish_admin_tenant_relationships: service not ready")
     except Exception:
         logger.exception("Failed to establish admin tenant relationships for user %s (non-fatal)", user_id)
 

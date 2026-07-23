@@ -221,11 +221,12 @@ class TestEnsureAdminRoleBinding:
         user = await _seed_user(sf)
         role = await ensure_system_admin_role(sf)
 
-        binding = await ensure_admin_role_binding(sf, org_id=DEFAULT_ORG_ID, user_id=user.id, role_id=role.id)
+        binding, created = await ensure_admin_role_binding(sf, org_id=DEFAULT_ORG_ID, user_id=user.id, role_id=role.id)
         assert binding.org_id == DEFAULT_ORG_ID
         assert binding.principal_type == "user"
         assert binding.principal_id == user.id
         assert binding.role_id == role.id
+        assert created is True
 
     @pytest.mark.anyio
     async def test_idempotent_does_not_duplicate(self, sf):

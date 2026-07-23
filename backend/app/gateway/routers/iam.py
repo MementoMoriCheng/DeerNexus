@@ -1,6 +1,6 @@
-"""IAM ServiceAccount API (PR-034) + API Key endpoints (PR-035) + OIDC group mapping (PR-036).
+"""IAM ServiceAccount API (PR-034) + API Key endpoints (PR-035) + OIDC group mapping (PR-036) + OrgMembership lifecycle (PR-037).
 
-Eighteen endpoints mounted at ``/api/v1/iam``:
+Twenty endpoints mounted at ``/api/v1/iam``:
 
 ServiceAccount lifecycle (PR-034):
 
@@ -28,6 +28,11 @@ OIDC group mapping (PR-036, ADR-0003 §10):
 * ``PATCH  /oidc-group-mappings/{id}``            — update (group_claim/value/role/mode/description)
 * ``DELETE /oidc-group-mappings/{id}``            — remove entry (idempotent)
 * ``POST   /oidc-group-mappings:preview``         — dry-run preview against the caller
+
+OrgMembership lifecycle (PR-037, ADR-0003 §7 + §11):
+
+* ``POST   /org-memberships/{user_id}:suspend``   — lifecycle: active → suspended (revocation)
+* ``POST   /org-memberships/{user_id}:activate``   — lifecycle: suspended → active
 
 Gating (ADR §4): all reads use ``Permission.ADMIN_IAM_READ``, all writes
 use ``Permission.ADMIN_IAM_MANAGE``. Both are carried only by
@@ -114,6 +119,7 @@ from deerflow.contracts.iam import (
     OidcGroupMappingUpdateRequest,
     OidcMappingPreviewRequest,
     OidcMappingPreviewResponse,
+    OrgMembershipResponse,
     ServiceAccountCreateRequest,
     ServiceAccountResponse,
     ServiceAccountRoleBindingRequest,
@@ -122,6 +128,8 @@ from deerflow.contracts.iam import (
 )
 from deerflow.contracts.rbac import SYSTEM_PERMISSION_PREFIX, validate_role_permissions
 from deerflow.persistence.iam import (
+    MEMBERSHIP_ACTIVE,
+    MEMBERSHIP_SUSPENDED,
     SERVICE_ACCOUNT_ACTIVE,
     SERVICE_ACCOUNT_DISABLED,
     create_api_key,
@@ -132,6 +140,7 @@ from deerflow.persistence.iam import (
     delete_role_binding,
     delete_service_account,
     get_api_key,
+    get_membership,
     get_oidc_group_mapping,
     get_service_account,
     list_api_keys,
@@ -139,12 +148,17 @@ from deerflow.persistence.iam import (
     list_role_bindings,
     list_service_accounts,
     revoke_api_key,
+    set_membership_status,
     set_service_account_status,
     update_oidc_group_mapping,
     update_service_account,
 )
 from deerflow.tenancy.audit_events import emit_tenant_event
-from deerflow.tenancy.oidc_group_mapping import apply_group_mapping
+from deerflow.tenancy.oidc_group_mapping import (
+    LastAdminError,
+    apply_group_mapping,
+    assert_not_last_admin,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/iam", tags=["iam"])
@@ -880,6 +894,124 @@ async def preview_oidc_group_mapping_route(
         applied=[{"group_value": o.group_value, "target_role_id": o.target_role_id, "target_org_id": o.target_org_id, "applied": o.applied, "reason": o.reason} for o in result.applied],
         skipped=[{"group_value": o.group_value, "target_role_id": o.target_role_id, "target_org_id": o.target_org_id, "applied": o.applied, "reason": o.reason} for o in result.skipped],
     )
+
+
+# ---------------------------------------------------------------------------
+# OrgMembership lifecycle (PR-037) — ADR-0003 §7 + §11
+# ---------------------------------------------------------------------------
+#
+# suspend/activate are the revocation write path §11's SLO measures:
+# commit the status change → invalidate the principal's authz cache →
+# the next request (and any in-flight SSE re-validation) sees the denial
+# within the ≤60s bound. Suspend of the sole ``org:admin`` is refused by
+# ``assert_not_last_admin`` (ADR §7); activate is always permitted.
+
+
+async def _org_admin_role_id(sf, *, org_id: str) -> str | None:
+    """Return the id of the system-template ``org:admin`` role, or ``None``.
+
+    Used by the last-admin guard before a suspend. Looked up by
+    ``(name='org:admin', is_system=True)`` — the builtin system template
+    seeded by ``ensure_builtin_roles`` (PR-030).
+    """
+    from sqlalchemy import select
+
+    from deerflow.persistence.iam.model import RoleRow
+    from deerflow.tenancy.bootstrap import SYSTEM_ADMIN_ROLE_NAME
+
+    async with sf() as session:
+        role = (await session.execute(select(RoleRow).where(RoleRow.name == SYSTEM_ADMIN_ROLE_NAME, RoleRow.is_system.is_(True)))).scalar_one_or_none()
+    return role.id if role is not None else None
+
+
+def _to_membership_response(row) -> OrgMembershipResponse:
+    return OrgMembershipResponse.model_validate(row)
+
+
+@router.post(
+    "/org-memberships/{user_id}:suspend",
+    response_model=OrgMembershipResponse,
+)
+@require_rbac(Permission.ADMIN_IAM_MANAGE)
+async def suspend_org_member(request: Request, user_id: str) -> OrgMembershipResponse:
+    """Lifecycle: active → suspended. ADR §7 revocation.
+
+    A suspended membership is the authorization revocation mechanism
+    (ADR §11): the next ``authorize()`` after this commit denies. The
+    router invalidates the principal's authz cache post-commit so the
+    SLO holds immediately. Suspending the sole ``org:admin`` is refused
+    (``assert_not_last_admin`` → 409) — emergency removal is the
+    system-admin dedicated flow.
+    """
+    org_id = _require_org_id(request)
+    actor = _actor_id(request)
+    sf = _sf(request)
+    # Last-admin guard: refuse if this user is the sole active org:admin.
+    admin_role_id = await _org_admin_role_id(sf=sf, org_id=org_id)
+    if admin_role_id is not None:
+        try:
+            await assert_not_last_admin(sf=sf, org_id=org_id, role_id=admin_role_id, principal_id=user_id)
+        except LastAdminError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+    try:
+        row = await set_membership_status(sf, org_id=org_id, user_id=user_id, status=MEMBERSHIP_SUSPENDED)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found.") from exc
+    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
+    emit_tenant_event(
+        "org_membership_suspended",
+        org_id=org_id,
+        principal_id=actor,
+        payload={"user_id": user_id, "membership_id": row.id},
+    )
+    # ADR §11: invalidate the user's authz cache so the revocation is
+    # observed on the next request (and any in-flight SSE re-validation),
+    # not up to the ≤60s TTL.
+    get_authorize_service().invalidate_principal(org_id=org_id, principal_type="user", principal_id=user_id)
+    return _to_membership_response(row)
+
+
+@router.post(
+    "/org-memberships/{user_id}:activate",
+    response_model=OrgMembershipResponse,
+)
+@require_rbac(Permission.ADMIN_IAM_MANAGE)
+async def activate_org_member(request: Request, user_id: str) -> OrgMembershipResponse:
+    """Lifecycle: suspended → active. Restores authorization."""
+    org_id = _require_org_id(request)
+    actor = _actor_id(request)
+    sf = _sf(request)
+    try:
+        row = await set_membership_status(sf, org_id=org_id, user_id=user_id, status=MEMBERSHIP_ACTIVE)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found.") from exc
+    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
+    emit_tenant_event(
+        "org_membership_activated",
+        org_id=org_id,
+        principal_id=actor,
+        payload={"user_id": user_id, "membership_id": row.id},
+    )
+    # Invalidate so the restored permissions are observed immediately.
+    get_authorize_service().invalidate_principal(org_id=org_id, principal_type="user", principal_id=user_id)
+    return _to_membership_response(row)
+
+
+@router.get(
+    "/org-memberships/{user_id}",
+    response_model=OrgMembershipResponse,
+)
+@require_rbac(Permission.ADMIN_IAM_READ)
+async def get_org_member(request: Request, user_id: str) -> OrgMembershipResponse:
+    """Read one membership row (current status). Cross-Org → 404."""
+    org_id = _require_org_id(request)
+    row = await get_membership(_sf(request), org_id=org_id, user_id=user_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found.")
+    return _to_membership_response(row)
 
 
 # ---------------------------------------------------------------------------

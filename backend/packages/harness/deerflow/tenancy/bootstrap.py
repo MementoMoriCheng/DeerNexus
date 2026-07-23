@@ -290,7 +290,7 @@ async def _ensure_role_binding(
     principal_type: str,
     principal_id: str,
     role_id: str,
-) -> RoleBindingRow:
+) -> tuple[RoleBindingRow, bool]:
     """Idempotent RoleBinding insert, polymorphic on ``principal_type``.
 
     Shared body of :func:`ensure_admin_role_binding` (user principal) and
@@ -299,6 +299,15 @@ async def _ensure_role_binding(
     constraint before inserting. ``role_id`` is a real FK→``roles.id``
     (CASCADE) and must already be committed; ``org_id`` /
     ``principal_id`` are soft references (data-model §5.2, no FK).
+
+    Returns ``(row, created)`` so the app-layer caller can decide whether
+    to invalidate the principal's authz cache (PR-037, ADR §11): a
+    brand-new binding only matters if the principal already has a cached
+    permission set (e.g. a re-bind after a prior auth), while a no-op
+    probe never changes the effective set. The harness layer cannot call
+    ``invalidate_principal`` itself (``AuthorizeService`` is app-layer;
+    ``test_harness_boundary`` enforces the import direction), so the
+    contract is: harness reports ``created``, app invalidates.
 
     Extracted by PR-034 to support ServiceAccount bindings without
     duplicating the probe-or-insert logic — the ADR §8 unique constraint
@@ -313,7 +322,7 @@ async def _ensure_role_binding(
         )
         existing = (await session.execute(stmt)).scalar_one_or_none()
         if existing is not None:
-            return existing
+            return existing, False
 
         row = RoleBindingRow(
             id=_new_id(),
@@ -325,7 +334,7 @@ async def _ensure_role_binding(
         session.add(row)
         await session.commit()
         await session.refresh(row)
-    return row
+    return row, True
 
 
 async def ensure_admin_role_binding(
@@ -334,19 +343,17 @@ async def ensure_admin_role_binding(
     org_id: str,
     user_id: str,
     role_id: str,
-) -> RoleBindingRow:
+) -> tuple[RoleBindingRow, bool]:
     """Idempotently bind the admin user to the system admin role in the org.
 
     Thin wrapper over :func:`_ensure_role_binding` for the ``user`` principal
-    type. Preserved for the two existing call sites
-    (``app.gateway.app._ensure_default_org`` lifespan hook and
-    ``app.gateway.routers.auth._establish_admin_tenant_relationships``) so
-    they keep working without signature changes. Re-emits the
-    ``admin_role_binding_created`` tenant event to preserve the pre-PR-034
-    audit trail (the shared helper does not emit so the SA path can emit
-    its own event name).
+    type. Returns ``(row, created)`` so the app-layer caller can invalidate
+    the principal's authz cache when a NEW binding lands (PR-037, ADR §11).
+    Re-emits the ``admin_role_binding_created`` tenant event to preserve
+    the pre-PR-034 audit trail (the shared helper does not emit so the SA
+    path can emit its own event name).
     """
-    row = await _ensure_role_binding(
+    row, created = await _ensure_role_binding(
         sf,
         org_id=org_id,
         principal_type="user",
@@ -357,9 +364,9 @@ async def ensure_admin_role_binding(
         "admin_role_binding_created",
         org_id=org_id,
         principal_id=user_id,
-        payload={"binding_id": row.id, "role_id": role_id},
+        payload={"binding_id": row.id, "role_id": role_id, "created": created},
     )
-    return row
+    return row, created
 
 
 async def ensure_service_account_role_binding(
@@ -368,11 +375,13 @@ async def ensure_service_account_role_binding(
     org_id: str,
     service_account_id: str,
     role_id: str,
-) -> RoleBindingRow:
+) -> tuple[RoleBindingRow, bool]:
     """Idempotently bind a ServiceAccount to ``role_id`` in ``org_id``.
 
     PR-034 sister of :func:`ensure_admin_role_binding` for the
-    ``service_account`` principal type. Used by the IAM router's
+    ``service_account`` principal type. Returns ``(row, created)`` so the
+    app-layer caller can invalidate the SA's authz cache when a NEW
+    binding lands (PR-037, ADR §11). Used by the IAM router's
     create-binding endpoint when an admin grants a ServiceAccount an Org
     role (and by tests seeding a SA principal for ``authorize()``).
     """
