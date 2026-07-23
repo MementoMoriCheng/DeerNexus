@@ -1,6 +1,6 @@
-"""IAM ServiceAccount API (PR-034) + API Key endpoints (PR-035).
+"""IAM ServiceAccount API (PR-034) + API Key endpoints (PR-035) + OIDC group mapping (PR-036).
 
-Thirteen endpoints mounted at ``/api/v1/iam``:
+Eighteen endpoints mounted at ``/api/v1/iam``:
 
 ServiceAccount lifecycle (PR-034):
 
@@ -20,6 +20,14 @@ API Key lifecycle (PR-035):
 * ``POST   /service-accounts/{sa_id}/api-keys``          — mint (returns plaintext ONCE)
 * ``GET    /service-accounts/{sa_id}/api-keys``          — list (no plaintext, no hash)
 * ``DELETE /service-accounts/{sa_id}/api-keys/{key_id}`` — revoke (idempotent)
+
+OIDC group mapping (PR-036, ADR-0003 §10):
+
+* ``GET    /oidc-group-mappings``                 — list allowlist (Org-scoped)
+* ``POST   /oidc-group-mappings``                 — create allowlist entry
+* ``PATCH  /oidc-group-mappings/{id}``            — update (group_claim/value/role/mode/description)
+* ``DELETE /oidc-group-mappings/{id}``            — remove entry (idempotent)
+* ``POST   /oidc-group-mappings:preview``         — dry-run preview against the caller
 
 Gating (ADR §4): all reads use ``Permission.ADMIN_IAM_READ``, all writes
 use ``Permission.ADMIN_IAM_MANAGE``. Both are carried only by
@@ -66,6 +74,24 @@ What this router deliberately does NOT do (PR boundary):
 * It does not implement rate limiting (ADR §9.3) — platform limiter PR.
 * It does not emit a dedicated ``api_key_rotated`` event — rotation is
   the composition of ``api_key_created`` + ``api_key_revoked`` (≤24h).
+
+OIDC group-mapping rules (ADR-0003 §10):
+
+* The set of mapping rows IS the allowlist — an unmatched
+  ``(issuer, group)`` is never mapped (§10 rule 1).
+* ``additive`` is the MVP default; ``authoritative`` is stored but the
+  mapping service refuses to enact it (§10 "authoritative 模式需单独
+  启用") — the column exists so a future mode can switch on without a
+  schema change.
+* A target role carrying any ``system:*`` permission is rejected at
+  create/update (§10 rule 3) — the router looks up the role and
+  validates via ``validate_role_permissions``.
+* The ``:preview`` dry-run always runs against the CALLER (never an
+  arbitrary target user) to avoid a "dry-run as reconnaissance" abuse
+  vector.
+* Last-admin protection (ADR §7) is a service-layer primitive
+  (``assert_not_last_admin``); additive mapping never removes a binding,
+  so the protection is exercised by the future removal path, not here.
 """
 
 from __future__ import annotations
@@ -83,6 +109,11 @@ from deerflow.contracts.iam import (
     ApiKeyCreateRequest,
     ApiKeyCreateResponse,
     ApiKeyResponse,
+    OidcGroupMappingCreateRequest,
+    OidcGroupMappingResponse,
+    OidcGroupMappingUpdateRequest,
+    OidcMappingPreviewRequest,
+    OidcMappingPreviewResponse,
     ServiceAccountCreateRequest,
     ServiceAccountResponse,
     ServiceAccountRoleBindingRequest,
@@ -94,20 +125,26 @@ from deerflow.persistence.iam import (
     SERVICE_ACCOUNT_ACTIVE,
     SERVICE_ACCOUNT_DISABLED,
     create_api_key,
+    create_oidc_group_mapping,
     create_role_binding,
     create_service_account,
+    delete_oidc_group_mapping,
     delete_role_binding,
     delete_service_account,
     get_api_key,
+    get_oidc_group_mapping,
     get_service_account,
     list_api_keys,
+    list_oidc_group_mappings,
     list_role_bindings,
     list_service_accounts,
     revoke_api_key,
     set_service_account_status,
+    update_oidc_group_mapping,
     update_service_account,
 )
 from deerflow.tenancy.audit_events import emit_tenant_event
+from deerflow.tenancy.oidc_group_mapping import apply_group_mapping
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/iam", tags=["iam"])
@@ -588,6 +625,261 @@ async def revoke_sa_api_key(request: Request, sa_id: str, key_id: str) -> None:
     # Defensive invalidation (no-op per cache-walk-through, but matches
     # ADR §11 "API Key ... 变更主动失效" wording letter-for-letter).
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="service_account", principal_id=sa_id)
+
+
+# ---------------------------------------------------------------------------
+# OIDC group mapping (PR-036) — ADR-0003 §10
+# ---------------------------------------------------------------------------
+#
+# The mapping rows ARE the allowlist (§10 rule 1). CRUD is Org-scoped on
+# ``target_org_id``; the engine (``apply_group_mapping``) is the apply
+# path invoked by the real OIDC login (a future PR) and by the
+# ``:preview`` dry-run below. Rule 3 (no system permissions) is enforced
+# at create/update by looking up the target role.
+
+
+async def _validate_mapping_target_role(request: Request, role_id: str) -> None:
+    """ADR §10 rule 3: reject a target role carrying any ``system:*`` permission.
+
+    Also rejects an unknown role_id (the mapping engine's own defence-in-
+    depth read would skip it, but failing at config-write time gives a
+    clearer 400 than a silent skip at apply time). Looks up the role via
+    a one-shot session because ``get_service_account``-style helpers do
+    not exist for roles (roles are read through the bootstrap / authorize
+    paths today, not a dedicated repository reader).
+    """
+    from sqlalchemy import select
+
+    from deerflow.persistence.iam.model import RoleRow
+
+    sf = _sf(request)
+    async with sf() as session:
+        role = (await session.execute(select(RoleRow).where(RoleRow.id == role_id))).scalar_one_or_none()
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"target_role_id {role_id!r} does not reference a known role.",
+        )
+    perms = role.permissions or []
+    if any(isinstance(p, str) and p.startswith(SYSTEM_PERMISSION_PREFIX) for p in perms):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="target_role carries a system: permission; OIDC groups cannot map to system permissions (ADR §10 rule 3).",
+        )
+    # Belt-and-braces: validate the role's declared permission set is
+    # well-formed (the registry is authoritative at write time; a mapping
+    # must not reference a role whose perms have drifted into the unknown).
+    try:
+        validate_role_permissions(perms, is_system=bool(role.is_system))
+    except Exception as exc:  # noqa: BLE001 — PermissionValidationError carries a stable code
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"target_role permission set is invalid: {exc}",
+        ) from exc
+
+
+def _validate_mapping_mode(mode: str) -> None:
+    """Reject an unknown ``mode`` value (the CHECK constraint would also catch it)."""
+    if mode not in ("additive", "authoritative"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"mode must be 'additive' or 'authoritative' (got {mode!r}).",
+        )
+
+
+def _to_mapping_response(row) -> OidcGroupMappingResponse:
+    return OidcGroupMappingResponse.model_validate(row)
+
+
+@router.get(
+    "/oidc-group-mappings",
+    response_model=list[OidcGroupMappingResponse],
+)
+@require_rbac(Permission.ADMIN_IAM_READ)
+async def list_oidc_group_mappings_route(request: Request) -> list[OidcGroupMappingResponse]:
+    """List the OIDC group-mapping allowlist for the caller's Org (ADR §8 Org filter)."""
+    org_id = _require_org_id(request)
+    rows = await list_oidc_group_mappings(_sf(request), org_id=org_id)
+    return [_to_mapping_response(r) for r in rows]
+
+
+@router.post(
+    "/oidc-group-mappings",
+    response_model=OidcGroupMappingResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+@require_rbac(Permission.ADMIN_IAM_MANAGE)
+async def create_oidc_group_mapping_route(
+    request: Request,
+    body: OidcGroupMappingCreateRequest,
+) -> OidcGroupMappingResponse:
+    """Create one allowlist entry (ADR §10 config model).
+
+    Validates rule 3 (target role has no system perms) before persisting.
+    ``409 Conflict`` if ``(issuer, group_value, target_org_id, target_role_id)``
+    already exists (duplicate allowlist entry).
+    """
+    org_id = _require_org_id(request)
+    actor = _actor_id(request)
+    if body.target_org_id != org_id:
+        # An admin may only create mappings targeting their OWN org — a
+        # cross-org target would let an admin in Org A inject bindings
+        # into Org B via the mapping engine.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="target_org_id must match the caller's active org.",
+        )
+    _validate_mapping_mode(body.mode)
+    await _validate_mapping_target_role(request, body.target_role_id)
+    try:
+        row = await create_oidc_group_mapping(
+            _sf(request),
+            issuer=body.issuer,
+            group_claim=body.group_claim,
+            group_value=body.group_value,
+            target_org_id=body.target_org_id,
+            target_role_id=body.target_role_id,
+            mode=body.mode,
+            description=body.description,
+            created_by=actor,
+        )
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An OIDC group mapping for this (issuer, group, org, role) already exists.",
+        ) from exc
+    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
+    emit_tenant_event(
+        "oidc_group_mapping_created",
+        org_id=org_id,
+        principal_id=actor,
+        payload={
+            "mapping_id": row.id,
+            "issuer": row.issuer,
+            "group_value": row.group_value,
+            "target_role_id": row.target_role_id,
+            "mode": row.mode,
+        },
+    )
+    return _to_mapping_response(row)
+
+
+@router.patch(
+    "/oidc-group-mappings/{mapping_id}",
+    response_model=OidcGroupMappingResponse,
+)
+@require_rbac(Permission.ADMIN_IAM_MANAGE)
+async def update_oidc_group_mapping_route(
+    request: Request,
+    mapping_id: str,
+    body: OidcGroupMappingUpdateRequest,
+) -> OidcGroupMappingResponse:
+    """Update an allowlist entry. ``issuer`` / ``target_org_id`` are immutable.
+
+    Re-validates rule 3 when ``target_role_id`` changes. Cross-Org → 404
+    (existence-hiding). ``409`` if the update would collide with an
+    existing ``(issuer, group_value, org, role)`` tuple.
+    """
+    org_id = _require_org_id(request)
+    actor = _actor_id(request)
+    fields = body.model_dump(exclude_unset=True)
+    if "mode" in fields:
+        _validate_mapping_mode(fields["mode"])
+    if "target_role_id" in fields:
+        await _validate_mapping_target_role(request, fields["target_role_id"])
+    existing = await get_oidc_group_mapping(_sf(request), mapping_id=mapping_id)
+    if existing is None or existing.target_org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OIDC group mapping not found.")
+    try:
+        row = await update_oidc_group_mapping(_sf(request), mapping_id=mapping_id, **fields)
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Update collides with an existing (issuer, group, org, role) mapping.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OIDC group mapping not found.") from exc
+    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
+    emit_tenant_event(
+        "oidc_group_mapping_updated",
+        org_id=org_id,
+        principal_id=actor,
+        payload={"mapping_id": row.id, "fields": sorted(fields)},
+    )
+    return _to_mapping_response(row)
+
+
+@router.delete(
+    "/oidc-group-mappings/{mapping_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@require_rbac(Permission.ADMIN_IAM_MANAGE)
+async def delete_oidc_group_mapping_route(request: Request, mapping_id: str) -> None:
+    """Remove one allowlist entry. Idempotent: 204 even if already gone.
+
+    Deleting a mapping rule does NOT revoke any bindings it previously
+    materialized (ADR §10 rule 6: additive mapping never removes; the
+    ``created_by`` provenance on those bindings is retained). A future
+    authoritative sweep would remove them explicitly.
+    """
+    org_id = _require_org_id(request)
+    actor = _actor_id(request)
+    existing = await get_oidc_group_mapping(_sf(request), mapping_id=mapping_id)
+    if existing is None or existing.target_org_id != org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OIDC group mapping not found.")
+    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
+    emit_tenant_event(
+        "oidc_group_mapping_deleted",
+        org_id=org_id,
+        principal_id=actor,
+        payload={
+            "mapping_id": existing.id,
+            "issuer": existing.issuer,
+            "group_value": existing.group_value,
+            "target_role_id": existing.target_role_id,
+        },
+    )
+    await delete_oidc_group_mapping(_sf(request), mapping_id=mapping_id, org_id=org_id)
+
+
+@router.post(
+    "/oidc-group-mappings:preview",
+    response_model=OidcMappingPreviewResponse,
+)
+@require_rbac(Permission.ADMIN_IAM_MANAGE)
+async def preview_oidc_group_mapping_route(
+    request: Request,
+    body: OidcMappingPreviewRequest,
+) -> OidcMappingPreviewResponse:
+    """Dry-run preview: what would the mapping engine apply for the caller?
+
+    Runs ``apply_group_mapping(..., dry_run=True)`` against the CALLER's
+    own ``user_id`` + active membership. Never writes. The preview is
+    caller-scoped (no ``user_id`` in the request body) so an admin cannot
+    use it as a reconnaissance tool against another user.
+    """
+    _require_org_id(request)
+    actor = _actor_id(request)
+    if actor is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Preview requires an authenticated caller; the dry-run runs against your own identity.",
+        )
+    result = await apply_group_mapping(
+        _sf(request),
+        user_id=actor,
+        issuer=body.issuer,
+        groups=body.groups,
+        dry_run=True,
+    )
+    return OidcMappingPreviewResponse(
+        user_id=result.user_id,
+        issuer=result.issuer,
+        dry_run=result.dry_run,
+        planned=[{"group_value": o.group_value, "target_role_id": o.target_role_id, "target_org_id": o.target_org_id, "applied": o.applied, "reason": o.reason} for o in result.planned],
+        applied=[{"group_value": o.group_value, "target_role_id": o.target_role_id, "target_org_id": o.target_org_id, "applied": o.applied, "reason": o.reason} for o in result.applied],
+        skipped=[{"group_value": o.group_value, "target_role_id": o.target_role_id, "target_org_id": o.target_org_id, "applied": o.applied, "reason": o.reason} for o in result.skipped],
+    )
 
 
 # ---------------------------------------------------------------------------
