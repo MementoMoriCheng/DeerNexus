@@ -9,7 +9,10 @@ silently dropped.
 
 Current implementation: structured ``logger.info``. This is deliberately a
 single choke-point so PR-041 can swap the body for an outbox write (append to
-``audit_events`` table / message bus) without touching call sites.
+the ``audit_events`` table / message bus) without touching call sites. The
+append-only ``audit_events`` table itself landed in PR-040
+(``persistence/audit/`` + migration ``0010``); PR-041 supplies the worker
+that turns this logger into a real outbox write against it.
 
 Contract: this function MUST NOT raise on a logging failure (events are
 best-effort observability, never a correctness gate), and MUST NOT silently

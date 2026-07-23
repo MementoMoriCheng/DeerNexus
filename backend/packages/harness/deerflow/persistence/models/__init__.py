@@ -10,12 +10,14 @@ The actual ORM classes have moved to entity-specific subpackages:
 - ``deerflow.persistence.user``
 - ``deerflow.persistence.orgs`` (tenant control-plane tables, PR-020A)
 - ``deerflow.persistence.iam`` (IAM control-plane tables, PR-020B)
+- ``deerflow.persistence.audit`` (append-only audit evidence, PR-040)
 
 ``RunEventRow`` remains in ``deerflow.persistence.models.run_event`` because
 its storage implementation lives in ``deerflow.runtime.events.store.db`` and
 there is no matching entity directory.
 """
 
+from deerflow.persistence.audit.model import AuditEventRow
 from deerflow.persistence.channel_connections.model import (
     ChannelConnectionRow,
     ChannelConversationRow,
@@ -43,6 +45,7 @@ from deerflow.persistence.user.model import UserRow
 
 __all__ = [
     "ApiKeyRow",
+    "AuditEventRow",
     "ChannelConnectionRow",
     "ChannelConversationRow",
     "ChannelCredentialRow",

@@ -554,10 +554,10 @@ audit_export_jobs
 - [ ] Class A outbox 失败时业务不提交
 - [ ] Class B 队列失败时不静默丢失
 - [ ] event_id / idempotency 重放不重复
-- [ ] OrgA 查询不返回 OrgB
+- [x] OrgA 查询不返回 OrgB（PR-040：`list_audit_events` / `count_by_org` 强制 `org_id` 过滤，org 隔离在存储层锁定，`test_audit_schema.py::TestOrgIsolation` 双 org 互不串；查询端点在 PR-045）
 - [ ] system-admin 查询再次审计
-- [ ] 普通应用 Role 无 UPDATE / DELETE
-- [ ] Payload Secret 扫描通过
+- [x] 普通应用 Role 无 UPDATE / DELETE（PR-040：`BEFORE UPDATE OR DELETE` 触发器（SQLite `RAISE(ABORT)` + Postgres 触发函数）+ in-app INSERT-only repository 双层；`TestAppendOnlyTrigger` 证明 UPDATE/DELETE 在 migrated DB 被拒。注：当前 harness 单连接单 owner，GRANT/REVOKE 多 Role 特权隔离即 §16 step 2 归 ops runbook；触发器使该保证对所有连接成立，不等同特权隔离）
+- [x] Payload Secret 扫描通过（PR-040：repository 复用 `contracts.events._scrub_payload` 在写入前剥离 §6 禁键，`test_scrub_strips_forbidden_payload_keys` 用 `model_construct` 绕过 DTO 校验证明二次擦除仍生效）
 - [ ] correction 不修改原事件
 - [ ] 90 天热数据查询可用
 - [ ] 每日归档、摘要和回读验证
