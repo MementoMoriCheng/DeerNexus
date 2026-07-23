@@ -59,10 +59,14 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     Index,
+    Integer,
     String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -154,4 +158,68 @@ class AuditEventRow(Base):
         Index("idx_audit_events_resource", "resource_type", "resource_id"),
         Index("idx_audit_events_request_id", "request_id"),
         Index("idx_audit_events_idempotency_key", "idempotency_key"),
+    )
+
+
+class AuditOutboxRow(Base):
+    """Transactional outbox row draining to ``audit_events`` (ADR-0005 §8, PR-041).
+
+    Unlike the append-only ``AuditEventRow``, an outbox row has a legitimate
+    lifecycle (``pending → processing → published`` or ``→ dead_letter``) so it
+    carries ``created_at`` / ``updated_at`` / ``row_version``. The outbox is the
+    reliable queue: a Class A control-plane write enqueues a row in the same
+    transaction (ADR §7.1), and a background worker claims, publishes to
+    ``audit_events``, then marks the row ``published``.
+
+    Delivery is idempotent by ``event_id`` (§9.1): a replay that re-enqueues the
+    same ``event_id`` collides on the unique index, and a worker that re-publishes
+    after a crash finds ``audit_events`` already has the row and marks the outbox
+    row ``published`` without a duplicate insert.
+
+    ``payload_json`` holds the full serialised ``AuditEvent`` (model_dump_json)
+    so the worker needs only the outbox row to reconstruct and publish it — no
+    cross-table JOIN, no lossy projection. ``org_id`` is denormalised off the
+    event for backlog queries without deserialising the JSON. ``last_error`` is
+    truncated and must never carry a secret (§8 "不在 last_error 保存 Secret").
+    """
+
+    __tablename__ = "audit_outbox"
+
+    # Outbox row id (distinct from event_id — one event enqueued exactly once).
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    # The AuditEvent.event_id this row will publish. Unique: a duplicate enqueue
+    # (retry / replay) collides here so the same event is never queued twice.
+    event_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Full serialised AuditEvent (model_dump_json). Worker deserialises + calls
+    # insert_audit_event; no projection loss.
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # Denormalised off the event for backlog queries (ADR §8 "org_id" field).
+    org_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Next time this row is eligible to be claimed. On failure it is pushed
+    # forward by the exponential backoff; on enqueue it is "now".
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
+    row_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Truncated error string from the last failed publish attempt. MUST NOT
+    # carry a secret (§8) — the worker truncates + scrubs before storing.
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Token identifying the worker that currently owns a ``processing`` row, so
+    # a stale row (worker crashed mid-publish) can be identified for release.
+    owner_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'published', 'dead_letter')",
+            name="ck_audit_outbox_status",
+        ),
+        # Claim path: workers SELECT ... WHERE status='pending' AND available_at<=now.
+        UniqueConstraint("event_id", name="uq_audit_outbox_event_id"),
+        Index("idx_audit_outbox_claim", "status", "available_at"),
+        Index("idx_audit_outbox_org", "org_id"),
     )

@@ -553,7 +553,7 @@ audit_export_jobs
 - [ ] IAM、API Key、Connector、Release 关键写路径覆盖
 - [ ] Class A outbox 失败时业务不提交
 - [ ] Class B 队列失败时不静默丢失
-- [ ] event_id / idempotency 重放不重复
+- [x] event_id / idempotency 重放不重复（PR-040 + PR-041：`audit_events.event_id` PK + `audit_outbox.uq_audit_outbox_event_id` 双层；worker 重复 publish 命中 `IntegrityError` → mark published 不重复；`test_audit_outbox.py::test_drain_idempotent_on_duplicate_event_id` + `test_duplicate_event_id_collides` 锁定）
 - [x] OrgA 查询不返回 OrgB（PR-040：`list_audit_events` / `count_by_org` 强制 `org_id` 过滤，org 隔离在存储层锁定，`test_audit_schema.py::TestOrgIsolation` 双 org 互不串；查询端点在 PR-045）
 - [ ] system-admin 查询再次审计
 - [x] 普通应用 Role 无 UPDATE / DELETE（PR-040：`BEFORE UPDATE OR DELETE` 触发器（SQLite `RAISE(ABORT)` + Postgres 触发函数）+ in-app INSERT-only repository 双层；`TestAppendOnlyTrigger` 证明 UPDATE/DELETE 在 migrated DB 被拒。注：当前 harness 单连接单 owner，GRANT/REVOKE 多 Role 特权隔离即 §16 step 2 归 ops runbook；触发器使该保证对所有连接成立，不等同特权隔离）

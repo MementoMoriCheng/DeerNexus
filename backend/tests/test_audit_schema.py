@@ -455,3 +455,69 @@ class TestMigrationRoundTrip:
                 await engine.dispose()
         finally:
             await close_engine()
+
+    @pytest.mark.anyio
+    async def test_audit_outbox_round_trip(self, tmp_path: Path):
+        """``0011_audit_outbox`` creates the outbox table and is reversible.
+
+        The outbox is a normal mutable table (no append-only trigger — its
+        status transitions pending→processing→published), so this round-trip
+        only asserts table/column presence and reversibility, mirroring
+        ``test_oidc_group_mappings_round_trip``.
+        """
+        import alembic.command as alembic_command
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from deerflow.persistence.bootstrap import _get_alembic_config
+        from deerflow.persistence.engine import close_engine, get_engine, init_engine
+
+        url = f"sqlite+aiosqlite:///{tmp_path / 'audit_outbox_roundtrip.db'}"
+        await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+        try:
+            cfg = _get_alembic_config(get_engine())
+
+            async def _table_exists() -> bool:
+                engine = create_async_engine(url)
+                try:
+                    async with engine.connect() as conn:
+                        result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='audit_outbox'"))
+                        return result.first() is not None
+                finally:
+                    await engine.dispose()
+
+            assert await _table_exists() is True
+
+            # Downgrade to 0010 drops the outbox table.
+            await asyncio.to_thread(alembic_command.downgrade, cfg, "0010_audit_events")
+            assert await _table_exists() is False
+
+            # Re-upgrade restores it.
+            await asyncio.to_thread(alembic_command.upgrade, cfg, "head")
+            assert await _table_exists() is True
+
+            engine = create_async_engine(url)
+            try:
+                async with engine.connect() as conn:
+                    cols = await conn.run_sync(lambda c: {col["name"] for col in sa.inspect(c).get_columns("audit_outbox")})
+                    assert {
+                        "id",
+                        "event_id",
+                        "payload_json",
+                        "org_id",
+                        "status",
+                        "attempts",
+                        "available_at",
+                        "published_at",
+                        "last_error",
+                        "owner_token",
+                    } <= cols
+                    # status CHECK + event_id unique constraint are present.
+                    constraints = await conn.run_sync(lambda c: {ck["name"] for ck in sa.inspect(c).get_check_constraints("audit_outbox")})
+                    assert "ck_audit_outbox_status" in constraints
+                    uniques = await conn.run_sync(lambda c: {u["name"] for u in sa.inspect(c).get_unique_constraints("audit_outbox")})
+                    assert "uq_audit_outbox_event_id" in uniques
+            finally:
+                await engine.dispose()
+        finally:
+            await close_engine()

@@ -356,7 +356,15 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
         "audit",
         "Audit sink and transactional outbox validation is not implemented.",
         "planned production audit declaration",
-        "Blocked on Track D (PR-041 Audit outbox): deerflow/tenancy/audit_events.py::emit_tenant_event is still a logger.info sink. The probe needs a real outbox table + publisher to verify.",
+        (
+            "Blocked on Track D (PR-042 Class A same-transaction wiring): "
+            "PR-041 landed the audit_outbox table + drain worker + OutboxAuditSink, "
+            "and upgraded emit_tenant_event to route through the sink. The probe can "
+            "now verify the table + worker exist, but a live probe (pending drained "
+            "within SLO, dead-letter=0) needs real Class A traffic — the post-commit "
+            "best-effort shim path has no guaranteed-rollback write to validate. "
+            "Promote to LIVE_PROBE_REGISTRY once PR-042 wires the same-transaction enqueue."
+        ),
     ),
 )
 
