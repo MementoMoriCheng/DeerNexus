@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0009_oidc_group_mappings"
+HEAD = "0010_audit_events"
 BASELINE = "0001_baseline"
 
 
