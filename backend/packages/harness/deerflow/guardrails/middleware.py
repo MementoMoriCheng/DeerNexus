@@ -13,6 +13,7 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from deerflow.guardrails.provider import GuardrailDecision, GuardrailProvider, GuardrailReason, GuardrailRequest
+from deerflow.tenancy.audit_events import emit_tenant_event
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,30 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
             status="error",
         )
 
+    def _audit_tool_deny(self, gr: GuardrailRequest, decision: GuardrailDecision) -> None:
+        """Class B audit (ADR §7.2 / §5.4 ``policy.tool.denied``): emit a
+        best-effort runtime-security event when a tool call is denied.
+
+        The tool-call layer has no HTTP principal / bound TenantContext
+        available (it runs inside the LangGraph agent loop), so the event is
+        system-global (``org_id=None``, ``principal_id=None``) — the actor is
+        the guardrail policy itself. ``emit_tenant_event`` is best-effort and
+        never raises, so a sink failure cannot turn a deny into an allow or a
+        crash. The §7.2 fail-closed hardening is a separate PR.
+        """
+        reason_code = decision.reasons[0].code if decision.reasons else "oap.denied"
+        emit_tenant_event(
+            "policy_tool_denied",
+            org_id=None,
+            principal_id=None,
+            outcome="denied",
+            payload={
+                "tool_name": gr.tool_name,
+                "policy_id": decision.policy_id,
+                "reason_code": reason_code,
+            },
+        )
+
     @override
     def wrap_tool_call(
         self,
@@ -71,6 +96,7 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
                 return handler(request)
         if not decision.allow:
             logger.warning("Guardrail denied: tool=%s policy=%s code=%s", gr.tool_name, decision.policy_id, decision.reasons[0].code if decision.reasons else "unknown")
+            self._audit_tool_deny(gr, decision)
             return self._build_denied_message(request, decision)
         return handler(request)
 
@@ -94,5 +120,6 @@ class GuardrailMiddleware(AgentMiddleware[AgentState]):
                 return await handler(request)
         if not decision.allow:
             logger.warning("Guardrail denied: tool=%s policy=%s code=%s", gr.tool_name, decision.policy_id, decision.reasons[0].code if decision.reasons else "unknown")
+            self._audit_tool_deny(gr, decision)
             return self._build_denied_message(request, decision)
         return await handler(request)

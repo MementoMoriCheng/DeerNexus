@@ -203,10 +203,12 @@ class TestActionNormalization:
         assert TENANT_EVENT_ACTION_REGISTRY["api_key_created"] == "iam.api_key.created"
         assert TENANT_EVENT_ACTION_REGISTRY["org_membership_suspended"] == "iam.membership.suspended"
         assert TENANT_EVENT_ACTION_REGISTRY["oidc_group_mapping_created"] == "iam.oidc_group_mapping.created"
-        # All normalized actions are lowercase dotted ADR §4 form.
+        # All normalized actions are lowercase dotted ADR §4 form. ADR §5.1
+        # allows a few two-segment exceptions in the minimal-9 list (``auth.login``);
+        # everything else is the three-segment ``<domain>.<resource>.<verb>``.
         for normalized in TENANT_EVENT_ACTION_REGISTRY.values():
             assert normalized == normalized.lower()
-            assert normalized.count(".") >= 2  # <domain>.<resource>.<verb>
+            assert normalized.count(".") >= 1  # at least <domain>.<verb>
 
     def test_build_audit_event_projects_resource_actor_outcome(self):
         ev = build_audit_event(
