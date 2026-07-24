@@ -54,12 +54,14 @@ from typing import Any, ParamSpec, TypeVar
 
 from fastapi import HTTPException, Request
 
+from app.gateway.audit_emit import emit_class_b_audit
 from app.gateway.authorize import AuthorizeError, get_authorize_service
 from app.gateway.internal_auth import (
     INTERNAL_OWNER_USER_ID_HEADER_NAME,
     INTERNAL_SYSTEM_ROLE,
 )
 from deerflow.contracts import ErrorCode, Permission, get_tenant_context
+from deerflow.contracts.policy import ResourceRef
 from deerflow.observability.events import emit_event
 
 P = ParamSpec("P")
@@ -308,6 +310,27 @@ def require_rbac(
                         principal_id=tenant_context.principal.user_id,
                         auth_method=tenant_context.auth_method,
                         api_key_id=getattr(request.state, "api_key_id", None),
+                    )
+                    # Class B audit (ADR §7.2 "Policy deny"): a denied
+                    # authorization is a runtime-security event. Best-effort
+                    # enqueue before the raise so the durable row exists by
+                    # the time the client sees the 403/401. resource is the
+                    # denied permission (org-scoped only when an org is
+                    # bound; AUTHENTICATION_INVALID may carry no org_id).
+                    org_id = tenant_context.org_id
+                    resource = ResourceRef(type="permission", id=perm_value, org_id=org_id) if org_id else None
+                    await emit_class_b_audit(
+                        "policy.tool.denied",
+                        org_id=org_id,
+                        actor=tenant_context.principal,
+                        outcome="denied",
+                        reason_code=str(exc.code),
+                        resource=resource,
+                        payload={
+                            "permission": perm_value,
+                            "auth_method": tenant_context.auth_method,
+                            "api_key_id": getattr(request.state, "api_key_id", None),
+                        },
                     )
                     raise _authorize_error_to_http(exc) from exc
 

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.gateway.audit_emit import emit_class_b_audit
 from app.gateway.auth import (
     UserResponse,
     create_access_token,
@@ -18,6 +19,7 @@ from app.gateway.auth.config import get_auth_config
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
 from app.gateway.csrf_middleware import is_secure_request
 from app.gateway.deps import get_current_user_from_request, get_local_provider
+from deerflow.contracts.identity import PrincipalRef
 
 logger = logging.getLogger(__name__)
 
@@ -293,12 +295,38 @@ async def login_local(
 
     if user is None:
         _record_login_failure(client_ip)
+        # Class B audit (ADR §7.2): a failed login is a runtime-security
+        # event. org_id is None — login is a public path that runs before
+        # tenant resolution, so there is no bound TenantContext (ADR §3.1
+        # permits org_id=None for documented system-global events). The
+        # actor is the submitted email: a failed login has no user row, so
+        # the email is the only available identity. Emitted BEFORE the raise
+        # so the durable pending row exists by the time the client sees 401.
+        await emit_class_b_audit(
+            "auth.login",
+            org_id=None,
+            actor=PrincipalRef(type="user", id=form_data.username, display_name=form_data.username),
+            outcome="failure",
+            reason_code="INVALID_CREDENTIALS",
+            payload={"auth_method": "local", "ip": client_ip},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=AuthErrorResponse(code=AuthErrorCode.INVALID_CREDENTIALS, message="Incorrect email or password").model_dump(),
         )
 
     _record_login_success(client_ip)
+    # Class B audit (ADR §7.2): a successful login. Best-effort enqueue — the
+    # §7.2 "all-paths-down fail-closed" hardening is a separate PR. Emitted
+    # before the cookie is set so the row exists by the time the client
+    # receives the session.
+    await emit_class_b_audit(
+        "auth.login",
+        org_id=None,
+        actor=PrincipalRef(type="user", id=str(user.id), user_id=str(user.id), display_name=str(user.email)),
+        outcome="success",
+        payload={"auth_method": "local", "ip": client_ip, "system_role": user.system_role},
+    )
     token = create_access_token(str(user.id), token_version=user.token_version)
     _set_session_cookie(response, token, request)
 

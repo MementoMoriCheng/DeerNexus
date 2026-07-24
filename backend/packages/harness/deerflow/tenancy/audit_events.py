@@ -93,6 +93,12 @@ TENANT_EVENT_ACTION_REGISTRY: Mapping[str, str] = {
     # Backfill (system-initiated)
     "backfill_started": "org.backfill.started",
     "backfill_completed": "org.backfill.completed",
+    # Class B runtime-security events (PR-044, ADR §7.2 / §5.4). The guardrail
+    # tool-call deny path (harness layer) emits via ``emit_tenant_event`` and
+    # relies on this normalization; the app-layer login + RBAC-deny paths emit
+    # directly via ``build_audit_event`` with the already-normalized action.
+    "policy_tool_denied": "policy.tool.denied",
+    "auth_login": "auth.login",
 }
 
 
@@ -134,12 +140,15 @@ def _build_event(
     org_id: str | None,
     principal_id: str | None,
     payload: Mapping[str, Any] | None,
+    outcome: AuditOutcome = "success",
 ) -> AuditEvent:
     """Project the shim's 3-arg shape onto a best-effort ``AuditEvent``.
 
     See module docstring for the projection rules. ``request_id`` defaults to
     ``"system"`` (AuditEvent requires a non-empty correlation id) when no
-    ``CorrelationContext`` is bound (background tasks, bootstrap).
+    ``CorrelationContext`` is bound (background tasks, bootstrap). ``outcome``
+    defaults to ``success`` (every legacy Class A caller is a success path);
+    Class B callers (PR-044) pass ``denied`` / ``failure`` explicitly.
     """
     # Best-effort request_id from the active correlation context; absent in
     # background tasks → "system".
@@ -166,7 +175,7 @@ def _build_event(
         org_id=org_id,
         actor=actor,
         action=_resolve_action(event_type),
-        outcome="success",
+        outcome=outcome,
         request_id=request_id,
         occurred_at=datetime.now(UTC),
         payload=dict(payload) if payload else {},
@@ -238,6 +247,7 @@ def emit_tenant_event(
     org_id: str | None,
     principal_id: str | None,
     payload: Mapping[str, Any] | None = None,
+    outcome: AuditOutcome = "success",
 ) -> None:
     """Record a tenant-lifecycle event (outbox-backed when a sink is registered).
 
@@ -250,14 +260,18 @@ def emit_tenant_event(
 
     With no registered sink (pre-boot, tests), this is the original structured
     ``logger.info`` so events remain observable.
+
+    ``outcome`` defaults to ``success`` (every legacy Class A caller is a
+    success path); Class B callers (PR-044) pass ``denied`` / ``failure``.
     """
     # Always log first: even with a sink, the log line is the observable
     # floor and survives a sink that itself fails. INFO, structured.
     logger.info(
-        "tenant-event type=%s org=%s principal=%s payload=%s",
+        "tenant-event type=%s org=%s principal=%s outcome=%s payload=%s",
         event_type,
         org_id,
         principal_id,
+        outcome,
         dict(payload) if payload else {},
     )
 
@@ -266,7 +280,7 @@ def emit_tenant_event(
         return
 
     try:
-        event = _build_event(event_type, org_id=org_id, principal_id=principal_id, payload=payload)
+        event = _build_event(event_type, org_id=org_id, principal_id=principal_id, payload=payload, outcome=outcome)
         result = sink.emit(event)
         # Support both async sinks (OutboxAuditSink) and sync Protocol impls.
         import asyncio
