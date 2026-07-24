@@ -29,7 +29,7 @@ today, and §7.1 forbids shipping fabricated values.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -43,6 +43,7 @@ from app.gateway.routers.thread_runs import (
     ThreadTokenUsageModelBreakdown,
 )
 from deerflow.contracts import Permission, get_tenant_context
+from deerflow.persistence.audit import list_audit_events
 from deerflow.utils.time import coerce_iso
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,60 @@ class OrgTokenUsageResponse(BaseModel):
     total_runs: int = 0
     by_model: dict[str, ThreadTokenUsageModelBreakdown] = Field(default_factory=dict)
     by_caller: ThreadTokenUsageCallerBreakdown = Field(default_factory=ThreadTokenUsageCallerBreakdown)
+
+
+class AuditActorRef(BaseModel):
+    """Audit event actor projection (flattened ORM columns re-nested)."""
+
+    type: str
+    id: str
+    user_id: str | None = None
+    display_name: str | None = None
+
+
+class AuditResourceRef(BaseModel):
+    """Audit event resource projection (None when the event had no resource)."""
+
+    type: str
+    id: str | None = None
+    org_id: str | None = None
+
+
+class AuditEventResponse(BaseModel):
+    """One audit event as returned by ``GET /audit/events`` (ADR §12.1).
+
+    The ``payload`` is the already-scrubbed form written by PR-040's
+    ``_scrub_payload`` at insert time — the query path performs no read-side
+    re-scrubbing (§12.1 "查询响应不返回被脱敏字段" is satisfied at write time).
+    """
+
+    event_id: str
+    occurred_at: datetime
+    action: str
+    outcome: str
+    reason_code: str | None = None
+    actor: AuditActorRef
+    resource: AuditResourceRef | None = None
+    request_id: str
+    run_id: str | None = None
+    org_id: str | None = None
+    payload: dict = Field(default_factory=dict)
+
+
+class AuditEventListResponse(BaseModel):
+    data: list[AuditEventResponse] = Field(default_factory=list)
+    has_more: bool = False
+    next_cursor: str | None = None
+
+
+#: ADR-0005 §12.1 "默认 24 小时" — when neither ``occurred_after`` nor
+#: ``occurred_before`` is supplied, the window defaults to the trailing 24h.
+_DEFAULT_AUDIT_QUERY_WINDOW = timedelta(hours=24)
+
+#: ADR-0005 §12.1 "在线查询最大 90 天" — an online query window wider than this
+#: is rejected with 400; unbounded windows are the async export job's
+#: responsibility (§12.3, deferred).
+_MAX_AUDIT_QUERY_WINDOW = timedelta(days=90)
 
 
 # ---------------------------------------------------------------------------
@@ -298,4 +353,133 @@ async def org_usage(
             subagent=int(agg["by_caller"]["subagent"]),
             middleware=int(agg["by_caller"]["middleware"]),
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Audit event query (PR-045, ADR-0005 §12.1)
+# ---------------------------------------------------------------------------
+
+
+def _to_audit_event_response(row) -> AuditEventResponse:
+    """Project a flat ``AuditEventRow`` onto the nested API response model.
+
+    The ORM stores ``actor`` / ``resource`` as flattened columns (PR-040,
+    indexable + round-trip lossless); this rebuilds the nested shape the API
+    contract exposes. ``payload`` is already scrubbed at write time.
+    """
+    resource: AuditResourceRef | None = None
+    if row.resource_type is not None:
+        resource = AuditResourceRef(
+            type=row.resource_type,
+            id=row.resource_id,
+            org_id=row.resource_org_id,
+        )
+    return AuditEventResponse(
+        event_id=row.event_id,
+        occurred_at=row.occurred_at,
+        action=row.action,
+        outcome=row.outcome,
+        reason_code=row.reason_code,
+        actor=AuditActorRef(
+            type=row.actor_type,
+            id=row.actor_id,
+            user_id=row.actor_user_id,
+            display_name=row.actor_display_name,
+        ),
+        resource=resource,
+        request_id=row.request_id,
+        run_id=row.run_id,
+        org_id=row.org_id,
+        payload=dict(row.payload) if row.payload else {},
+    )
+
+
+@router.get("/audit/events", response_model=AuditEventListResponse)
+@require_rbac(Permission.ADMIN_AUDIT_READ)
+async def org_audit_events(
+    request: Request,
+    action: str | None = Query(default=None, description="Filter by ADR §4 action (e.g. 'iam.role_binding.created')."),
+    actor_id: str | None = Query(default=None, description="Filter by actor id."),
+    resource_type: str | None = Query(default=None, description="Filter by resource type."),
+    resource_id: str | None = Query(default=None, description="Filter by resource id."),
+    outcome: str | None = Query(default=None, description="Filter by outcome (success/denied/failure)."),
+    run_id: str | None = Query(default=None, description="Filter by associated run id."),
+    request_id: str | None = Query(default=None, description="Filter by correlation request id."),
+    occurred_after: datetime | None = Query(default=None, description="Window start (UTC). Defaults to the trailing 24h."),
+    occurred_before: datetime | None = Query(default=None, description="Window end (UTC). Defaults to now."),
+    limit: int = Query(default=100, ge=1, le=100, description="Page size (max 100)."),
+    cursor: str | None = Query(default=None, description="Opaque cursor from a prior page's next_cursor."),
+) -> AuditEventListResponse:
+    """Org-scoped audit-event query with cursor pagination (ADR-0005 §12.1).
+
+    ``org_id`` is forced from the bound TenantContext and the repository
+    hard-filters on it (§12.1 "强制 Org"); a cross-Org system-admin query is a
+    separate, separately-audited path (§12.2, not this endpoint). The seven
+    filters mirror the §12.1 allow-list. The time window defaults to the
+    trailing 24h and is capped at 90 days for the online path (§12.1).
+    """
+    org_id = _require_org_id(request)
+
+    now = datetime.now(UTC)
+    window_start = occurred_after
+    window_end = occurred_before if occurred_before is not None else now
+    if window_start is None:
+        window_start = window_end - _DEFAULT_AUDIT_QUERY_WINDOW
+    # §12.1 online-query 90-day cap. A wider window needs the async export job.
+    if window_end - window_start > _MAX_AUDIT_QUERY_WINDOW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Online audit query window exceeds the 90-day maximum; use the async export job for wider ranges.",
+        )
+
+    decoded_cursor: tuple[datetime, str] | None = None
+    if cursor is not None:
+        try:
+            decoded_cursor = decode_cursor(cursor)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Malformed cursor token.",
+            ) from None
+
+    from deerflow.persistence.engine import get_session_factory
+
+    sf = get_session_factory()
+    if sf is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audit query requires persistence; no session factory is configured.",
+        )
+    # Probe one extra row to derive has_more without changing the repository
+    # signature (list_audit_events returns a plain list; the runs path does
+    # the same limit+1 trick inside its store).
+    rows = await list_audit_events(
+        sf,
+        org_id=org_id,
+        action=action,
+        actor_id=actor_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        outcome=outcome,
+        run_id=run_id,
+        request_id=request_id,
+        occurred_after=window_start,
+        occurred_before=window_end,
+        cursor=decoded_cursor,
+        limit=limit + 1,
+    )
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+
+    next_cursor: str | None = None
+    if has_more and rows:
+        last = rows[-1]
+        next_cursor = encode_cursor(last.occurred_at, last.event_id)
+
+    return AuditEventListResponse(
+        data=[_to_audit_event_response(r) for r in rows],
+        has_more=has_more,
+        next_cursor=next_cursor,
     )
