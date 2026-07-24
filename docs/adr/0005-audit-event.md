@@ -554,12 +554,12 @@ audit_export_jobs
 - [x] Class A outbox 失败时业务不提交（PR-042：IAM router 14 个 Class A 写路径重构为 `async with sf() as session:` → 业务写（传 session，不 commit）→ `enqueue_audit_outbox_in_session`（不 commit）→ `session.commit()` 原子提交；outbox enqueue 失败（如 `IntegrityError`）abort 共享事务，业务写一并回滚。`test_audit_class_a.py::TestClassAAtomicity::test_outbox_failure_rolls_back_business_write` 用重复 `event_id` 强制碰撞证明 SA 行不落地。Connector/Release 写路径待 Track E）
 - [~] Class B 队列失败时不静默丢失（PR-044：3 个有代码路径的 Class B 事件走 best-effort enqueue —— `auth.login` / `policy.tool.denied`（RBAC + 工具护栏）；`emit_class_b_audit` + `emit_tenant_event(outcome=)` 复用 OutboxAuditSink durable pending 行。ADR §7.2「所有持久化路径均不可写时 fail-closed」真 fail-closed（队列满/全不可写阻塞 login）作后续 hardening 独立 PR，需队列水位/背压状态机）
 - [x] event_id / idempotency 重放不重复（PR-040 + PR-041：`audit_events.event_id` PK + `audit_outbox.uq_audit_outbox_event_id` 双层；worker 重复 publish 命中 `IntegrityError` → mark published 不重复；`test_audit_outbox.py::test_drain_idempotent_on_duplicate_event_id` + `test_duplicate_event_id_collides` 锁定）
-- [x] OrgA 查询不返回 OrgB（PR-040：`list_audit_events` / `count_by_org` 强制 `org_id` 过滤，org 隔离在存储层锁定，`test_audit_schema.py::TestOrgIsolation` 双 org 互不串；查询端点在 PR-045）
+- [x] OrgA 查询不返回 OrgB（PR-040 存储层 + PR-045 HTTP 端点：`list_audit_events` / `count_by_org` 强制 `org_id` 过滤，org 隔离在存储层锁定；`GET /audit/events` 经 `_require_org_id` + 仓储硬过滤，HTTP 层 org 隔离验证 `test_audit_query_endpoint.py::TestOrgIsolation`）
 - [ ] system-admin 查询再次审计
 - [x] 普通应用 Role 无 UPDATE / DELETE（PR-040：`BEFORE UPDATE OR DELETE` 触发器（SQLite `RAISE(ABORT)` + Postgres 触发函数）+ in-app INSERT-only repository 双层；`TestAppendOnlyTrigger` 证明 UPDATE/DELETE 在 migrated DB 被拒。注：当前 harness 单连接单 owner，GRANT/REVOKE 多 Role 特权隔离即 §16 step 2 归 ops runbook；触发器使该保证对所有连接成立，不等同特权隔离）
 - [x] Payload Secret 扫描通过（PR-040：repository 复用 `contracts.events._scrub_payload` 在写入前剥离 §6 禁键，`test_scrub_strips_forbidden_payload_keys` 用 `model_construct` 绕过 DTO 校验证明二次擦除仍生效）
 - [ ] correction 不修改原事件
-- [ ] 90 天热数据查询可用
+- [x] 90 天热数据查询可用（PR-045：`GET /api/v1/admin/audit/events` 在线查询端点，7 个 §12.1 过滤器 + `(occurred_at,event_id)` cursor 分页 + 默认 24h 窗 + 在线 90 天窗门控 + `admin:audit:read` 门控；`test_audit_query_endpoint.py` 12 测覆盖）
 - [ ] 每日归档、摘要和回读验证
 - [ ] 365 天保留策略存在且可监控
 - [ ] 备份恢复后归档水位与摘要抽样一致
