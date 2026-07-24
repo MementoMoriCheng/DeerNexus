@@ -15,12 +15,18 @@ Probes delivered in PR-064 (those whose code paths exist today):
 * :mod:`gateway_security_probe` — live TLS/CORS/CSRF HTTP probe.
 * :mod:`rate_limit_probe` — live 429 + Retry-After probe.
 
+PR-065 added:
+
+* :mod:`backup_probe` — application-level backup manifest freshness +
+  tamper-evidence (complements, not replaces, the DB platform backup).
+
 Deferred probes (no code path today) remain as ``DEFERRED_LIVE_CHECKS`` FAIL
 stubs in ``app/doctor/production.py`` with Track-specific remediation — see
 ``runtime-contracts.md §16.28`` for the per-Track blocker list.
 """
 
 from app.doctor.probes.audit_probe import probe_audit_outbox
+from app.doctor.probes.backup_probe import probe_backup_freshness
 from app.doctor.probes.deployment_evidence_probe import probe_deployment_evidence
 from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import probe_metrics_presence
@@ -29,6 +35,7 @@ from app.doctor.probes.rate_limit_probe import probe_rate_limit_retry_after
 
 __all__ = [
     "probe_audit_outbox",
+    "probe_backup_freshness",
     "probe_deployment_evidence",
     "probe_gateway_security",
     "probe_metrics_presence",

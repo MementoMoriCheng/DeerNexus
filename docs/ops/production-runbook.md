@@ -778,11 +778,11 @@ issues, owner, due date
 | Redis Stream / ownership Key | 实际格式 |
 | Run lease 参数 | 配置名与默认值 |
 | Sandbox Provisioner 配置 | `config.yaml:sandbox.provisioner_url`、`sandbox.replicas` 与 `production.limits.max_sandbox_replicas` |
-| Backup Job | 名称与计划 |
+| Backup Job | `python -m scripts.backup`（PR-065），计划：每日（cron，声明 RPO `production.backup.declared_rpo_hours`）。这是**应用层证据层**（manifest + per-table content digest），**补充而非替代** DB 平台备份（pg_dump/WAL/PITR，§9.1）。产物写到 `production.backup.destination_dir`（与主库不同故障域的加密存储）；恢复用 `python -m scripts.restore --manifest <path> --target-db-url <empty-db>`（DR 场景，目标必须空库）；校验由 `backup.verify` 自动跑 §15/§10.5 闸门。`backup.freshness` doctor 探针（PR-065）读 manifest 校验新鲜度 + 篡改证据 |
 | Dashboard / Alerts | 链接 |
 | On-call / Owner | 团队与升级方式 |
 
-PR-003 的 PostgreSQL、Redis、OIDC、Sandbox、Backup、部署证据、Secret Store 与 Gateway 安全真实探针会明确返回 `FAIL`，直到 PR-064 接入真实依赖；静态声明通过不能作为生产准入证据。在其余映射补齐并经过 staging 验证前，本文仍是运行语义基线，不应被描述为已验证的逐命令操作手册。
+PR-003 的 PostgreSQL、Redis、OIDC、Sandbox、Backup、部署证据、Secret Store 与 Gateway 安全真实探针会明确返回 `FAIL`，直到 PR-064 接入真实依赖（Backup 由 PR-065 升级为 LIVE）；静态声明通过不能作为生产准入证据。在其余映射补齐并经过 staging 验证前，本文仍是运行语义基线，不应被描述为已验证的逐命令操作手册。
 
 ---
 

@@ -43,7 +43,7 @@ counters per §7.1 "不在缺少真实基线时伪设精确告警"):
   ``audit_outbox_*`` / ``audit_dead_letter_*`` (PR-041 — now registered),
   ``audit_archive_lag_seconds`` (no archive job — PR-045),
   ``usage_ingest_lag_seconds``, ``object_digest_mismatch_total``,
-  ``backup_last_success_timestamp`` (no infra).
+  ``backup_last_success_timestamp`` (PR-065 — now registered).
 * §4.4 ``model_cost_amount`` (no price table), ``policy_decisions_total``
   (no Policy engine — Track C).
 * §4.2 ``oidc_login_total`` (no OIDC code path — only local login exists).
@@ -940,6 +940,36 @@ def set_audit_dead_letter_count(count: int, registry: Any = None) -> None:
         _audit_dead_letter_count(_registry_or_default(registry)).labels(**_with_constants({})).set(count)
     except Exception:  # noqa: BLE001
         logger.debug("set_audit_dead_letter_count failed", exc_info=True)
+
+
+# ===========================================================================
+# §4.6 Backup metric (PR-065)
+# ===========================================================================
+#
+# observability-and-slo §4.6 lists ``backup_last_success_timestamp`` as a
+# data/audit metric that was deferred ("no infra"). PR-065 introduces the
+# application-level backup Job (``scripts/backup.py``); the Job stamps this
+# gauge with the backup's ``created_at`` unix timestamp on every successful
+# run so an alert (runbook §14.2 "备份超过 RPO 未成功 | P1") can fire when
+# ``now - backup_last_success_timestamp > declared_rpo``. Label-less per §4.1
+# (backup success is a process-level signal, not per-org).
+
+
+@lru_cache(maxsize=8)
+def _backup_last_success_timestamp(registry: Any) -> Any:
+    return _make_gauge(
+        "backup_last_success_timestamp",
+        "Unix timestamp of the most recent successful application-level backup (PR-065). Alert when now - value > declared RPO (runbook §14.2 P1).",
+        (),
+        registry,
+    )
+
+
+def set_backup_last_success_timestamp(timestamp: float, registry: Any = None) -> None:
+    try:
+        _backup_last_success_timestamp(_registry_or_default(registry)).labels(**_with_constants({})).set(timestamp)
+    except Exception:  # noqa: BLE001
+        logger.debug("set_backup_last_success_timestamp failed", exc_info=True)
 
 
 # ===========================================================================

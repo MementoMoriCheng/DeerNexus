@@ -47,6 +47,9 @@ def _production_data() -> dict:
             "backup": {
                 "enabled": True,
                 "declared_rpo_hours": 24,
+                # PR-065: destination_dir is required when enabled (the Job
+                # and the freshness probe locate the manifest here).
+                "destination_dir": "/var/lib/deernexus/backups",
             },
             "secret_store": {
                 "provider": "vault",
@@ -247,6 +250,8 @@ def test_all_runbook_placeholders_remain_fail_closed():
     # no longer in DEFERRED_LIVE_CHECKS and are tested in test_doctor_probes.py.
     # PR-042 promoted audit.outbox to a live probe (probe_audit_outbox); it is
     # tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
+    # PR-065 promoted backup.freshness to a live probe (probe_backup_freshness);
+    # it is tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
     # What remains here are the checks whose code paths do not exist yet;
     # they MUST stay FAIL until their owning Track lands, so an operator
     # never sees a misleading green on an unverified invariant.
@@ -254,7 +259,6 @@ def test_all_runbook_placeholders_remain_fail_closed():
         "redis.connectivity",
         "oidc.jwks_validation",
         "sandbox.provisioner_create",
-        "backup.freshness",
         "secret_store.access",
         "object_storage.security",
         "agent.release_ref_enforcement",

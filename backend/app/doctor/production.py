@@ -129,14 +129,28 @@ def check_sandbox_declared(config: AppConfig) -> DoctorCheckResult:
 
 def check_backup_declared(config: AppConfig) -> DoctorCheckResult:
     backup = config.production.backup
-    valid = backup.enabled and backup.declared_rpo_hours <= 24
+    # PR-065: when the Job is enabled, ``destination_dir`` must be set so the
+    # Job and the freshness probe can locate the manifest. A missing
+    # destination with enabled=True is a misconfigured declaration, not a
+    # soft warning.
+    missing_destination = backup.enabled and not backup.destination_dir
+    valid = backup.enabled and backup.declared_rpo_hours <= 24 and not missing_destination
+    if valid:
+        message = "Backup is enabled with an MVP-compatible declared RPO and a destination directory."
+        remediation = None
+    elif missing_destination:
+        message = "Backup is enabled but production.backup.destination_dir is not set — the Job has nowhere to write its manifest."
+        remediation = "Set production.backup.destination_dir to a writable path on a separate failure domain from the primary DB."
+    else:
+        message = "Backup or declared RPO is not production-ready."
+        remediation = "Enable backups and declare an RPO between 1 and 24 hours."
     return _result(
         "backup.declared",
         DoctorStatus.PASS if valid else DoctorStatus.FAIL,
         "backup",
-        "Backup is enabled with an MVP-compatible declared RPO." if valid else "Backup or declared RPO is not production-ready.",
+        message,
         "config.yaml:production.backup",
-        None if valid else "Enable backups and declare an RPO between 1 and 24 hours.",
+        remediation,
     )
 
 
@@ -292,6 +306,8 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     # / gateway.security_validation / gateway.rate_limit_retry_after) into live
     # probes in ``app/doctor/probes/``. PR-042 promoted a sixth
     # (audit.outbox) to live once the Class A same-transaction wiring landed.
+    # PR-065 promoted a seventh (backup.freshness) to live alongside the
+    # application-level backup Job.
     # What remains here are checks whose code paths do not exist yet — they
     # stay FAIL with a **Track-specific** remediation (replacing the pre-PR-064
     # generic "Implement in PR-064" placeholder) so an operator knows exactly
@@ -320,13 +336,6 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
             "provisioner (docker/k8s) create/destroy path is what this probe must exercise. A "
             "local-mode smoke would give a misleading PASS against a production declaration."
         ),
-    ),
-    (
-        "backup.freshness",
-        "backup",
-        "Backup/WAL freshness probe is not implemented.",
-        "config.yaml:production.backup",
-        "Blocked on PR-065 (Backup/Restore Automation): no backup job exists in the tree. RPO/freshness can only be probed against a real backup artifact.",
     ),
     (
         "secret_store.access",
@@ -378,6 +387,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
     """
     from app.doctor.probes import (
         probe_audit_outbox,
+        probe_backup_freshness,
         probe_deployment_evidence,
         probe_gateway_security,
         probe_metrics_presence,
@@ -392,6 +402,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         (probe_gateway_security, "gateway.security_validation", "gateway", "config.yaml:production.gateway_security"),
         (probe_rate_limit_retry_after, "gateway.rate_limit_retry_after", "gateway", "config.yaml:production.gateway_security.rate_limit_enabled"),
         (probe_audit_outbox, "audit.outbox", "audit", "config.yaml:production.audit"),
+        (probe_backup_freshness, "backup.freshness", "backup", "config.yaml:production.backup"),
     )
 
 

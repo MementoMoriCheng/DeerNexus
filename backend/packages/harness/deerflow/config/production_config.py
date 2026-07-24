@@ -40,9 +40,24 @@ class ProductionRedisConfig(BaseModel):
 
 
 class ProductionBackupConfig(BaseModel):
+    """Operator declarations for the application-level backup Job (PR-065).
+
+    These describe operator intent for the DeerNexus backup evidence layer
+    (runbook §9 / §17). They are **declarations**, not the physical DB
+    platform backup (pg_dump/WAL/PITR is the DB platform's responsibility —
+    runbook §9.1); ``destination_dir`` is where the Job writes its manifest +
+    content files so the operator's cron can move them into a separate,
+    encrypted failure domain.
+    """
+
     enabled: bool = False
     declared_rpo_hours: int = Field(default=24, ge=1, le=24)
     pitr_enabled: bool = False
+    #: Where ``scripts/backup.py`` writes its manifest + per-table content
+    #: files. Required (non-null) when ``enabled=True`` — the doctor probe
+    #: and the Job both locate the latest manifest here. Defaults to None so
+    #: existing configs (pre-PR-065) load unchanged.
+    destination_dir: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
