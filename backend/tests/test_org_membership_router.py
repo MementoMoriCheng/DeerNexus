@@ -239,11 +239,19 @@ class TestCacheInvalidation:
 
 class TestAuditEmission:
     @pytest.mark.anyio
-    async def test_suspend_emits_event(self, sf, app):
+    async def test_suspend_enqueues_audit_event(self, sf, app):
+        """PR-042: suspend enqueues a Class A ``iam.membership.suspended``
+        audit row in the same transaction as the status flip (ADR §7.1)."""
+        from sqlalchemy import select
+
+        from deerflow.contracts.events import AuditEvent
+        from deerflow.persistence.audit.model import AuditOutboxRow
+
         await _seed_world(sf)
-        with patch("app.gateway.routers.iam.emit_tenant_event") as mock_emit:
-            with TestClient(app) as client:
-                resp = client.post(f"/api/v1/iam/org-memberships/{TARGET_USER_ID}:suspend")
-                assert resp.status_code == 200
-        event_types = [c.args[0] for c in mock_emit.call_args_list]
-        assert "org_membership_suspended" in event_types
+        with TestClient(app) as client:
+            resp = client.post(f"/api/v1/iam/org-memberships/{TARGET_USER_ID}:suspend")
+            assert resp.status_code == 200
+        async with sf() as session:
+            rows = (await session.execute(select(AuditOutboxRow).where(AuditOutboxRow.org_id == ORG_ID))).scalars().all()
+        actions = {AuditEvent.model_validate_json(r.payload_json).action for r in rows}
+        assert "iam.membership.suspended" in actions

@@ -20,7 +20,6 @@ ADR §10 rules exercised at the router boundary:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from _router_auth_helpers import make_rbac_test_app
@@ -332,11 +331,19 @@ class TestPreview:
 
 class TestAuditEmission:
     @pytest.mark.anyio
-    async def test_create_emits_created_event(self, sf, app):
+    async def test_create_enqueues_created_audit_event(self, sf, app):
+        """PR-042: the create path enqueues a Class A audit row (ADR §7.1) with
+        the normalized ``iam.oidc_group_mapping.created`` action."""
+        from sqlalchemy import select
+
+        from deerflow.contracts.events import AuditEvent
+        from deerflow.persistence.audit.model import AuditOutboxRow
+
         role_id = await _seed_world(sf)
-        with patch("app.gateway.routers.iam.emit_tenant_event") as mock_emit:
-            with TestClient(app) as client:
-                resp = client.post("/api/v1/iam/oidc-group-mappings", json=_create_body(target_role_id=role_id))
-                assert resp.status_code == 201
-        event_types = [c.args[0] for c in mock_emit.call_args_list]
-        assert "oidc_group_mapping_created" in event_types
+        with TestClient(app) as client:
+            resp = client.post("/api/v1/iam/oidc-group-mappings", json=_create_body(target_role_id=role_id))
+            assert resp.status_code == 201
+        async with sf() as session:
+            rows = (await session.execute(select(AuditOutboxRow).where(AuditOutboxRow.org_id == ORG_ID))).scalars().all()
+        actions = {AuditEvent.model_validate_json(r.payload_json).action for r in rows}
+        assert "iam.oidc_group_mapping.created" in actions

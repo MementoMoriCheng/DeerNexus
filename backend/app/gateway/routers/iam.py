@@ -61,12 +61,13 @@ API Key rules (ADR §9.2):
   — there is no dedicated ``:rotate`` endpoint; the audit log shows a
   ``api_key_created`` + ``api_key_revoked`` pair.
 
-Audit: every mutation emits a ``service_account_*`` /
-``service_account_role_binding_*`` / ``api_key_*`` event through the
-``emit_tenant_event`` logger shim (PR-041 will replace the shim with
-the real AuditEvent outbox — TODO marker in each call). Cache
-invalidation runs after the commit via
-:meth:`AuthorizeService.invalidate_principal` (ADR §11).
+Audit: every mutation enqueues an AuditEvent into ``audit_outbox`` in the
+SAME transaction as the business write (ADR §7.1, PR-042) — the outbox row
+and the IAM row commit atomically, so a failed enqueue rolls back the write
+(no "business success without an audit row"). Actions are normalized to the
+``<domain>.<resource>.<verb>`` registry (ADR §4) via :func:`build_audit_event`
++ :func:`enqueue_audit_outbox_in_session`. Cache invalidation runs AFTER the
+commit via :meth:`AuthorizeService.invalidate_principal` (ADR §11).
 
 Cross-Org isolation (ADR §8 "列表与查询强制 Org 过滤"): every endpoint
 takes the caller's ``org_id`` from the bound ``TenantContext`` and
@@ -75,7 +76,8 @@ existence-hiding, matching the posture established in PR-031/032/033.
 
 What this router deliberately does NOT do (PR boundary):
 
-* It does not emit real AuditEvent outbox rows — PR-041.
+* It does not emit Class B runtime-security events (login deny / policy
+  deny / sandbox violation) — those are ADR §7.2, PR-044.
 * It does not implement rate limiting (ADR §9.3) — platform limiter PR.
 * It does not emit a dedicated ``api_key_rotated`` event — rotation is
   the composition of ``api_key_created`` + ``api_key_revoked`` (≤24h).
@@ -126,7 +128,10 @@ from deerflow.contracts.iam import (
     ServiceAccountRoleBindingResponse,
     ServiceAccountUpdateRequest,
 )
+from deerflow.contracts.identity import PrincipalRef
+from deerflow.contracts.policy import ResourceRef
 from deerflow.contracts.rbac import SYSTEM_PERMISSION_PREFIX, validate_role_permissions
+from deerflow.persistence.audit import enqueue_audit_outbox_in_session
 from deerflow.persistence.iam import (
     MEMBERSHIP_ACTIVE,
     MEMBERSHIP_SUSPENDED,
@@ -153,7 +158,7 @@ from deerflow.persistence.iam import (
     update_oidc_group_mapping,
     update_service_account,
 )
-from deerflow.tenancy.audit_events import emit_tenant_event
+from deerflow.tenancy.audit_events import build_audit_event
 from deerflow.tenancy.oidc_group_mapping import (
     LastAdminError,
     apply_group_mapping,
@@ -195,6 +200,56 @@ def _actor_id(request: Request) -> str | None:
     return str(user.id)
 
 
+def _audit_actor(request: Request) -> PrincipalRef:
+    """Build the audit ``PrincipalRef`` for the authenticated caller.
+
+    The ``@require_rbac`` decorator has already authenticated the caller, so
+    ``request.state.user`` carries a real user id in production. The ``None``
+    branch (no bound user) is the defensive test / direct-call path: it
+    attributes the event to the ``system`` principal so the audit record is
+    never missing an actor. ``user_id`` is only set for genuine ``user``
+    principals (PrincipalRef validator enforces this).
+    """
+    user_id = _actor_id(request)
+    if user_id is not None:
+        return PrincipalRef(type="user", id=user_id, user_id=user_id)
+    return PrincipalRef(type="system", id="system")
+
+
+def _audit_resource(*, type_: str, id_: str | None, org_id: str) -> ResourceRef:
+    """Build a tenant-scoped ``ResourceRef`` for an audit event (ADR §3)."""
+    return ResourceRef(type=type_, id=id_, org_id=org_id)
+
+
+async def _emit_class_a_audit(
+    session,
+    *,
+    action: str,
+    org_id: str,
+    actor: PrincipalRef,
+    resource: ResourceRef,
+    payload: dict | None = None,
+) -> None:
+    """Same-transaction Class A audit enqueue (ADR §7.1).
+
+    Builds the ``AuditEvent`` and adds a ``pending`` outbox row to ``session``
+    WITHOUT committing — the caller's ``session.commit()`` lands both the
+    business write and this audit row atomically (or rolls back both on
+    failure). The class-A guarantee "no business success without an audit
+    row" is structural: a failed enqueue raises inside the shared
+    transaction and aborts it.
+    """
+    event = build_audit_event(
+        action,
+        org_id=org_id,
+        actor=actor,
+        outcome="success",
+        resource=resource,
+        payload=payload or {},
+    )
+    await enqueue_audit_outbox_in_session(session, event)
+
+
 def _to_response(row) -> ServiceAccountResponse:
     return ServiceAccountResponse.model_validate(row)
 
@@ -230,31 +285,40 @@ async def create_org_service_account(
     """
     org_id = _require_org_id(request)
     actor = _actor_id(request)
-    try:
-        row = await create_service_account(
-            _sf(request),
+    sf = _sf(request)
+    # Class A same-transaction write (ADR §7.1): business insert + audit
+    # outbox enqueue commit atomically. An IntegrityError (name collision)
+    # raises before the outbox row exists, so a rejected write produces no
+    # audit event.
+    async with sf() as session:
+        try:
+            row = await create_service_account(
+                sf,
+                org_id=org_id,
+                name=body.name,
+                description=body.description,
+                owner_user_id=body.owner_user_id,
+                purpose=body.purpose,
+                system=body.system,
+                environment=body.environment,
+                expires_at=body.expires_at,
+                created_by=actor,
+                session=session,
+            )
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"ServiceAccount named {body.name!r} already exists in this organization.",
+            ) from exc
+        await _emit_class_a_audit(
+            session,
+            action="iam.service_account.created",
             org_id=org_id,
-            name=body.name,
-            description=body.description,
-            owner_user_id=body.owner_user_id,
-            purpose=body.purpose,
-            system=body.system,
-            environment=body.environment,
-            expires_at=body.expires_at,
-            created_by=actor,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="service_account", id_=row.id, org_id=org_id),
+            payload={"sa_id": row.id, "name": row.name, "owner_user_id": row.owner_user_id},
         )
-    except IntegrityError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"ServiceAccount named {body.name!r} already exists in this organization.",
-        ) from exc
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "service_account_created",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"sa_id": row.id, "name": row.name, "owner_user_id": row.owner_user_id},
-    )
+        await session.commit()
     return _to_response(row)
 
 
@@ -278,24 +342,28 @@ async def update_org_service_account(
 ) -> ServiceAccountResponse:
     """Update traceability fields. ``status`` is NOT patchable here."""
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
+    sf = _sf(request)
     fields = body.model_dump(exclude_unset=True)
-    try:
-        row = await update_service_account(_sf(request), service_account_id=sa_id, **fields)
-    except ValueError as exc:
-        # Either an unknown field (defensive — pydantic extra=forbid catches
-        # this earlier) or the row is missing. Treat both as 404 for
-        # existence-hiding.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.") from exc
-    if row.org_id != org_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "service_account_updated",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"sa_id": row.id, "fields": sorted(fields)},
-    )
+    # Class A same-transaction write (ADR §7.1).
+    async with sf() as session:
+        try:
+            row = await update_service_account(sf, service_account_id=sa_id, session=session, **fields)
+        except ValueError as exc:
+            # Either an unknown field (defensive — pydantic extra=forbid catches
+            # this earlier) or the row is missing. Treat both as 404 for
+            # existence-hiding.
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.") from exc
+        if row.org_id != org_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
+        await _emit_class_a_audit(
+            session,
+            action="iam.service_account.updated",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="service_account", id_=row.id, org_id=org_id),
+            payload={"sa_id": row.id, "fields": sorted(fields)},
+        )
+        await session.commit()
     return _to_response(row)
 
 
@@ -315,23 +383,29 @@ async def enable_org_service_account(request: Request, sa_id: str) -> ServiceAcc
 
 async def _transition_status(request: Request, sa_id: str, target: str) -> ServiceAccountResponse:
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
-    try:
-        row = await set_service_account_status(_sf(request), service_account_id=sa_id, status=target)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.") from exc
-    if row.org_id != org_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        f"service_account_{target}",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"sa_id": row.id, "status": target},
-    )
+    sf = _sf(request)
+    action_verb = "disabled" if target == SERVICE_ACCOUNT_DISABLED else "activated"
+    # Class A same-transaction write (ADR §7.1).
+    async with sf() as session:
+        try:
+            row = await set_service_account_status(sf, service_account_id=sa_id, status=target, session=session)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.") from exc
+        if row.org_id != org_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
+        await _emit_class_a_audit(
+            session,
+            action=f"iam.service_account.{action_verb}",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="service_account", id_=row.id, org_id=org_id),
+            payload={"sa_id": row.id, "status": target},
+        )
+        await session.commit()
     # The SA's own cache entry may be live; drop it so the next auth
     # attempt picks up the new status (ADR §11 SLO ≤60s, active
-    # invalidation is the preferred path).
+    # invalidation is the preferred path). Post-commit: a rolled-back
+    # transition (outbox write failure) never reaches here.
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="service_account", principal_id=sa_id)
     return _to_response(row)
 
@@ -347,21 +421,30 @@ async def delete_org_service_account(request: Request, sa_id: str) -> None:
     (polymorphic, no FK).
     """
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
-    existing = await get_service_account(_sf(request), service_account_id=sa_id)
+    sf = _sf(request)
+    existing = await get_service_account(sf, service_account_id=sa_id)
     if existing is None or existing.org_id != org_id:
         # Existence-hiding: identical 404 for "missing" and "wrong Org".
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
-    # Emit the audit event BEFORE the delete — the row carries ``name`` /
-    # ``id`` we want in the audit payload, and once it is gone we cannot
-    # recover them. TODO(PR-041): real outbox write in the same transaction.
-    emit_tenant_event(
-        "service_account_deleted",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"sa_id": existing.id, "name": existing.name},
-    )
-    await delete_service_account(_sf(request), service_account_id=sa_id)
+    # Class A same-transaction write (ADR §7.1): the delete returns the
+    # pre-delete row so the audit payload carries ``id`` / ``name``, then
+    # the outbox enqueue + the DELETE commit atomically. A failed enqueue
+    # rolls back the delete too (no half-deleted SA).
+    async with sf() as session:
+        pre_delete = await delete_service_account(sf, service_account_id=sa_id, session=session)
+        if pre_delete is None:
+            # Re-entrant delete after a concurrent deletion: nothing to audit.
+            await session.commit()
+            return
+        await _emit_class_a_audit(
+            session,
+            action="iam.service_account.deleted",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="service_account", id_=pre_delete.id, org_id=org_id),
+            payload={"sa_id": pre_delete.id, "name": pre_delete.name},
+        )
+        await session.commit()
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="service_account", principal_id=sa_id)
 
 
@@ -399,33 +482,39 @@ async def create_sa_role_binding(
     """Bind a role to a SA. ``409 Conflict`` if the binding already exists."""
     org_id = _require_org_id(request)
     actor = _actor_id(request)
-    sa = await get_service_account(_sf(request), service_account_id=sa_id)
+    sf = _sf(request)
+    sa = await get_service_account(sf, service_account_id=sa_id)
     if sa is None or sa.org_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
-    try:
-        row = await create_role_binding(
-            _sf(request),
+    # Class A same-transaction write (ADR §7.1).
+    async with sf() as session:
+        try:
+            row = await create_role_binding(
+                sf,
+                org_id=org_id,
+                principal_type="service_account",
+                principal_id=sa_id,
+                role_id=body.role_id,
+                created_by=actor,
+                expires_at=body.expires_at,
+                session=session,
+            )
+        except IntegrityError as exc:
+            # Either the (org, principal, role) tuple already exists, or
+            # role_id does not point at a real roles row (FK violation).
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Role binding already exists or role_id is invalid.",
+            ) from exc
+        await _emit_class_a_audit(
+            session,
+            action="iam.role_binding.created",
             org_id=org_id,
-            principal_type="service_account",
-            principal_id=sa_id,
-            role_id=body.role_id,
-            created_by=actor,
-            expires_at=body.expires_at,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="role_binding", id_=row.id, org_id=org_id),
+            payload={"sa_id": sa_id, "binding_id": row.id, "role_id": body.role_id},
         )
-    except IntegrityError as exc:
-        # Either the (org, principal, role) tuple already exists, or
-        # role_id does not point at a real roles row (FK violation).
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Role binding already exists or role_id is invalid.",
-        ) from exc
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "service_account_role_binding_created",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"sa_id": sa_id, "binding_id": row.id, "role_id": body.role_id},
-    )
+        await session.commit()
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="service_account", principal_id=sa_id)
     return _to_binding_response(row)
 
@@ -438,18 +527,25 @@ async def create_sa_role_binding(
 async def delete_sa_role_binding(request: Request, sa_id: str, binding_id: str) -> None:
     """Remove a role binding. Idempotent: 204 even if the binding is gone."""
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
-    sa = await get_service_account(_sf(request), service_account_id=sa_id)
+    sf = _sf(request)
+    sa = await get_service_account(sf, service_account_id=sa_id)
     if sa is None or sa.org_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "service_account_role_binding_deleted",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"sa_id": sa_id, "binding_id": binding_id},
-    )
-    await delete_role_binding(_sf(request), binding_id=binding_id, org_id=org_id)
+    # Class A same-transaction write (ADR §7.1): the delete returns the
+    # pre-delete row (carrying role_id) for the audit payload, then the
+    # outbox enqueue + DELETE commit atomically.
+    async with sf() as session:
+        pre_delete = await delete_role_binding(sf, binding_id=binding_id, org_id=org_id, session=session)
+        if pre_delete is not None:
+            await _emit_class_a_audit(
+                session,
+                action="iam.role_binding.deleted",
+                org_id=org_id,
+                actor=_audit_actor(request),
+                resource=_audit_resource(type_="role_binding", id_=binding_id, org_id=org_id),
+                payload={"sa_id": sa_id, "binding_id": binding_id, "role_id": pre_delete.role_id},
+            )
+        await session.commit()
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="service_account", principal_id=sa_id)
 
 
@@ -522,58 +618,64 @@ async def mint_sa_api_key(
     random collision or a misbehaving RNG).
     """
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
-    sa = await get_service_account(_sf(request), service_account_id=sa_id)
+    sf = _sf(request)
+    sa = await get_service_account(sf, service_account_id=sa_id)
     if sa is None or sa.org_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
     _validate_scopes(body.scopes)
 
     # Mint + insert. Retry once on a prefix collision (2^48 space,
     # collision probability is negligible; the retry keeps the user-facing
-    # 409 for a *repeated* collision which would indicate a real bug).
+    # 409 for a *repeated* collision which would indicate a real bug). The
+    # prefix-collision retry runs in a throwaway session (rolled back) so the
+    # successful insert + the Class A audit enqueue commit atomically in the
+    # final session (ADR §7.1).
     plaintext, key_prefix, key_hash = generate_api_key()
-    try:
-        row = await create_api_key(
-            _sf(request),
+
+    async def _attempt_insert(session):
+        return await create_api_key(
+            sf,
             org_id=org_id,
             service_account_id=sa_id,
             key_prefix=key_prefix,
             key_hash=key_hash,
             scopes=body.scopes,
             expires_at=body.expires_at,
+            session=session,
         )
-    except IntegrityError:
-        plaintext, key_prefix, key_hash = generate_api_key()
-        try:
-            row = await create_api_key(
-                _sf(request),
-                org_id=org_id,
-                service_account_id=sa_id,
-                key_prefix=key_prefix,
-                key_hash=key_hash,
-                scopes=body.scopes,
-                expires_at=body.expires_at,
-            )
-        except IntegrityError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="API Key prefix collision after retry; please retry the request.",
-            ) from exc
 
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    # The payload MUST NOT contain the plaintext or the hash (ADR §9.2 line 302).
-    emit_tenant_event(
-        "api_key_created",
-        org_id=org_id,
-        principal_id=actor,
-        payload={
-            "key_id": row.id,
-            "key_prefix": row.key_prefix,
-            "sa_id": sa_id,
-            "scopes": list(body.scopes),
-            "expires_at": body.expires_at.isoformat(),
-        },
-    )
+    row = None
+    async with sf() as session:
+        try:
+            row = await _attempt_insert(session)
+        except IntegrityError:
+            await session.rollback()
+            plaintext, key_prefix, key_hash = generate_api_key()
+            try:
+                row = await _attempt_insert(session)
+            except IntegrityError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="API Key prefix collision after retry; please retry the request.",
+                ) from exc
+        # Class A same-transaction audit enqueue (ADR §7.1). The payload MUST
+        # NOT contain the plaintext or the hash (ADR §9.2 line 302).
+        await _emit_class_a_audit(
+            session,
+            action="iam.api_key.created",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="api_key", id_=row.id, org_id=org_id),
+            payload={
+                "key_id": row.id,
+                "key_prefix": row.key_prefix,
+                "sa_id": sa_id,
+                "scopes": list(body.scopes),
+                "expires_at": body.expires_at.isoformat(),
+            },
+        )
+        await session.commit()
+
     return ApiKeyCreateResponse(
         id=row.id,
         org_id=row.org_id,
@@ -619,23 +721,30 @@ async def revoke_sa_api_key(request: Request, sa_id: str, key_id: str) -> None:
     missing key (404), matching the existence-hiding posture.
     """
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
-    sa = await get_service_account(_sf(request), service_account_id=sa_id)
+    sf = _sf(request)
+    sa = await get_service_account(sf, service_account_id=sa_id)
     if sa is None or sa.org_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ServiceAccount not found.")
     # Confirm the key belongs to this SA in this Org before revoking —
     # otherwise a caller could revoke a foreign-Org key by guessing the id.
-    key = await get_api_key(_sf(request), api_key_id=key_id)
+    key = await get_api_key(sf, api_key_id=key_id)
     if key is None or key.org_id != org_id or key.service_account_id != sa_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API Key not found.")
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "api_key_revoked",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"key_id": key_id, "key_prefix": key.key_prefix, "sa_id": sa_id},
-    )
-    await revoke_api_key(_sf(request), api_key_id=key_id, org_id=org_id)
+    # Class A same-transaction write (ADR §7.1): revoke + audit enqueue commit
+    # atomically. A revoke is idempotent (revoked_at is monotonic); the audit
+    # event is emitted on every call so the audit trail records each revoke
+    # attempt even if the row was already revoked.
+    async with sf() as session:
+        await revoke_api_key(sf, api_key_id=key_id, org_id=org_id, session=session)
+        await _emit_class_a_audit(
+            session,
+            action="iam.api_key.revoked",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="api_key", id_=key_id, org_id=org_id),
+            payload={"key_id": key_id, "key_prefix": key.key_prefix, "sa_id": sa_id},
+        )
+        await session.commit()
     # Defensive invalidation (no-op per cache-walk-through, but matches
     # ADR §11 "API Key ... 变更主动失效" wording letter-for-letter).
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="service_account", principal_id=sa_id)
@@ -735,6 +844,7 @@ async def create_oidc_group_mapping_route(
     """
     org_id = _require_org_id(request)
     actor = _actor_id(request)
+    sf = _sf(request)
     if body.target_org_id != org_id:
         # An admin may only create mappings targeting their OWN org — a
         # cross-org target would let an admin in Org A inject bindings
@@ -745,36 +855,41 @@ async def create_oidc_group_mapping_route(
         )
     _validate_mapping_mode(body.mode)
     await _validate_mapping_target_role(request, body.target_role_id)
-    try:
-        row = await create_oidc_group_mapping(
-            _sf(request),
-            issuer=body.issuer,
-            group_claim=body.group_claim,
-            group_value=body.group_value,
-            target_org_id=body.target_org_id,
-            target_role_id=body.target_role_id,
-            mode=body.mode,
-            description=body.description,
-            created_by=actor,
+    # Class A same-transaction write (ADR §7.1).
+    async with sf() as session:
+        try:
+            row = await create_oidc_group_mapping(
+                sf,
+                issuer=body.issuer,
+                group_claim=body.group_claim,
+                group_value=body.group_value,
+                target_org_id=body.target_org_id,
+                target_role_id=body.target_role_id,
+                mode=body.mode,
+                description=body.description,
+                created_by=actor,
+                session=session,
+            )
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An OIDC group mapping for this (issuer, group, org, role) already exists.",
+            ) from exc
+        await _emit_class_a_audit(
+            session,
+            action="iam.oidc_group_mapping.created",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="oidc_group_mapping", id_=row.id, org_id=org_id),
+            payload={
+                "mapping_id": row.id,
+                "issuer": row.issuer,
+                "group_value": row.group_value,
+                "target_role_id": row.target_role_id,
+                "mode": row.mode,
+            },
         )
-    except IntegrityError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An OIDC group mapping for this (issuer, group, org, role) already exists.",
-        ) from exc
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "oidc_group_mapping_created",
-        org_id=org_id,
-        principal_id=actor,
-        payload={
-            "mapping_id": row.id,
-            "issuer": row.issuer,
-            "group_value": row.group_value,
-            "target_role_id": row.target_role_id,
-            "mode": row.mode,
-        },
-    )
+        await session.commit()
     return _to_mapping_response(row)
 
 
@@ -795,31 +910,35 @@ async def update_oidc_group_mapping_route(
     existing ``(issuer, group_value, org, role)`` tuple.
     """
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
+    sf = _sf(request)
     fields = body.model_dump(exclude_unset=True)
     if "mode" in fields:
         _validate_mapping_mode(fields["mode"])
     if "target_role_id" in fields:
         await _validate_mapping_target_role(request, fields["target_role_id"])
-    existing = await get_oidc_group_mapping(_sf(request), mapping_id=mapping_id)
+    existing = await get_oidc_group_mapping(sf, mapping_id=mapping_id)
     if existing is None or existing.target_org_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OIDC group mapping not found.")
-    try:
-        row = await update_oidc_group_mapping(_sf(request), mapping_id=mapping_id, **fields)
-    except IntegrityError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Update collides with an existing (issuer, group, org, role) mapping.",
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OIDC group mapping not found.") from exc
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "oidc_group_mapping_updated",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"mapping_id": row.id, "fields": sorted(fields)},
-    )
+    # Class A same-transaction write (ADR §7.1).
+    async with sf() as session:
+        try:
+            row = await update_oidc_group_mapping(sf, mapping_id=mapping_id, session=session, **fields)
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Update collides with an existing (issuer, group, org, role) mapping.",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OIDC group mapping not found.") from exc
+        await _emit_class_a_audit(
+            session,
+            action="iam.oidc_group_mapping.updated",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="oidc_group_mapping", id_=row.id, org_id=org_id),
+            payload={"mapping_id": row.id, "fields": sorted(fields)},
+        )
+        await session.commit()
     return _to_mapping_response(row)
 
 
@@ -837,23 +956,30 @@ async def delete_oidc_group_mapping_route(request: Request, mapping_id: str) -> 
     authoritative sweep would remove them explicitly.
     """
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
-    existing = await get_oidc_group_mapping(_sf(request), mapping_id=mapping_id)
+    sf = _sf(request)
+    existing = await get_oidc_group_mapping(sf, mapping_id=mapping_id)
     if existing is None or existing.target_org_id != org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OIDC group mapping not found.")
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "oidc_group_mapping_deleted",
-        org_id=org_id,
-        principal_id=actor,
-        payload={
-            "mapping_id": existing.id,
-            "issuer": existing.issuer,
-            "group_value": existing.group_value,
-            "target_role_id": existing.target_role_id,
-        },
-    )
-    await delete_oidc_group_mapping(_sf(request), mapping_id=mapping_id, org_id=org_id)
+    # Class A same-transaction write (ADR §7.1): delete returns the pre-delete
+    # row so the audit payload carries the mapping identity; the DELETE +
+    # outbox enqueue commit atomically.
+    async with sf() as session:
+        pre_delete = await delete_oidc_group_mapping(sf, mapping_id=mapping_id, org_id=org_id, session=session)
+        if pre_delete is not None:
+            await _emit_class_a_audit(
+                session,
+                action="iam.oidc_group_mapping.deleted",
+                org_id=org_id,
+                actor=_audit_actor(request),
+                resource=_audit_resource(type_="oidc_group_mapping", id_=mapping_id, org_id=org_id),
+                payload={
+                    "mapping_id": pre_delete.id,
+                    "issuer": pre_delete.issuer,
+                    "group_value": pre_delete.group_value,
+                    "target_role_id": pre_delete.target_role_id,
+                },
+            )
+        await session.commit()
 
 
 @router.post(
@@ -944,7 +1070,6 @@ async def suspend_org_member(request: Request, user_id: str) -> OrgMembershipRes
     system-admin dedicated flow.
     """
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
     sf = _sf(request)
     # Last-admin guard: refuse if this user is the sole active org:admin.
     admin_role_id = await _org_admin_role_id(sf=sf, org_id=org_id)
@@ -956,20 +1081,25 @@ async def suspend_org_member(request: Request, user_id: str) -> OrgMembershipRes
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(exc),
             ) from exc
-    try:
-        row = await set_membership_status(sf, org_id=org_id, user_id=user_id, status=MEMBERSHIP_SUSPENDED)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found.") from exc
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "org_membership_suspended",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"user_id": user_id, "membership_id": row.id},
-    )
+    # Class A same-transaction write (ADR §7.1).
+    async with sf() as session:
+        try:
+            row = await set_membership_status(sf, org_id=org_id, user_id=user_id, status=MEMBERSHIP_SUSPENDED, session=session)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found.") from exc
+        await _emit_class_a_audit(
+            session,
+            action="iam.membership.suspended",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="org_membership", id_=row.id, org_id=org_id),
+            payload={"user_id": user_id, "membership_id": row.id},
+        )
+        await session.commit()
     # ADR §11: invalidate the user's authz cache so the revocation is
     # observed on the next request (and any in-flight SSE re-validation),
-    # not up to the ≤60s TTL.
+    # not up to the ≤60s TTL. Post-commit: a rolled-back transition (outbox
+    # write failure) never reaches here.
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="user", principal_id=user_id)
     return _to_membership_response(row)
 
@@ -982,19 +1112,22 @@ async def suspend_org_member(request: Request, user_id: str) -> OrgMembershipRes
 async def activate_org_member(request: Request, user_id: str) -> OrgMembershipResponse:
     """Lifecycle: suspended → active. Restores authorization."""
     org_id = _require_org_id(request)
-    actor = _actor_id(request)
     sf = _sf(request)
-    try:
-        row = await set_membership_status(sf, org_id=org_id, user_id=user_id, status=MEMBERSHIP_ACTIVE)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found.") from exc
-    # TODO(PR-041): replace emit_tenant_event with a real AuditEvent outbox write.
-    emit_tenant_event(
-        "org_membership_activated",
-        org_id=org_id,
-        principal_id=actor,
-        payload={"user_id": user_id, "membership_id": row.id},
-    )
+    # Class A same-transaction write (ADR §7.1).
+    async with sf() as session:
+        try:
+            row = await set_membership_status(sf, org_id=org_id, user_id=user_id, status=MEMBERSHIP_ACTIVE, session=session)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found.") from exc
+        await _emit_class_a_audit(
+            session,
+            action="iam.membership.activated",
+            org_id=org_id,
+            actor=_audit_actor(request),
+            resource=_audit_resource(type_="org_membership", id_=row.id, org_id=org_id),
+            payload={"user_id": user_id, "membership_id": row.id},
+        )
+        await session.commit()
     # Invalidate so the restored permissions are observed immediately.
     get_authorize_service().invalidate_principal(org_id=org_id, principal_type="user", principal_id=user_id)
     return _to_membership_response(row)

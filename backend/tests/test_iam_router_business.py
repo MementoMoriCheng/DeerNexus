@@ -322,16 +322,30 @@ class TestRoleBindingLifecycle:
 
 class TestAuditAndCacheInvalidation:
     @pytest.mark.anyio
-    async def test_create_emits_audit_event(self, sf, app):
+    async def test_create_enqueues_audit_in_same_transaction(self, sf, app):
+        """PR-042: the create path enqueues a Class A audit row in the SAME
+        transaction as the ServiceAccount insert (ADR §7.1). After the 201
+        commits, exactly one ``pending`` outbox row exists with the
+        normalized ``iam.service_account.created`` action."""
+        from sqlalchemy import select
+
+        from deerflow.contracts.events import AuditEvent
+        from deerflow.persistence.audit.model import AuditOutboxRow
+
         await _seed_org(sf)
-        with patch("app.gateway.routers.iam.emit_tenant_event") as mock_emit:
-            with TestClient(app) as client:
-                resp = client.post("/api/v1/iam/service-accounts", json={"name": "bot"})
+        with TestClient(app) as client:
+            resp = client.post("/api/v1/iam/service-accounts", json={"name": "bot"})
             assert resp.status_code == 201
-        # The create path emits exactly one audit event keyed
-        # ``service_account_created``.
-        event_names = [c.args[0] if c.args else None for c in mock_emit.call_args_list]
-        assert "service_account_created" in event_names
+        async with sf() as session:
+            rows = (await session.execute(select(AuditOutboxRow).where(AuditOutboxRow.org_id == ORG_ID))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].status == "pending"
+        ev = AuditEvent.model_validate_json(rows[0].payload_json)
+        assert ev.action == "iam.service_account.created"
+        assert ev.outcome == "success"
+        assert ev.resource is not None
+        assert ev.resource.type == "service_account"
+        assert ev.resource.id == resp.json()["id"]
 
     @pytest.mark.anyio
     async def test_disable_calls_invalidate_principal(self, sf, app):
@@ -347,28 +361,40 @@ class TestAuditAndCacheInvalidation:
         mock_service.invalidate_principal.assert_called_once_with(org_id=ORG_ID, principal_type="service_account", principal_id=sa["id"])
 
     @pytest.mark.anyio
-    async def test_delete_emits_audit_then_invalidates(self, sf, app):
-        """Delete emits the audit event BEFORE the row goes away."""
+    async def test_delete_enqueues_audit_then_invalidates(self, sf, app):
+        """PR-042: delete enqueues the Class A audit row in the same
+        transaction as the hard DELETE (ADR §7.1), then invalidates the
+        cache POST-commit. The outbox row carries the pre-delete SA
+        identity (id + name) so the audit trail survives the row's removal.
+        Cache invalidation runs only after the commit succeeds."""
+        from sqlalchemy import select
+
+        from deerflow.contracts.events import AuditEvent
+        from deerflow.persistence.audit.model import AuditOutboxRow
+
         await _seed_org(sf)
-        call_order: list[str] = []
+        invalidated = False
+        with patch("app.gateway.routers.iam.get_authorize_service") as mock_get_service:
+            mock_service = mock_get_service.return_value
 
-        with patch("app.gateway.routers.iam.emit_tenant_event") as mock_emit:
+            def _record_invalidate(**kwargs):
+                nonlocal invalidated
+                invalidated = True
 
-            def _record_event(event_name, **_kwargs):
-                call_order.append(f"emit:{event_name}")
-
-            mock_emit.side_effect = _record_event
-
-            with patch("app.gateway.routers.iam.get_authorize_service") as mock_get_service:
-                mock_service = mock_get_service.return_value
-                mock_service.invalidate_principal.side_effect = lambda **_: call_order.append("invalidate")
-                with TestClient(app) as client:
-                    sa = client.post("/api/v1/iam/service-accounts", json={"name": "bot"}).json()
-                    call_order.clear()
-                    resp = client.delete(f"/api/v1/iam/service-accounts/{sa['id']}")
+            mock_service.invalidate_principal.side_effect = _record_invalidate
+            with TestClient(app) as client:
+                sa = client.post("/api/v1/iam/service-accounts", json={"name": "bot"}).json()
+                resp = client.delete(f"/api/v1/iam/service-accounts/{sa['id']}")
                 assert resp.status_code == 204
+                # Invalidation runs only after the delete transaction commits.
+                assert invalidated
+        # The delete outbox row carries the pre-delete identity (name) and the
+        # normalized action; the SA row itself is gone.
+        async with sf() as session:
+            from deerflow.persistence.iam.model import ServiceAccountRow
 
-        # Audit emit happens before cache invalidation.
-        assert call_order[0] == "emit:service_account_deleted"
-        assert "invalidate" in call_order
-        assert call_order.index("emit:service_account_deleted") < call_order.index("invalidate")
+            sa_rows = (await session.execute(select(ServiceAccountRow).where(ServiceAccountRow.id == sa["id"]))).scalars().all()
+            assert sa_rows == []
+            outbox = (await session.execute(select(AuditOutboxRow).where(AuditOutboxRow.org_id == ORG_ID))).scalars().all()
+        actions = {AuditEvent.model_validate_json(r.payload_json).action for r in outbox}
+        assert "iam.service_account.deleted" in actions
