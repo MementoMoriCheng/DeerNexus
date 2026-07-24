@@ -20,19 +20,23 @@ Contract (unchanged from PR-022): this function MUST NOT raise on a sink /
 logging failure (events are best-effort observability, never a correctness
 gate on this best-effort path), and MUST NOT silently no-op — at minimum the
 event is logged at INFO level. The Class A fail-closed guarantee (business
-write rolls back if the outbox write fails, ADR §7.1) is the PR-042
-same-transaction wiring; this shim is the best-effort default that lights up
-every existing call site (PR-034/035/036/037's 28+ ``emit_tenant_event``
-callers) without touching them.
+write rolls back if the outbox write fails, ADR §7.1) is delivered by the
+PR-042 same-transaction path: Class A router endpoints call
+:func:`build_audit_event` + :func:`enqueue_audit_outbox_in_session` inside a
+single ``async with sf() as session:`` block and commit atomically. This shim
+remains the best-effort default for paths that are NOT in the Class A set
+(bootstrap, backfill, OIDC mapping engine, last-admin guard) so those events
+are still durable (post-commit) but not transactionally coupled to the write.
 
-The ``AuditEvent`` built here is a best-effort projection of the shim's
-3-arg shape (``event_type``, ``org_id``, ``principal_id``, ``payload``): the
-``action`` is the raw ``event_type``, the actor is a minimal ``PrincipalRef``
-(``user`` when a principal_id is present, else ``system``), ``request_id``
-comes from the active ``CorrelationContext`` if any, ``outcome`` is
-``success`` (all current callers are success-path), and a fresh ``event_id``
-is generated per call. Action normalization to ``<domain>.<resource>.<verb>``
-and denied/failure outcomes land in PR-042's per-call-site rewrite.
+The ``AuditEvent`` built by the best-effort shim is a projection of the
+shim's 3-arg shape (``event_type``, ``org_id``, ``principal_id``,
+``payload``): the ``action`` is normalized via :data:`TENANT_EVENT_ACTION_REGISTRY`
+(``<domain>.<resource>.<verb>``, ADR §4), the actor is a minimal
+``PrincipalRef`` (``user`` when a principal_id is present, else ``system``),
+``request_id`` comes from the active ``CorrelationContext`` if any, and
+``outcome`` is ``success`` (all shim callers are success-path). The Class A
+router path uses :func:`build_audit_event` instead, which takes the real
+actor / resource / outcome at the call site.
 """
 
 from __future__ import annotations
@@ -43,10 +47,64 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from deerflow.contracts.events import AuditEvent
+from deerflow.contracts.events import AuditEvent, AuditOutcome
 from deerflow.contracts.identity import PrincipalRef
+from deerflow.contracts.policy import ResourceRef
 
 logger = logging.getLogger(__name__)
+
+#: Legacy shim ``event_type`` → normalized ADR §4 ``<domain>.<resource>.<verb>``
+#: action. Every ``emit_tenant_event`` call site uses a legacy event_type; this
+#: registry projects it onto the compliance action namespace so audit events are
+#: queryable by domain (``iam.*``) regardless of which path emitted them. A
+#: missing key falls back to the raw event_type (defensive — never silently
+#: renames an unmapped event). Maintained here as the single source of truth so
+#: both the best-effort shim path (PR-041) and the Class A same-transaction path
+#: (PR-042) emit identical action strings.
+TENANT_EVENT_ACTION_REGISTRY: Mapping[str, str] = {
+    # ServiceAccount lifecycle (iam.py)
+    "service_account_created": "iam.service_account.created",
+    "service_account_updated": "iam.service_account.updated",
+    "service_account_disabled": "iam.service_account.disabled",
+    "service_account_active": "iam.service_account.activated",
+    "service_account_deleted": "iam.service_account.deleted",
+    # Role bindings (iam.py — service-account scope today; user bindings via bootstrap)
+    "service_account_role_binding_created": "iam.role_binding.created",
+    "service_account_role_binding_deleted": "iam.role_binding.deleted",
+    "admin_role_binding_created": "iam.role_binding.created",
+    # API Keys (iam.py)
+    "api_key_created": "iam.api_key.created",
+    "api_key_revoked": "iam.api_key.revoked",
+    # Org memberships (iam.py)
+    "org_membership_suspended": "iam.membership.suspended",
+    "org_membership_activated": "iam.membership.activated",
+    "admin_membership_created": "iam.membership.created",
+    # OIDC group mappings (iam.py + oidc_group_mapping.py)
+    "oidc_group_mapping_created": "iam.oidc_group_mapping.created",
+    "oidc_group_mapping_updated": "iam.oidc_group_mapping.updated",
+    "oidc_group_mapping_deleted": "iam.oidc_group_mapping.deleted",
+    "oidc_group_mapping_applied": "iam.oidc_group_mapping.applied",
+    # Org / bootstrap (system-initiated; best-effort shim path)
+    "default_org_created": "org.default.created",
+    "default_org_exists": "org.default.exists",
+    "validation_org_created": "org.validation.created",
+    "validation_org_exists": "org.validation.exists",
+    "builtin_role_created": "iam.role.created",
+    # Backfill (system-initiated)
+    "backfill_started": "org.backfill.started",
+    "backfill_completed": "org.backfill.completed",
+}
+
+
+def _resolve_action(event_type: str) -> str:
+    """Map a legacy shim ``event_type`` to the normalized ADR §4 action.
+
+    Unknown keys pass through unchanged (defensive — an unmapped event is still
+    emitted under its raw name and surfaces in review rather than silently
+    renamed).
+    """
+    return TENANT_EVENT_ACTION_REGISTRY.get(event_type, event_type)
+
 
 #: The app-layer sink injected at lifespan startup (harness cannot import app).
 #: ``None`` until ``set_tenant_event_sink`` is called → falls back to logger.
@@ -107,10 +165,69 @@ def _build_event(
         idempotency_key=f"tenant-event:{event_type}:{uuid.uuid4().hex}",
         org_id=org_id,
         actor=actor,
-        action=event_type,
+        action=_resolve_action(event_type),
         outcome="success",
         request_id=request_id,
         occurred_at=datetime.now(UTC),
+        payload=dict(payload) if payload else {},
+    )
+
+
+def build_audit_event(
+    action: str,
+    *,
+    org_id: str | None,
+    actor: PrincipalRef,
+    outcome: AuditOutcome = "success",
+    resource: ResourceRef | None = None,
+    reason_code: str | None = None,
+    payload: Mapping[str, Any] | None = None,
+    trace_id: str | None = None,
+    run_id: str | None = None,
+) -> AuditEvent:
+    """Construct a fully-specified ``AuditEvent`` for the Class A path (PR-042).
+
+    Unlike the best-effort :func:`_build_event` shim projection (which invents a
+    minimal actor and hard-codes ``outcome="success"``), the Class A router path
+    has the real authenticated actor, the affected resource, and the business
+    outcome at hand. This helper assembles them into an ``AuditEvent`` ready for
+    same-transaction enqueue via
+    :func:`deerflow.persistence.audit.outbox.enqueue_audit_outbox_in_session`.
+
+    ``action`` is passed ALREADY normalized to the ``<domain>.<resource>.<verb>``
+    form (ADR §4) by the caller — the caller knows the domain and verb at the
+    call site, so we do not second-guess it here. ``request_id`` is sourced from
+    the active ``CorrelationContext`` (falling back to ``"system"`` for
+    background tasks) exactly as the shim does. A fresh ``event_id`` is generated
+    per call (§9.1 — event_id is produced inside the business transaction).
+    """
+    request_id = "system"
+    resolved_trace_id = trace_id
+    try:
+        from deerflow.observability.correlation import get_correlation
+
+        ctx = get_correlation()
+        if ctx is not None:
+            if ctx.request_id:
+                request_id = ctx.request_id
+            if resolved_trace_id is None and getattr(ctx, "trace_id", None):
+                resolved_trace_id = ctx.trace_id
+    except Exception:  # noqa: BLE001
+        pass
+
+    return AuditEvent(
+        event_id=uuid.uuid4().hex,
+        idempotency_key=f"{action}:{uuid.uuid4().hex}",
+        org_id=org_id,
+        actor=actor,
+        action=action,
+        outcome=outcome,
+        reason_code=reason_code,
+        request_id=request_id,
+        trace_id=resolved_trace_id,
+        run_id=run_id,
+        occurred_at=datetime.now(UTC),
+        resource=resource,
         payload=dict(payload) if payload else {},
     )
 

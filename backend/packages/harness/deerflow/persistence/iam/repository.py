@@ -111,11 +111,18 @@ async def create_service_account(
     environment: str | None = None,
     expires_at: datetime | None = None,
     created_by: str | None = None,
+    session: AsyncSession | None = None,
 ) -> ServiceAccountRow:
     """Insert one ``ServiceAccountRow`` with ``status="active"``.
 
     The ``(org_id, name)`` unique constraint (``uq_service_accounts_org_name``)
     raises ``IntegrityError`` on collision; the app layer maps that to 409.
+
+    Pass an open ``session`` to stage the insert inside a caller-owned
+    transaction (the Class A same-transaction path, ADR §7.1): the row is
+    ``session.add`` + ``flush``-ed so the unique-constraint collision surfaces
+    here, but NOT committed (the caller commits the business write + outbox
+    atomically). Without ``session`` the helper opens/commits its own.
     """
     row = ServiceAccountRow(
         id=_new_id(),
@@ -130,6 +137,10 @@ async def create_service_account(
         environment=environment,
         expires_at=expires_at,
     )
+    if session is not None:
+        session.add(row)
+        await session.flush()
+        return row
     async with sf() as session:
         session.add(row)
         await session.commit()
@@ -167,6 +178,7 @@ async def update_service_account(
     sf: async_sessionmaker[AsyncSession],
     *,
     service_account_id: str,
+    session: AsyncSession | None = None,
     **fields: object,
 ) -> ServiceAccountRow:
     """PATCH the updatable fields on a ServiceAccount row.
@@ -178,11 +190,23 @@ async def update_service_account(
 
     Raises ``ValueError`` if the row does not exist (the app layer maps
     that to 404; a soft miss here is never silent).
+
+    Pass an open ``session`` (keyword-only) to stage the mutation in a
+    caller-owned transaction (Class A same-transaction path, ADR §7.1);
+    without it the helper opens/commits its own session.
     """
     bad = set(fields) - _UPDATABLE_FIELDS
     if bad:
         raise ValueError(f"update_service_account rejects non-updatable fields: {sorted(bad)}")
 
+    if session is not None:
+        row = await session.get(ServiceAccountRow, service_account_id)
+        if row is None:
+            raise ValueError(f"ServiceAccount {service_account_id!r} not found")
+        for key, value in fields.items():
+            setattr(row, key, value)
+        await session.flush()
+        return row
     async with sf() as session:
         row = await session.get(ServiceAccountRow, service_account_id)
         if row is None:
@@ -199,6 +223,7 @@ async def set_service_account_status(
     *,
     service_account_id: str,
     status: str,
+    session: AsyncSession | None = None,
 ) -> ServiceAccountRow:
     """Transition a SA's status. Only ``active`` / ``disabled`` are allowed.
 
@@ -209,9 +234,19 @@ async def set_service_account_status(
     Raises ``ValueError`` on unknown status (defensive — the CHECK
     constraint would also reject it at commit, but failing early gives a
     clearer error than a SQLAlchemy ``IntegrityError``).
+
+    Pass an open ``session`` to stage the transition in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1).
     """
     if status not in _ALLOWED_STATUSES:
         raise ValueError(f"Unknown ServiceAccount status {status!r}; allowed: {sorted(_ALLOWED_STATUSES)}")
+    if session is not None:
+        row = await session.get(ServiceAccountRow, service_account_id)
+        if row is None:
+            raise ValueError(f"ServiceAccount {service_account_id!r} not found")
+        row.status = status
+        await session.flush()
+        return row
     async with sf() as session:
         row = await session.get(ServiceAccountRow, service_account_id)
         if row is None:
@@ -226,7 +261,8 @@ async def delete_service_account(
     sf: async_sessionmaker[AsyncSession],
     *,
     service_account_id: str,
-) -> None:
+    session: AsyncSession | None = None,
+) -> ServiceAccountRow | None:
     """Hard-delete a ServiceAccount and its role bindings (atomic).
 
     ADR §12 requires SA deletion and Key revocation to land in the same
@@ -236,15 +272,21 @@ async def delete_service_account(
     (polymorphic, §5.2) so the binding rows must be DELETEd explicitly
     in the same transaction.
 
-    No-op (not an error) if the SA does not exist — the app layer has
-    already emitted the audit event referencing the SA's pre-delete
-    identity, so a re-entrant delete after a partial failure must not
-    raise.
+    No-op (not an error) if the SA does not exist — a re-entrant delete
+    after a partial failure must not raise. Returns the pre-delete row
+    (so the caller can build an audit event from the SA's identity) or
+    ``None`` when the row was absent; the row is detached/expired once
+    the caller commits, so read audit-relevant fields before committing.
+
+    Pass an open ``session`` to stage the delete inside a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1). The caller
+    reads ``row`` attributes, enqueues the outbox event, then commits.
     """
-    async with sf() as session:
+
+    async def _delete(session: AsyncSession) -> ServiceAccountRow | None:
         row = await session.get(ServiceAccountRow, service_account_id)
         if row is None:
-            return
+            return None
         # Same-transaction cleanup of the polymorphic bindings. ApiKey
         # rows cascade via FK; no explicit DELETE needed.
         await session.execute(
@@ -254,7 +296,15 @@ async def delete_service_account(
             )
         )
         await session.delete(row)
+        await session.flush()
+        return row
+
+    if session is not None:
+        return await _delete(session)
+    async with sf() as session:
+        result = await _delete(session)
         await session.commit()
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +321,7 @@ async def create_role_binding(
     role_id: str,
     created_by: str | None = None,
     expires_at: datetime | None = None,
+    session: AsyncSession | None = None,
 ) -> RoleBindingRow:
     """Insert one ``RoleBindingRow``. The CHECK constraint on
     ``principal_type`` accepts only ``'user'`` / ``'service_account'``.
@@ -278,6 +329,9 @@ async def create_role_binding(
     The ``(org_id, principal_type, principal_id, role_id)`` unique
     constraint raises ``IntegrityError`` on collision; the app layer
     maps that to 409.
+
+    Pass an open ``session`` to stage the insert in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1).
     """
     row = RoleBindingRow(
         id=_new_id(),
@@ -288,6 +342,10 @@ async def create_role_binding(
         created_by=created_by,
         expires_at=expires_at,
     )
+    if session is not None:
+        session.add(row)
+        await session.flush()
+        return row
     async with sf() as session:
         session.add(row)
         await session.commit()
@@ -328,22 +386,42 @@ async def delete_role_binding(
     *,
     binding_id: str,
     org_id: str,
-) -> None:
+    session: AsyncSession | None = None,
+) -> RoleBindingRow | None:
     """Delete one binding, scoped by ``org_id``.
 
-    Returns silently if the binding does not exist (the app layer has
-    already emitted the audit event). The Org filter prevents a
-    cross-Org caller from deleting another Org's binding by guessing
-    the id — ADR §8.
+    Returns the pre-delete row (so the caller can build an audit event from
+    the binding's identity: principal_type/principal_id/role_id), or ``None``
+    if the binding does not exist. The Org filter prevents a cross-Org caller
+    from deleting another Org's binding by guessing the id — ADR §8.
+
+    Pass an open ``session`` to stage the delete in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1). The caller reads
+    audit-relevant fields from the returned row, enqueues the outbox event,
+    then commits.
     """
-    async with sf() as session:
-        await session.execute(
-            delete(RoleBindingRow).where(
-                RoleBindingRow.id == binding_id,
-                RoleBindingRow.org_id == org_id,
+
+    async def _delete(session: AsyncSession) -> RoleBindingRow | None:
+        row = (
+            await session.execute(
+                select(RoleBindingRow).where(
+                    RoleBindingRow.id == binding_id,
+                    RoleBindingRow.org_id == org_id,
+                )
             )
-        )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        await session.delete(row)
+        await session.flush()
+        return row
+
+    if session is not None:
+        return await _delete(session)
+    async with sf() as session:
+        result = await _delete(session)
         await session.commit()
+        return result
 
 
 async def count_user_bindings_for_role(
@@ -402,6 +480,7 @@ async def set_membership_status(
     org_id: str,
     user_id: str,
     status: str,
+    session: AsyncSession | None = None,
 ) -> OrgMembershipRow:
     """Transition a membership's ``status``. Only ``active`` / ``suspended``.
 
@@ -415,10 +494,14 @@ async def set_membership_status(
     The row is looked up by the ``(org_id, user_id)`` UNIQUE constraint.
     Raises ``ValueError`` if no such membership exists (the app layer maps
     that to 404 — existence-hiding, matching the rest of the IAM API).
+
+    Pass an open ``session`` to stage the transition in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1).
     """
     if status not in _ALLOWED_MEMBERSHIP_STATUSES:
         raise ValueError(f"Unknown membership status {status!r}; allowed: {sorted(_ALLOWED_MEMBERSHIP_STATUSES)}")
-    async with sf() as session:
+
+    async def _transition(session: AsyncSession) -> OrgMembershipRow:
         row = (
             await session.execute(
                 select(OrgMembershipRow).where(
@@ -434,6 +517,13 @@ async def set_membership_status(
             # no-op (matches the SA status helpers' posture).
             return row
         row.status = status
+        await session.flush()
+        return row
+
+    if session is not None:
+        return await _transition(session)
+    async with sf() as session:
+        row = await _transition(session)
         await session.commit()
         await session.refresh(row)
     return row
@@ -483,6 +573,7 @@ async def create_api_key(
     scopes: list[str],
     expires_at: datetime,
     created_by: str | None = None,
+    session: AsyncSession | None = None,
 ) -> ApiKeyRow:
     """Insert one ``ApiKeyRow``. ``revoked_at`` starts ``None``.
 
@@ -491,6 +582,9 @@ async def create_api_key(
     the plaintext. The unique ``key_prefix`` constraint raises
     ``IntegrityError`` on collision; the app layer retries once with a
     fresh prefix, then surfaces 409 if it still collides.
+
+    Pass an open ``session`` to stage the insert in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1).
     """
     row = ApiKeyRow(
         id=_new_id(),
@@ -505,6 +599,10 @@ async def create_api_key(
     # carried in the audit payload by the router. Kept as a parameter so
     # a future migration adding the column does not break callers.
     del created_by
+    if session is not None:
+        session.add(row)
+        await session.flush()
+        return row
     async with sf() as session:
         session.add(row)
         await session.commit()
@@ -573,6 +671,7 @@ async def revoke_api_key(
     *,
     api_key_id: str,
     org_id: str,
+    session: AsyncSession | None = None,
 ) -> ApiKeyRow | None:
     """Set ``revoked_at = now`` on one key. Idempotent.
 
@@ -586,9 +685,13 @@ async def revoke_api_key(
     monotonic (we do not reset it). ADR §9.2 line 299 "revoked / expired
     Key 不可恢复" forbids un-revoking, which the absence of an un-revoke
     endpoint enforces structurally.
+
+    Pass an open ``session`` to stage the revoke in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1).
     """
     now = datetime.now(UTC)
-    async with sf() as session:
+
+    async def _revoke(session: AsyncSession) -> ApiKeyRow | None:
         row = (
             await session.execute(
                 select(ApiKeyRow).where(
@@ -601,8 +704,18 @@ async def revoke_api_key(
             return None
         if row.revoked_at is None:
             row.revoked_at = now
+            await session.flush()
+        return row
+
+    if session is not None:
+        return await _revoke(session)
+    async with sf() as session:
+        row = await _revoke(session)
+        if row is not None:
             await session.commit()
             await session.refresh(row)
+        else:
+            await session.commit()
         return row
 
 
@@ -662,6 +775,7 @@ async def create_oidc_group_mapping(
     mode: str = MAPPING_MODE_ADDITIVE,
     description: str | None = None,
     created_by: str | None = None,
+    session: AsyncSession | None = None,
 ) -> OidcGroupMappingRow:
     """Insert one ``OidcGroupMappingRow`` (one allowlist entry).
 
@@ -670,6 +784,9 @@ async def create_oidc_group_mapping(
     that to 409. ``mode`` defaults to ``additive`` (the MVP default per
     ADR §10). The service layer MUST validate that ``target_role_id``
     points at a real, non-system role before calling (rule 3).
+
+    Pass an open ``session`` to stage the insert in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1).
     """
     row = OidcGroupMappingRow(
         id=_new_id(),
@@ -682,6 +799,10 @@ async def create_oidc_group_mapping(
         description=description,
         created_by=created_by,
     )
+    if session is not None:
+        session.add(row)
+        await session.flush()
+        return row
     async with sf() as session:
         session.add(row)
         await session.commit()
@@ -731,6 +852,7 @@ async def update_oidc_group_mapping(
     sf: async_sessionmaker[AsyncSession],
     *,
     mapping_id: str,
+    session: AsyncSession | None = None,
     **fields: object,
 ) -> OidcGroupMappingRow:
     """PATCH the updatable fields on an OIDC group-mapping row.
@@ -743,11 +865,22 @@ async def update_oidc_group_mapping(
 
     Raises ``ValueError`` if the row does not exist (the app layer maps
     that to 404 for existence-hiding).
+
+    Pass an open ``session`` to stage the mutation in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1).
     """
     bad = set(fields) - _MAPPING_UPDATABLE_FIELDS
     if bad:
         raise ValueError(f"update_oidc_group_mapping rejects non-updatable fields: {sorted(bad)}")
 
+    if session is not None:
+        row = await session.get(OidcGroupMappingRow, mapping_id)
+        if row is None:
+            raise ValueError(f"OidcGroupMapping {mapping_id!r} not found")
+        for key, value in fields.items():
+            setattr(row, key, value)
+        await session.flush()
+        return row
     async with sf() as session:
         row = await session.get(OidcGroupMappingRow, mapping_id)
         if row is None:
@@ -764,22 +897,41 @@ async def delete_oidc_group_mapping(
     *,
     mapping_id: str,
     org_id: str,
-) -> None:
+    session: AsyncSession | None = None,
+) -> OidcGroupMappingRow | None:
     """Delete one mapping row, scoped by ``target_org_id``.
 
-    Returns silently if the mapping does not exist or belongs to another
-    Org (the app layer has already emitted the audit event). The Org
-    filter is on ``target_org_id`` — that is the scoping column for this
-    table, mirroring ``org_id`` on the other IAM tables.
+    Returns the pre-delete row (so the caller can build an audit event from
+    the mapping's identity), or ``None`` if the mapping does not exist or
+    belongs to another Org. The Org filter is on ``target_org_id`` — that
+    is the scoping column for this table, mirroring ``org_id`` on the other
+    IAM tables.
+
+    Pass an open ``session`` to stage the delete in a caller-owned
+    transaction (Class A same-transaction path, ADR §7.1).
     """
-    async with sf() as session:
-        await session.execute(
-            delete(OidcGroupMappingRow).where(
-                OidcGroupMappingRow.id == mapping_id,
-                OidcGroupMappingRow.target_org_id == org_id,
+
+    async def _delete(session: AsyncSession) -> OidcGroupMappingRow | None:
+        row = (
+            await session.execute(
+                select(OidcGroupMappingRow).where(
+                    OidcGroupMappingRow.id == mapping_id,
+                    OidcGroupMappingRow.target_org_id == org_id,
+                )
             )
-        )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        await session.delete(row)
+        await session.flush()
+        return row
+
+    if session is not None:
+        return await _delete(session)
+    async with sf() as session:
+        result = await _delete(session)
         await session.commit()
+        return result
 
 
 __all__ = [

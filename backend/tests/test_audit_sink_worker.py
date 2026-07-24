@@ -175,7 +175,9 @@ class TestShimEndToEnd:
             assert row is not None, "outbox row never landed"
             assert row.status == "pending"
             ev = AuditEvent.model_validate_json(row.payload_json)
-            assert ev.action == "service_account_created"
+            # The shim normalizes the legacy event_type to the ADR §4
+            # ``<domain>.<resource>.<verb>`` registry (PR-042).
+            assert ev.action == "iam.service_account.created"
             assert ev.actor.id == USER_ID
             assert ev.outcome == "success"
         finally:

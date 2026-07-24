@@ -245,6 +245,8 @@ def test_all_runbook_placeholders_remain_fail_closed():
     # (postgres.connectivity, metrics.presence, deployment.evidence_validation,
     # gateway.security_validation, gateway.rate_limit_retry_after) — those are
     # no longer in DEFERRED_LIVE_CHECKS and are tested in test_doctor_probes.py.
+    # PR-042 promoted audit.outbox to a live probe (probe_audit_outbox); it is
+    # tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
     # What remains here are the checks whose code paths do not exist yet;
     # they MUST stay FAIL until their owning Track lands, so an operator
     # never sees a misleading green on an unverified invariant.
@@ -256,7 +258,6 @@ def test_all_runbook_placeholders_remain_fail_closed():
         "secret_store.access",
         "object_storage.security",
         "agent.release_ref_enforcement",
-        "audit.outbox",
     }
 
     report = _run_checks(_config())

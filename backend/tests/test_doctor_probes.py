@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
 from app.doctor.models import DoctorStatus
+from app.doctor.probes.audit_probe import probe_audit_outbox
 from app.doctor.probes.deployment_evidence_probe import probe_deployment_evidence
 from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import EXPECTED_METRIC_NAMES, probe_metrics_presence
@@ -472,4 +474,118 @@ class TestRateLimitProbe:
 
         monkeypatch.setattr("app.doctor.probes.rate_limit_probe._httpx_post", boom)
         result = await probe_rate_limit_retry_after(config)
+        assert result.status is DoctorStatus.FAIL
+
+
+# ===========================================================================
+# audit.outbox probe (PR-042) — live table reachability + SLO backlog
+# ===========================================================================
+
+
+class TestAuditProbe:
+    @pytest.mark.anyio
+    async def test_memory_backend_warns_skip(self):
+        config = _base_config(database={"backend": "memory"})
+        result = await probe_audit_outbox(config)
+        assert result.status is DoctorStatus.WARN
+        assert result.check_id == "audit.outbox"
+        assert "memory" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_empty_outbox_passes(self, tmp_path):
+        """A reachable outbox table with no backlog/dead-letter is PASS."""
+        from deerflow.persistence.engine import close_engine, init_engine
+
+        # init_engine migrates the DB; config.sqlite_dir must resolve to the
+        # same ``{dir}/deerflow.db`` the engine created so the probe reads it.
+        url = f"sqlite+aiosqlite:///{tmp_path / 'deerflow.db'}"
+        await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+        try:
+            config = _base_config(database={"backend": "sqlite", "sqlite_dir": str(tmp_path)})
+            result = await probe_audit_outbox(config)
+        finally:
+            await close_engine()
+        assert result.status is DoctorStatus.PASS
+        assert "0 dead-letter" in result.message
+
+    @pytest.mark.anyio
+    async def test_dead_letter_fails(self, tmp_path):
+        """A dead-lettered event is a compliance-evidence loss (ADR §8 P1) → FAIL."""
+        from deerflow.persistence.audit.model import AuditOutboxRow
+        from deerflow.persistence.audit.outbox import OUTBOX_DEAD_LETTER
+        from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+
+        url = f"sqlite+aiosqlite:///{tmp_path / 'deerflow.db'}"
+        await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+        try:
+            sf = get_session_factory()
+            now = datetime.now(UTC)
+            async with sf() as session:
+                session.add(
+                    AuditOutboxRow(
+                        id="dl-1",
+                        event_id="evt-dl-1",
+                        payload_json="{}",
+                        org_id="any",
+                        status=OUTBOX_DEAD_LETTER,
+                        attempts=10,
+                        available_at=now,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                await session.commit()
+            config = _base_config(database={"backend": "sqlite", "sqlite_dir": str(tmp_path)})
+            result = await probe_audit_outbox(config)
+        finally:
+            await close_engine()
+        assert result.status is DoctorStatus.FAIL
+        assert "dead-letter" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_stale_pending_fails(self, tmp_path):
+        """A pending row older than the 5-minute SLO (ADR §14 P2) → FAIL."""
+        from datetime import timedelta
+
+        from deerflow.persistence.audit.model import AuditOutboxRow
+        from deerflow.persistence.audit.outbox import OUTBOX_PENDING
+        from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+
+        url = f"sqlite+aiosqlite:///{tmp_path / 'deerflow.db'}"
+        await init_engine("sqlite", url=url, sqlite_dir=str(tmp_path))
+        try:
+            sf = get_session_factory()
+            old = datetime.now(UTC) - timedelta(minutes=10)
+            async with sf() as session:
+                session.add(
+                    AuditOutboxRow(
+                        id="stale-1",
+                        event_id="evt-stale-1",
+                        payload_json="{}",
+                        org_id="any",
+                        status=OUTBOX_PENDING,
+                        attempts=0,
+                        available_at=old,
+                        created_at=old,
+                        updated_at=old,
+                    )
+                )
+                await session.commit()
+            config = _base_config(database={"backend": "sqlite", "sqlite_dir": str(tmp_path)})
+            result = await probe_audit_outbox(config)
+        finally:
+            await close_engine()
+        assert result.status is DoctorStatus.FAIL
+        assert "slo" in result.message.lower() or "keeping up" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_unreachable_db_fails_without_raising(self):
+        # An unreachable DB must surface as FAIL, never raise.
+        config = _base_config(
+            database={
+                "backend": "sqlite",
+                "sqlite_path": "/nonexistent/protected/path/cannot-create.db",
+            }
+        )
+        result = await probe_audit_outbox(config)
         assert result.status is DoctorStatus.FAIL

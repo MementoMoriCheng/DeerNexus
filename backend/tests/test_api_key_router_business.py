@@ -284,22 +284,30 @@ class TestMissingSa:
 
 class TestAuditEmission:
     @pytest.mark.anyio
-    async def test_mint_emits_audit_event_without_plaintext(self, sf, app):
+    async def test_mint_enqueues_audit_without_plaintext(self, sf, app):
+        """PR-042: the mint path enqueues a Class A audit row (ADR §7.1) whose
+        payload MUST NOT contain the plaintext or the hash — and the payload is
+        now durably persisted in ``audit_outbox``, so a plaintext leak would be
+        a real credential disclosure, not just a log line."""
+        from sqlalchemy import select
+
+        from deerflow.contracts.events import AuditEvent
+        from deerflow.persistence.audit.model import AuditOutboxRow
+
         await _seed_org(sf)
         await _seed_sa(sf)
-        with patch("app.gateway.routers.iam.emit_tenant_event") as mock_emit:
-            with TestClient(app) as client:
-                minted = client.post(
-                    "/api/v1/iam/service-accounts/sa-1/api-keys",
-                    json={"scopes": ["runtime:run:read"], "expires_at": (datetime.now(UTC) + timedelta(days=30)).isoformat()},
-                ).json()
+        with TestClient(app) as client:
+            minted = client.post(
+                "/api/v1/iam/service-accounts/sa-1/api-keys",
+                json={"scopes": ["runtime:run:read"], "expires_at": (datetime.now(UTC) + timedelta(days=30)).isoformat()},
+            ).json()
         assert minted["plaintext_key"]  # confirmed plaintext exists
-        # Find the api_key_created call.
-        created_calls = [c for c in mock_emit.call_args_list if c.args and c.args[0] == "api_key_created"]
-        assert len(created_calls) == 1
-        payload = created_calls[0].kwargs.get("payload") or {}
-        # The plaintext MUST NOT appear anywhere in the payload dict
-        # (values, keys, nested). Stringify the payload + check.
+        async with sf() as session:
+            rows = (await session.execute(select(AuditOutboxRow).where(AuditOutboxRow.org_id == ORG_ID))).scalars().all()
+        ev = next(AuditEvent.model_validate_json(r.payload_json) for r in rows if AuditEvent.model_validate_json(r.payload_json).action == "iam.api_key.created")
+        payload = ev.payload
+        # The plaintext MUST NOT appear anywhere in the payload (values, keys,
+        # nested). Stringify + check the full secret and its secret portion.
         payload_str = str(payload)
         assert minted["plaintext_key"] not in payload_str
         assert minted["plaintext_key"].split("_")[-1] not in payload_str  # secret portion
@@ -309,20 +317,27 @@ class TestAuditEmission:
         assert payload["scopes"] == ["runtime:run:read"]
 
     @pytest.mark.anyio
-    async def test_revoke_emits_audit_event(self, sf, app):
+    async def test_revoke_enqueues_audit_event(self, sf, app):
+        """PR-042: revoke enqueues a Class A ``iam.api_key.revoked`` row."""
+        from sqlalchemy import select
+
+        from deerflow.contracts.events import AuditEvent
+        from deerflow.persistence.audit.model import AuditOutboxRow
+
         await _seed_org(sf)
         await _seed_sa(sf)
-        with patch("app.gateway.routers.iam.emit_tenant_event") as mock_emit:
-            with TestClient(app) as client:
-                minted = client.post(
-                    "/api/v1/iam/service-accounts/sa-1/api-keys",
-                    json={"scopes": ["runtime:run:read"], "expires_at": (datetime.now(UTC) + timedelta(days=30)).isoformat()},
-                ).json()
-                mock_emit.reset_mock()
-                client.delete(f"/api/v1/iam/service-accounts/sa-1/api-keys/{minted['id']}")
-        revoked_calls = [c for c in mock_emit.call_args_list if c.args and c.args[0] == "api_key_revoked"]
-        assert len(revoked_calls) == 1
-        payload = revoked_calls[0].kwargs.get("payload") or {}
+        with TestClient(app) as client:
+            minted = client.post(
+                "/api/v1/iam/service-accounts/sa-1/api-keys",
+                json={"scopes": ["runtime:run:read"], "expires_at": (datetime.now(UTC) + timedelta(days=30)).isoformat()},
+            ).json()
+            client.delete(f"/api/v1/iam/service-accounts/sa-1/api-keys/{minted['id']}")
+        async with sf() as session:
+            rows = (await session.execute(select(AuditOutboxRow).where(AuditOutboxRow.org_id == ORG_ID))).scalars().all()
+        revoked = [AuditEvent.model_validate_json(r.payload_json) for r in rows]
+        revoked = [e for e in revoked if e.action == "iam.api_key.revoked"]
+        assert len(revoked) == 1
+        payload = revoked[0].payload
         assert payload["key_id"] == minted["id"]
         assert payload["sa_id"] == "sa-1"
 

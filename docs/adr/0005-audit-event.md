@@ -550,8 +550,8 @@ audit_export_jobs
 ## 15. 测试
 
 - [ ] 最小 9 类事件全部产生
-- [ ] IAM、API Key、Connector、Release 关键写路径覆盖
-- [ ] Class A outbox 失败时业务不提交
+- [~] IAM、API Key、Connector、Release 关键写路径覆盖（PR-042：IAM 全覆盖 —— ServiceAccount 生命周期 / RoleBinding / API Key / OrgMembership / OIDC group mapping 共 14 个写路径全部同事务 enqueue；action 归一化为 `<domain>.<resource>.<verb>` 注册表。Connector / Release 写路径待 Track E，其代码路径尚不存在）
+- [x] Class A outbox 失败时业务不提交（PR-042：IAM router 14 个 Class A 写路径重构为 `async with sf() as session:` → 业务写（传 session，不 commit）→ `enqueue_audit_outbox_in_session`（不 commit）→ `session.commit()` 原子提交；outbox enqueue 失败（如 `IntegrityError`）abort 共享事务，业务写一并回滚。`test_audit_class_a.py::TestClassAAtomicity::test_outbox_failure_rolls_back_business_write` 用重复 `event_id` 强制碰撞证明 SA 行不落地。Connector/Release 写路径待 Track E）
 - [ ] Class B 队列失败时不静默丢失
 - [x] event_id / idempotency 重放不重复（PR-040 + PR-041：`audit_events.event_id` PK + `audit_outbox.uq_audit_outbox_event_id` 双层；worker 重复 publish 命中 `IntegrityError` → mark published 不重复；`test_audit_outbox.py::test_drain_idempotent_on_duplicate_event_id` + `test_duplicate_event_id_collides` 锁定）
 - [x] OrgA 查询不返回 OrgB（PR-040：`list_audit_events` / `count_by_org` 强制 `org_id` 过滤，org 隔离在存储层锁定，`test_audit_schema.py::TestOrgIsolation` 双 org 互不串；查询端点在 PR-045）

@@ -12,8 +12,8 @@ Reliability contract (ADR §7.1 / §8 / §9.1):
 
 * a Class A control-plane write enqueues an outbox row in the **same
   transaction** as the business change (§7.1 — the enqueue must fail-rollback
-  the business write; that wiring lands in PR-042, which passes the caller's
-  session into ``enqueue_audit_outbox``);
+  the business write; the router passes its own session to
+  :func:`enqueue_audit_outbox_in_session` and commits both atomically);
 * delivery is idempotent by ``event_id`` (§9.1): the unique index
   ``uq_audit_outbox_event_id`` means a replay that re-enqueues the same
   ``event_id`` raises ``IntegrityError`` rather than queueing a duplicate, and
@@ -148,10 +148,10 @@ async def enqueue_audit_outbox(
     unique index ``uq_audit_outbox_event_id`` makes a replay collide on
     ``event_id`` → ``IntegrityError`` (idempotent by event_id, §9.1).
 
-    When a Class A caller wants the enqueue in the *same transaction* as the
-    business write (§7.1), it should pass its own session to a transactional
-    variant; this helper opens its own session for the post-commit path the
-    shim upgrade (PR-041) uses. Same-transaction wiring lands in PR-042.
+    For the Class A same-transaction path (§7.1 — the enqueue must fail-rollback
+    the business write) use :func:`enqueue_audit_outbox_in_session`, which adds
+    the row to a caller-owned session without committing; this helper opens its
+    own session for the post-commit path the shim upgrade (PR-041) uses.
     """
     if now is None:
         now = datetime.now(UTC)
@@ -170,6 +170,45 @@ async def enqueue_audit_outbox(
         session.add(row)
         await session.commit()
         await session.refresh(row)
+    return row
+
+
+async def enqueue_audit_outbox_in_session(
+    session: AsyncSession,
+    event: AuditEvent,
+    *,
+    now: datetime | None = None,
+) -> AuditOutboxRow:
+    """Same-transaction enqueue: add a ``pending`` row to ``session`` (ADR §7.1).
+
+    The caller OWNS the transaction: this helper only stages the row
+    (``session.add``) and flushes so the unique-index collision surfaces inside
+    this scope. It does **not** commit — the caller's ``session.commit()``
+    atomically lands both the business write and the outbox row, or rolls back
+    both on failure (§7.1 "outbox 写失败则业务回滚"). Returned row is attached
+    to the caller's session; ``session.refresh`` is the caller's concern post-commit.
+
+    Idempotency (§9.1) is unchanged: a replay enqueuing the same ``event_id``
+    raises ``IntegrityError`` at flush on the ``uq_audit_outbox_event_id`` index
+    — which aborts the *shared* transaction and thus the business write too
+    (exactly the §7.1 fail-rollback contract, since a duplicate event_id means
+    the caller is re-driving an already-recorded mutation).
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    row = AuditOutboxRow(
+        id=_new_id(),
+        event_id=event.event_id,
+        payload_json=event.model_dump_json(),
+        org_id=event.org_id,
+        status=OUTBOX_PENDING,
+        attempts=0,
+        available_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(row)
+    await session.flush()  # surface unique-index collision inside this scope
     return row
 
 
@@ -415,6 +454,7 @@ __all__ = [
     "count_dead_letter",
     "count_pending",
     "enqueue_audit_outbox",
+    "enqueue_audit_outbox_in_session",
     "mark_outbox_failed",
     "mark_outbox_published",
     "oldest_pending_age_seconds",

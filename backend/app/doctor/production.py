@@ -287,13 +287,15 @@ STATIC_CHECKS: tuple[ProductionCheck, ...] = (
 
 DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     # Each row is (check_id, component, message, config_source, remediation).
-    # PR-064 converted the 5 probes with real code paths today
+    # PR-064 converted 5 probes with real code paths
     # (postgres.connectivity / metrics.presence / deployment.evidence_validation
     # / gateway.security_validation / gateway.rate_limit_retry_after) into live
-    # probes in ``app/doctor/probes/``. What remains here are checks whose code
-    # paths do not exist yet — they stay FAIL with a **Track-specific**
-    # remediation (replacing the pre-PR-064 generic "Implement in PR-064"
-    # placeholder) so an operator knows exactly what to wait for.
+    # probes in ``app/doctor/probes/``. PR-042 promoted a sixth
+    # (audit.outbox) to live once the Class A same-transaction wiring landed.
+    # What remains here are checks whose code paths do not exist yet — they
+    # stay FAIL with a **Track-specific** remediation (replacing the pre-PR-064
+    # generic "Implement in PR-064" placeholder) so an operator knows exactly
+    # what to wait for.
     (
         "redis.connectivity",
         "redis",
@@ -351,21 +353,6 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
         "planned production agent-release declaration",
         "Blocked on Track E (PR-054 Release Resolve): contracts/release.py defines ReleaseResolver as a Protocol with no concrete impl. The probe cannot verify 'prod runs only published ReleaseRef' until resolve is real.",
     ),
-    (
-        "audit.outbox",
-        "audit",
-        "Audit sink and transactional outbox validation is not implemented.",
-        "planned production audit declaration",
-        (
-            "Blocked on Track D (PR-042 Class A same-transaction wiring): "
-            "PR-041 landed the audit_outbox table + drain worker + OutboxAuditSink, "
-            "and upgraded emit_tenant_event to route through the sink. The probe can "
-            "now verify the table + worker exist, but a live probe (pending drained "
-            "within SLO, dead-letter=0) needs real Class A traffic — the post-commit "
-            "best-effort shim path has no guaranteed-rollback write to validate. "
-            "Promote to LIVE_PROBE_REGISTRY once PR-042 wires the same-transaction enqueue."
-        ),
-    ),
 )
 
 
@@ -390,6 +377,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
     so the registry is materialised lazily rather than at module import.
     """
     from app.doctor.probes import (
+        probe_audit_outbox,
         probe_deployment_evidence,
         probe_gateway_security,
         probe_metrics_presence,
@@ -403,6 +391,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         (probe_deployment_evidence, "deployment.evidence_validation", "deployment", "config.yaml:production.deployment"),
         (probe_gateway_security, "gateway.security_validation", "gateway", "config.yaml:production.gateway_security"),
         (probe_rate_limit_retry_after, "gateway.rate_limit_retry_after", "gateway", "config.yaml:production.gateway_security.rate_limit_enabled"),
+        (probe_audit_outbox, "audit.outbox", "audit", "config.yaml:production.audit"),
     )
 
 
