@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 19
+config_version: 20
 
 # ============================================================================
 # Logging
@@ -1236,6 +1236,13 @@ production:
     enabled: false
     declared_rpo_hours: 24
     pitr_enabled: false
+    # Destination directory for the application-level backup Job
+    # (scripts/backup.py, PR-065). This is the DeerNexus evidence layer —
+    # it COMPLEMENTS, not replaces, your DB platform backup (pg_dump/WAL/PITR,
+    # runbook §9.1). Required when enabled=true. Point it at a separate,
+    # encrypted failure domain from the primary DB in production.
+    # destination_dir: /var/lib/deernexus/backups
+    destination_dir: null
   secret_store:
     provider: env_dev_only
     references_only: false

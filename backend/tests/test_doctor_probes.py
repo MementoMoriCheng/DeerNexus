@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from app.doctor.models import DoctorStatus
 from app.doctor.probes.audit_probe import probe_audit_outbox
+from app.doctor.probes.backup_probe import probe_backup_freshness
 from app.doctor.probes.deployment_evidence_probe import probe_deployment_evidence
 from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import EXPECTED_METRIC_NAMES, probe_metrics_presence
@@ -545,8 +547,6 @@ class TestAuditProbe:
     @pytest.mark.anyio
     async def test_stale_pending_fails(self, tmp_path):
         """A pending row older than the 5-minute SLO (ADR §14 P2) → FAIL."""
-        from datetime import timedelta
-
         from deerflow.persistence.audit.model import AuditOutboxRow
         from deerflow.persistence.audit.outbox import OUTBOX_PENDING
         from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
@@ -589,3 +589,116 @@ class TestAuditProbe:
         )
         result = await probe_audit_outbox(config)
         assert result.status is DoctorStatus.FAIL
+
+
+# ===========================================================================
+# backup_probe (PR-065)
+# ===========================================================================
+
+
+class TestBackupProbe:
+    @pytest.mark.anyio
+    async def test_disabled_backup_warns_skip(self):
+        # Backup not enabled → WARN (the deployment may rely on the DB platform
+        # backup only). Never a hard FAIL for an opt-in layer.
+        config = _base_config(production={"backup": {"enabled": False}})
+        result = await probe_backup_freshness(config)
+        assert result.status is DoctorStatus.WARN
+        assert result.check_id == "backup.freshness"
+        assert "not enabled" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_enabled_but_never_ran_fails(self, tmp_path):
+        # Enabled + destination set, but no manifest → the Job has never run.
+        config = _base_config(
+            production={
+                "backup": {
+                    "enabled": True,
+                    "declared_rpo_hours": 24,
+                    "destination_dir": str(tmp_path / "empty"),
+                }
+            }
+        )
+        result = await probe_backup_freshness(config)
+        assert result.status is DoctorStatus.FAIL
+        assert "never run" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_fresh_manifest_passes_with_complement_note(self, tmp_path):
+        # A manifest within RPO + tamper-intact → PASS, with the honesty caveat.
+        dest = tmp_path / "backups"
+        await self._write_fresh_manifest(dest, rpo_hours=24, age=timedelta(hours=1))
+        config = _base_config(
+            production={
+                "backup": {
+                    "enabled": True,
+                    "declared_rpo_hours": 24,
+                    "destination_dir": str(dest),
+                }
+            }
+        )
+        result = await probe_backup_freshness(config)
+        assert result.status is DoctorStatus.PASS
+        # The PASS message MUST state it complements (not replaces) the DB backup.
+        assert "complements" in result.message.lower()
+        assert "does not replace" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_stale_manifest_exceeding_rpo_fails(self, tmp_path):
+        dest = tmp_path / "backups"
+        # Manifest 48h old, RPO 24h → FAIL (runbook §14.2 P1).
+        await self._write_fresh_manifest(dest, rpo_hours=24, age=timedelta(hours=48))
+        config = _base_config(
+            production={
+                "backup": {
+                    "enabled": True,
+                    "declared_rpo_hours": 24,
+                    "destination_dir": str(dest),
+                }
+            }
+        )
+        result = await probe_backup_freshness(config)
+        assert result.status is DoctorStatus.FAIL
+        assert "exceeding the declared rpo" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_tampered_manifest_fails(self, tmp_path):
+        dest = tmp_path / "backups"
+        await self._write_fresh_manifest(dest, rpo_hours=24, age=timedelta(hours=1))
+        # Corrupt the manifest's content_digest so it no longer recomputes.
+        manifest_path = dest / "manifest.json"
+        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+        raw["content_digest"] = "0" * 64
+        manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+        config = _base_config(
+            production={
+                "backup": {
+                    "enabled": True,
+                    "declared_rpo_hours": 24,
+                    "destination_dir": str(dest),
+                }
+            }
+        )
+        result = await probe_backup_freshness(config)
+        assert result.status is DoctorStatus.FAIL
+        assert "tamper" in result.message.lower()
+
+    async def _write_fresh_manifest(self, dest: Path, *, rpo_hours: int, age: timedelta) -> None:
+        """Write a valid, finalize_digests-stamped manifest aged ``age`` ago."""
+        from deerflow.persistence.backup import (
+            BackupManifest,
+            BackupTableEntry,
+            finalize_digests,
+            write_manifest,
+        )
+
+        manifest = finalize_digests(
+            BackupManifest(
+                created_at=datetime.now(UTC) - age,
+                backend="sqlite",
+                schema_version="0011_audit_outbox",
+                declared_rpo_hours=rpo_hours,
+                tables=[BackupTableEntry(name="organizations", row_count=0, content_digest="0" * 64, columns=["id"])],
+            )
+        )
+        write_manifest(dest, manifest)
