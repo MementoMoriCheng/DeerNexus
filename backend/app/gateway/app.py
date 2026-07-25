@@ -14,6 +14,7 @@ from app.gateway.csrf_middleware import CSRFMiddleware, get_configured_cors_orig
 from app.gateway.deps import langgraph_runtime
 from app.gateway.routers import admin as admin_router
 from app.gateway.routers import (
+    agent_artifacts,
     agents,
     artifacts,
     assistants_compat,
@@ -630,6 +631,14 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # ``Permission.ADMIN_IAM_MANAGE`` (both org:admin-only). Shares the
     # admin:* permission domain with the Org Console.
     app.include_router(iam.router)
+
+    # Agent artifact API (PR-052) is mounted at /api/v1.
+    # AgentPackage / AgentVersion CRUD + lifecycle transitions
+    # (:review / :publish / :revoke) + inventory reconciliation, gated by
+    # ``@require_rbac(Permission.STUDIO_PACKAGE_READ)`` /
+    # ``Permission.STUDIO_PACKAGE_WRITE`` (both org:admin-only). Class A
+    # audit via the same-transaction outbox enqueue as IAM.
+    app.include_router(agent_artifacts.router)
 
     # Feedback API is mounted at /api/threads/{thread_id}/runs/{run_id}/feedback
     app.include_router(feedback.router)

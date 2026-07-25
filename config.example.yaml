@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 20
+config_version: 21
 
 # ============================================================================
 # Logging
@@ -1246,6 +1246,19 @@ production:
   secret_store:
     provider: env_dev_only
     references_only: false
+  artifact:
+    # Agent artifact storage (PR-052, ADR-0004 §11). Artifacts ≤
+    # inline_size_threshold bytes are stored inline in the
+    # agent_versions.content_inline column; larger artifacts are addressed by
+    # object_key and routed through the ObjectStore abstraction. The
+    # threshold is an operator declaration — tune it against your DB capacity
+    # plan and load profile (ADR §11.1 "阈值由生产配置定义并进入压测").
+    inline_size_threshold: 65536
+    # Only `inline` ships in the MVP (InlineObjectStore — content_inline is
+    # the source of truth, no external infra). `s3` is a declared future
+    # value; a real S3/MinIO backend + its doctor probe (private/encrypted,
+    # ADR §11.2) land in a follow-up PR.
+    object_store_backend: inline
   limits:
     max_concurrent_runs: 1
     max_sandbox_replicas: 1

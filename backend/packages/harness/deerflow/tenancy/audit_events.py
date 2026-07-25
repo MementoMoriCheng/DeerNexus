@@ -99,6 +99,19 @@ TENANT_EVENT_ACTION_REGISTRY: Mapping[str, str] = {
     # directly via ``build_audit_event`` with the already-normalized action.
     "policy_tool_denied": "policy.tool.denied",
     "auth_login": "auth.login",
+    # Agent artifacts (PR-052, ADR-0004 §14 / ADR-0005 §5.1). The app-layer
+    # router emits these directly via ``build_audit_event`` with the
+    # normalized action; the registry keeps a single authoritative map. Note
+    # ``catalog.agent_version.published`` (Version status → published) is
+    # distinct from ``release.agent.published`` (Channel CAS, PR-053) — they
+    # are NOT interchangeable (ADR-0004 §14, ADR-0005 §5.1).
+    "agent_package_created": "catalog.agent_package.created",
+    "agent_package_updated": "catalog.agent_package.updated",
+    "agent_package_archived": "catalog.agent_package.archived",
+    "agent_version_created": "catalog.agent_version.created",
+    "agent_version_reviewed": "catalog.agent_version.reviewed",
+    "agent_version_published": "catalog.agent_version.published",
+    "agent_version_revoked": "catalog.agent_version.revoked",
 }
 
 
