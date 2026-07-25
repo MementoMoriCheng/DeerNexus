@@ -69,6 +69,29 @@ class ProductionSecretStoreConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ProductionArtifactConfig(BaseModel):
+    """Agent artifact storage declarations (PR-052, ADR-0004 §11).
+
+    Small artifacts (≤ ``inline_size_threshold`` bytes) are stored inline in
+    the ``agent_versions.content_inline`` column; larger artifacts are
+    addressed by ``object_key`` and routed through the ``ObjectStore``
+    abstraction (``persistence/release/storage.py``). The threshold is an
+    operator declaration that enters the capacity plan (ADR §11.1 "阈值由
+    生产配置定义并进入压测").
+
+    ``object_store_backend`` selects the storage backend. Only ``inline`` is
+    shipped in the MVP (the InlineObjectStore — content_inline is the source
+    of truth, no external infra). ``s3`` is a declared future value: a real
+    S3/MinIO backend + its doctor probe (private/encrypted guarantees,
+    ADR §11.2) land in a follow-up PR, at which point this literal widens.
+    """
+
+    inline_size_threshold: int = Field(default=65536, ge=0, description="Bytes; ≤ threshold → inline column, > → object_key.")
+    object_store_backend: Literal["inline", "s3"] = "inline"
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ProductionLimitsConfig(BaseModel):
     max_concurrent_runs: int = Field(default=1, ge=1)
     max_sandbox_replicas: int = Field(default=1, ge=1)
@@ -99,6 +122,7 @@ class ProductionConfig(BaseModel):
     redis: ProductionRedisConfig = Field(default_factory=ProductionRedisConfig)
     backup: ProductionBackupConfig = Field(default_factory=ProductionBackupConfig)
     secret_store: ProductionSecretStoreConfig = Field(default_factory=ProductionSecretStoreConfig)
+    artifact: ProductionArtifactConfig = Field(default_factory=ProductionArtifactConfig)
     limits: ProductionLimitsConfig = Field(default_factory=ProductionLimitsConfig)
     gateway_security: ProductionGatewaySecurityConfig = Field(default_factory=ProductionGatewaySecurityConfig)
     log_redaction_enabled: bool = False

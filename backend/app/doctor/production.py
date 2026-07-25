@@ -350,9 +350,11 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
         "Object storage privacy, encryption, and read/write validation is not implemented.",
         "planned production object-storage declaration",
         (
-            "Blocked on object-storage config field PR: ProductionConfig has no object_storage field "
-            "yet, so there is nothing to probe. The check_id is retained so the runbook §5.1 'object "
-            "storage private/read-write/encrypted' line stays visible."
+            "Blocked on object-storage backend PR: PR-052 landed the ObjectStore abstraction + the "
+            "InlineObjectStore default (content_inline is the source of truth, no external infra) + "
+            "production.artifact config, but a real S3/MinIO backend (private/encrypted guarantees, "
+            "ADR §11.2) is not implemented. The check_id is retained so the runbook §5.1 'object "
+            "storage private/read-write/encrypted' line stays visible until that backend + its probe land."
         ),
     ),
     (

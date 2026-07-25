@@ -439,8 +439,8 @@ security_incident_id?
 
 ## 15. 测试
 
-- [ ] draft 可变、published 不可变
-- [ ] digest 与内容匹配
+- [x] draft 可变、published 不可变（PR-052：repository `update_agent_version` 在 `status in {published,revoked,archived}` 时 raise `VersionImmutableError`；`test_published_is_immutable` / `test_revoked_is_immutable` 锁定；draft 可变由 `test_draft_is_mutable` 证明）
+- [x] digest 与内容匹配（PR-052：`compute_artifact_digest(content)` → `sha256:<hex>` 对原始字节，`create_agent_version` 自动回填 + `UNIQUE(org_id, digest)` 去重；`test_digest_deterministic` / `test_create_computes_digest_and_routes_inline` 锁定。注：对象存储 re-read 校验在 inventory `verify_digest` 路径，inline backend 同库即匹配）
 - [ ] dev / staging / prod 状态门禁正确
 - [ ] Developer 可 promote dev，但不能 promote staging / prod 或 rollback prod
 - [ ] OrgA Channel 不能引用 OrgB Version

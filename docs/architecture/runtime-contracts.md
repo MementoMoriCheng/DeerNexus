@@ -1446,3 +1446,49 @@ Track E 第一刀,落地 ADR-0004 §3.1/§3.2 + data-model.md §6.2/§6.3 的两
 
 **诚实边界**:本 PR 后两表存在但**无任何写入路径** —— ServiceAccount 表在 PR-020B 落地、PR-034 才有第一个调用方的切分哲学一致。回滚:单 PR expand-only 两表(无既有调用方),`git revert` + `alembic downgrade 0011_audit_outbox` 一次性回滚。
 
+### 16.47 PR-052:制品存储与对账写路径(开启中)
+
+Track E 枢纽 PR,在 PR-050 的 `agent_packages`/`agent_versions` 表之上构建**完整写路径**,解锁 PR-051(文件态导入)与 PR-053(channel)。无 schema migration(表已在 PR-050)。
+
+**已确认 3 决策**:
+1. **对象存储 = 抽象接口 + inline 实现** —— ObjectStore Protocol + InlineObjectStore(MVP 默认,content_inline 是 source of truth,无外部基建);真实 S3/MinIO 后端 follow-up(需 aiobotocore + credentials + doctor probe)。
+2. **范围 = repository + digest + 存储 + 对账**(全含)。
+3. **router 本 PR 含**(镜像 PR-034 repository+router 一体交付)。
+
+**新模块**(`persistence/release/` 扩展 + contracts + router):
+
+- `contracts/agent_artifact.py` —— Package/Version envelope(`extra=forbid` Request / `from_attributes` Response)+ `Manifest`(ADR §3.3 schema_version/agent_entry/skills[]/...)+ SemVer 正则校验(`field_validator`,无 semver 依赖)+ `AgentPackageStatus`/`AgentVersionStatus` StrEnum。Response **不含 content_inline 原文**(大字段不回传,只回 digest/size/object_key)。
+- `persistence/release/digest.py` —— `compute_artifact_digest(content) → sha256:<hex>`,对**原始制品字节**(非 backup 的 normalised JSON 裸 hex);`sha256:` 前缀支持未来算法共存。
+- `persistence/release/storage.py` —— `ObjectStore` Protocol(put/get/exists/delete)+ `InlineObjectStore`(no-op durable:content 在 row)+ `compute_object_key`(ADR §11.2 `org/{org_id}/workspace/{ws|_default}/agent-version/{version_id}/artifact`)。
+- `persistence/release/repository.py` —— Package CRUD(create/get/list/update/archive)+ Version create(**核心**:接收 content → 计算 digest → 按 `inline_size_threshold` 路由 inline/object_key → 写行,先生成 id 再算 object_key)+ 状态机转换(`set_version_status` + `_LEGAL_TRANSITIONS` 状态图 + `IllegalVersionTransitionError`)+ **published-immutability 写侧拒绝**(`update_agent_version` 在 `status in {published,revoked,archived}` raise `VersionImmutableError`,ADR §3.2/§4.3)+ session passthrough(Class A)+ cross-Org existence-hiding(404)。
+- `persistence/release/inventory.py` —— `reconcile_versions(sf, org_id, object_store, verify_digest)` → `ReconcileReport`(missing_versions with reason missing_object/digest_mismatch)。ADR §11.2「Object 与数据库定期对账」;inline backend 永不 missing,接口为真实 store 预留。
+- `app/gateway/routers/agent_artifacts.py` —— 挂 `/api/v1`,12 端点(Package CRUD + Version create/review/publish/revoke + inventory reconcile),`STUDIO_PACKAGE_READ`/`STUDIO_PACKAGE_WRITE` 门控(org:admin 携带),Class A audit 同事务 outbox skeleton(镜像 iam.py)。`:publish` 只移 Version 到 published 状态 + emit `catalog.agent_version.published`,**与 channel promote(`release.agent.published` PR-053)区分**。
+
+**Config**:新 `ProductionArtifactConfig`(`inline_size_threshold` 默认 64KB + `object_store_backend` 默认 inline)+ 挂到 `ProductionConfig.artifact` + `config.example.yaml` artifact 块 + config_version 20→21。
+
+**audit action 注册表**:`tenancy/audit_events.py` 补 `catalog.agent_package.created/updated/archived` + `catalog.agent_version.created/reviewed/published/revoked`(ADR-0005 §5.1 命名)。
+
+**harness boundary**:`test_harness_boundary.py` 的 `CONTRACTS_ALLOWED_MODULES` 加 `re`(contracts/agent_artifact.py 用于 SemVer 正则,stdlib)。**doctor**:`object_storage.security` deferred 文案更新(标注 inline backend 已可用 PR-052,S3 仍 follow-up)。
+
+**测试**:repo 29 测(digest 格式/确定性/utf-8 + storage key/noop + Package CRUD/UNIQUE/cross-Org/list archived + Version create digest 回填/threshold 路由/get_by_digest/UNIQUE + draft 可变/published-immutable/状态机转换合法与非法 + session passthrough rollback 不提交)+ router 13 测(Package/Version 业务 lifecycle + cross-Org 404 + duplicate 409 + publish/revoke 状态机 + illegal transition 409 + audit outbox 行 + RBAC 矩阵 admin 全允许/developer·viewer 拒)。
+
+**ADR-0004 §15 验收**:新勾 2 项(`draft 可变/published 不可变` + `digest 与内容匹配`),共 **2/16**;其余 14 项依赖 channel/Run 解析(PR-053~056)。
+
+### 16.48 PR-052 不包含
+
+**严格不在本 PR 范围**:
+
+- **真实 S3/MinIO 对象存储后端**:follow-up(需 aiobotocore + credentials + 私有/加密 doctor probe,ADR §11.2)。ObjectStore Protocol 已就位。
+- **文件态导入**(PR-051:discover/validate path/manifest/secret 剥离/幂等导入;依赖本 PR 的 repository + digest)。
+- **ReleaseChannel / promote / rollback**(PR-053/055:CAS、If-Match、channel 门禁;依赖本 PR 的 version repository)。
+- **ReleaseRef 解析**(PR-054:ReleaseResolver 具体实现、prod 门禁)。
+- **reviewed 门禁完整 9 项**(ADR §9.1:路径穿越/危险二进制/依赖锁定等,多数依赖文件态导入 PR-051)。
+- **legacy_unpinned 门禁**(PR-056:409 `release_unpinned`)。
+- **对象存储 GC**(ADR §11.3 删除,需引用校验 Job)。
+- **签名 URL 下载**(ADR §11.2,需真实 store;当前 content_inline 不回传)。
+- **Studio/Admin UI**(PR-057)。
+- **对象存储 re-read digest 校验的告警接线**(inventory `verify_digest` 路径已就位,但自动告警到 metrics/doctor 留 follow-up)。
+
+**回滚边界**:无 schema migration(表在 PR-050);单 PR 新模块 + router + config 字段(默认值向后兼容),`git revert` 一次性回滚(旧配置无 artifact 块仍加载,production.artifact default_factory 兜底)。
+
+

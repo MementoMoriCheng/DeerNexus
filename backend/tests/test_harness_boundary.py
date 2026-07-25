@@ -158,6 +158,7 @@ CONTRACTS_ALLOWED_MODULES = frozenset(
         "contextvars",
         "datetime",
         "enum",
+        "re",
         "typing",
         "typing_extensions",
         "__future__",
