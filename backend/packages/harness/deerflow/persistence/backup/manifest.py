@@ -87,7 +87,7 @@ class BackupManifest(BaseModel):
     #: backend restore to the operator.
     backend: str
     #: The ``alembic_version.version_num`` head row at snapshot time (e.g.
-    #: ``0011_audit_outbox``). A restore into a DB whose alembic head differs
+    #: ``0012_agent_artifacts``). A restore into a DB whose alembic head differs
     #: is a schema-drift FAIL in :mod:`backup.verify`.
     schema_version: str
     declared_rpo_hours: int

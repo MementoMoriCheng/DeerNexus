@@ -1392,3 +1392,57 @@ PR-035 让 PR-034 的 `authorize()` `service_account` 分支**在生产 HTTP 路
 - **前端 IAM/API Key 管理 UI**:Track D/E UI PR。
 - **`description` 字段持久化**:`ApiKeyCreateRequest.description` 仅用于 audit payload,不存 DB(`ApiKeyRow` 无此列)。未来若 UI 需要,加 migration。
 - **`Authorization: Bearer` 与未来 JWT Bearer 的歧义**:本 PR 用 `dk_live_` 前缀区分 API key vs JWT(JWT 有 `.` 分隔)。若未来引入 JWT Bearer,需在 `_strip_bearer` 后做格式分支。
+
+### 16.45 PR-050:AgentPackage / AgentVersion Schema(开启中)
+
+Track E 第一刀,落地 ADR-0004 §3.1/§3.2 + data-model.md §6.2/§6.3 的两张不可变制品元数据表,复刻 PR-030/040「先落地表、无调用方」哲学 —— 本 PR 建表 + ORM + migration + schema 测试,**无 repository write path、无 router、无 contract envelope**。
+
+**新 `persistence/release/` 包**(harness 层纯 DB,镜像 `persistence/iam/` 分层):
+
+- `model.py` —— `AgentPackageRow`(稳定逻辑身份,data-model §6.2)+ `AgentVersionRow`(不可变内容版本,§6.3)。字段类型对齐 IAM 约定(`String(36)` UUID / `DateTime(timezone=True)` / `JSON` / `BigInteger`)。
+- `__init__.py` —— 仅 re-export 两个 ORM 类(本 PR 无 repository,与 `iam/__init__.py` 含 repository 不同)。
+- 注册到 `persistence/models/__init__.py`(`__all__` + docstring 子包清单)。
+
+**Migration `0012_agent_artifacts`**(expand-only,链自 `0011_audit_outbox`):`safe_create_table` 按依赖序(agent_packages 先,agent_versions 后,FK 依赖序)+ `safe_create_index`。
+
+**约束(DB 层不变量,跨方言 SQLite + Postgres)**:
+
+- `agent_packages`:`UNIQUE(org_id, name)`(机器名 Org 内唯一)+ `CHECK status IN ('active','archived')`。
+- `agent_versions`:
+  - `CHECK status IN ('draft','reviewed','published','revoked','archived')`(ADR §4 五态齐全);
+  - **content XOR CHECK**:`(content_inline IS NOT NULL AND object_key IS NULL) OR (content_inline IS NULL AND object_key IS NOT NULL)` —— 用显式 `IS [NOT] NULL` 表达式避开 NULL 三值逻辑的 `col1 <> col2` 歧义,SQLite/Postgres 语义一致(冒烟测验证四例:仅 inline OK / 仅 object_key OK / 两者空拒 / 两者满拒);
+  - `CHECK size_bytes >= 0`;
+  - `UNIQUE(org_id, package_id, version)` + `UNIQUE(org_id, digest)`(digest Org 内唯一,执行身份去重);
+  - `package_id` FK `ON DELETE RESTRICT`(ADR §3.1 已有 Version 不可硬删);
+  - 冗余 `org_id` 强制隔离(同 threads_meta/runs 模式,§6.3「冗余用于强制隔离」);
+  - 查询索引 `(org_id)` / `(package_id)` / `(org_id, status)`。
+
+**已确认的 4 项设计决策**(本 PR):
+
+1. **严格两表** —— 不含 `release_channels`/`release_events`(PR-053);`package_id` FK 指向本 PR 内建的 `agent_packages`。
+2. **published 不可变性 = 应用层 enforce** —— 本 PR 仅 `status` CHECK;「published 后 content/manifest/digest/version 不可改」的写侧拒绝留 PR-052 repository(条件触发器跨方言复杂且无既有范式,审计触发器仅 audit_events 的 append-only 适用)。
+3. **content XOR = DB CHECK** —— 显式 `IS [NOT] NULL` OR 表达式,跨方言安全。
+4. **version 不做 SemVer 强校验** —— `digest` 是执行身份,`version` 仅展示(与 `contracts/release.py:48` 一致);SemVer 强校验是 write-path 关注点,留 PR-052(本 PR 无 write 调用方)。
+
+**HEAD bump**:`0011_audit_outbox` → `0012_agent_artifacts`(6 处真实 head 断言/常量:`test_persistence_bootstrap{,_concurrency,_regression}` + `test_backup.py` snapshot 断言 + `manifest.py` 注释 + `test_doctor_probes.py`;另对齐 `test_backup.py`/`test_doctor_probes.py` 中作任意值的 manifest 构造)。
+
+**backup/verify.py SKIP 文案更新**:`agent_digest_matches` 项文案从「AgentPackage/AgentVersion tables do not exist yet」→「tables exist (PR-050) but digest computation + object-store existence check are not implemented」(表已落地,digest 计算仍待 PR-052);`release_channel_points_at_valid_version` 项文案标注 AgentVersion 已落地(PR-050)、ReleaseChannel 待 PR-053。**不移出 SKIP**(digest 匹配依赖对象存储 + 内容计算,本 PR 未交付)。
+
+**测试**(`test_release_schema.py`,36 测,镜像 `test_iam_schema.py` + `test_audit_schema.py::TestMigrationRoundTrip`):表/列存在 + nullability + 5 态 status CHECK(参数化)+ content XOR 四例 + size 非负 + 3 UNIQUE(含跨 Org 允许负向测)+ FK 指向 `agent_packages.id`(SQLite 不反射 FK 名,断言 target table/column 而非 name)+ RESTRICT 行为(有 Version 时删 Package 拒、无 Version 时允许)+ manifest JSON round-trip + timestamp round-trip(SQLite 读回剥离 tzinfo,断言值而非 tzinfo flag,同 audit 测试约定)+ 约束名存在 + migration `0012 ↔ 0011` round-trip(两表+约束干净 drop/recreate)。
+
+### 16.46 PR-050 不包含
+
+**严格不在本 PR 范围**:
+
+- **repository write path / CRUD**:无 create/get/list/update/delete 函数(PR-052)。
+- **contract envelope**(`AgentPackage*Request`/`Response` pydantic 模型):PR-052。
+- **router / API 端点**(`/api/v1/...packages...`):PR-052。
+- **`release_channels` / `release_events` 表**:PR-053(用户确认严格两表;`package_id` FK 不指向尚不存在的 release_channels)。
+- **文件态导入 / digest 计算 / 对象存储**:PR-052(`take_snapshot` 计算内容 digest、inline threshold、object_key 上传)。
+- **published-不可变性的写侧拒绝**:PR-052(repository update 路径在 `status='published'` 时拒绝改 content/manifest/digest/version)。
+- **SemVer 强校验**:PR-052(`version` 字段本 PR 仅 `String(64)` 无 CHECK)。
+- **`ReleaseResolver` 具体实现**:PR-054(`contracts/release.py` 的 Protocol 仍是 stub,doctor `agent.release_ref_enforcement` deferred 项不变)。
+- **`row_version` CAS 调用方**:本 PR `agent_packages.row_version` 列存在(data-model §6.2 定义)但无 CAS 调用(promote/rollback CAS 在 PR-053 的 `release_channels` 上)。
+
+**诚实边界**:本 PR 后两表存在但**无任何写入路径** —— ServiceAccount 表在 PR-020B 落地、PR-034 才有第一个调用方的切分哲学一致。回滚:单 PR expand-only 两表(无既有调用方),`git revert` + `alembic downgrade 0011_audit_outbox` 一次性回滚。
+

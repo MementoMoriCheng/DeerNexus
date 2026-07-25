@@ -102,7 +102,7 @@ class TestManifestTamperEvidence:
         manifest = BackupManifest(
             created_at=datetime.now(UTC),
             backend="sqlite",
-            schema_version="0011_audit_outbox",
+            schema_version="0012_agent_artifacts",
             declared_rpo_hours=24,
             tables=[BackupTableEntry(name="organizations", row_count=0, content_digest="x", columns=["id"])],
         )
@@ -115,7 +115,7 @@ class TestManifestTamperEvidence:
         manifest = BackupManifest(
             created_at=datetime.now(UTC),
             backend="sqlite",
-            schema_version="0011_audit_outbox",
+            schema_version="0012_agent_artifacts",
             declared_rpo_hours=24,
             tables=[],
         )
@@ -130,7 +130,7 @@ class TestManifestTamperEvidence:
             BackupManifest(
                 created_at=datetime.now(UTC),
                 backend="sqlite",
-                schema_version="0011_audit_outbox",
+                schema_version="0012_agent_artifacts",
                 declared_rpo_hours=24,
                 tables=[BackupTableEntry(name="t", row_count=1, content_digest="orig", columns=["id"])],
             )
@@ -148,7 +148,7 @@ class TestManifestTamperEvidence:
             BackupManifest(
                 created_at=datetime.now(UTC),
                 backend="sqlite",
-                schema_version="0011_audit_outbox",
+                schema_version="0012_agent_artifacts",
                 declared_rpo_hours=24,
                 tables=[],
             )
@@ -207,7 +207,7 @@ class TestSnapshot:
     async def test_snapshot_records_alembic_head(self, sf):
         manifest = await take_snapshot(sf, backend="sqlite", declared_rpo_hours=24)
         # The test engine stamps head on bootstrap; the snapshot must record it.
-        assert manifest.schema_version == "0011_audit_outbox"
+        assert manifest.schema_version == "0012_agent_artifacts"
 
     def test_normalise_value_handles_datetime_bytes_uuid(self):
         from uuid import UUID

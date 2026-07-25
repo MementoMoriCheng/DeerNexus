@@ -70,12 +70,12 @@ _DEFERRED_GATES: tuple[tuple[str, str, str], ...] = (
     (
         "release_channel_points_at_valid_version",
         "ReleaseChannel → AgentVersion reference validity",
-        "Blocked on Track E (PR-053/054): ReleaseChannel/AgentVersion tables do not exist yet.",
+        "Blocked on Track E (PR-053/054): ReleaseChannel table does not exist yet (AgentVersion landed in PR-050).",
     ),
     (
         "agent_digest_matches",
         "Agent object digest matches manifest",
-        "Blocked on Track E (PR-050/052): AgentPackage/AgentVersion tables do not exist yet.",
+        "Blocked on Track E (PR-052): AgentPackage/AgentVersion tables exist (PR-050) but digest computation + object-store existence check are not implemented.",
     ),
     (
         "new_run_pinned_to_release_ref",
