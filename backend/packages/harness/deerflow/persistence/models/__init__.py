@@ -11,6 +11,7 @@ The actual ORM classes have moved to entity-specific subpackages:
 - ``deerflow.persistence.orgs`` (tenant control-plane tables, PR-020A)
 - ``deerflow.persistence.iam`` (IAM control-plane tables, PR-020B)
 - ``deerflow.persistence.audit`` (append-only audit evidence, PR-040)
+- ``deerflow.persistence.release`` (agent-artifact control-plane tables, PR-050)
 
 ``RunEventRow`` remains in ``deerflow.persistence.models.run_event`` because
 its storage implementation lives in ``deerflow.runtime.events.store.db`` and
@@ -39,11 +40,14 @@ from deerflow.persistence.orgs.model import (
     OrgMembershipRow,
     WorkspaceRow,
 )
+from deerflow.persistence.release.model import AgentPackageRow, AgentVersionRow
 from deerflow.persistence.run.model import RunRow
 from deerflow.persistence.thread_meta.model import ThreadMetaRow
 from deerflow.persistence.user.model import UserRow
 
 __all__ = [
+    "AgentPackageRow",
+    "AgentVersionRow",
     "ApiKeyRow",
     "AuditEventRow",
     "AuditOutboxRow",

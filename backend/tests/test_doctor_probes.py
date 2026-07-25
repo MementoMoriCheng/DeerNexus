@@ -696,7 +696,7 @@ class TestBackupProbe:
             BackupManifest(
                 created_at=datetime.now(UTC) - age,
                 backend="sqlite",
-                schema_version="0011_audit_outbox",
+                schema_version="0012_agent_artifacts",
                 declared_rpo_hours=rpo_hours,
                 tables=[BackupTableEntry(name="organizations", row_count=0, content_digest="0" * 64, columns=["id"])],
             )
