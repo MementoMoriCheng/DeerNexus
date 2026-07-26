@@ -68,13 +68,17 @@ class ReleaseRef(BaseModel):
 class ReleaseResolver(Protocol):
     """Harness-facing release resolution Protocol (§8.2).
 
-    The resolver lives in the app adapter. The harness only consumes the
-    returned ``ReleaseRef``. Resolution failure raises a ``ContractError``
-    (e.g. ``release_not_found``, ``release_not_published``, ``release_revoked``,
+    The resolver lives in the app adapter (PR-054 ``DbReleaseResolver``). The
+    harness only consumes the returned ``ReleaseRef``. Resolution failure
+    raises a ``ContractError`` (e.g. ``release_not_found``,
+    ``release_not_published``, ``release_revoked``,
     ``release_tenant_mismatch``).
+
+    The method is ``async`` because the adapter is DB-backed (it reads
+    ``release_channels`` + ``agent_versions``); there is no in-memory cache.
     """
 
-    def resolve(
+    async def resolve(
         self,
         tenant: TenantContext,
         agent_name: str,

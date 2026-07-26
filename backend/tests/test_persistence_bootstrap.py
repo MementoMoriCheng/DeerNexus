@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0013_release_channels_events"
+HEAD = "0014_catalog_entries"
 BASELINE = "0001_baseline"
 
 
