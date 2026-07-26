@@ -112,6 +112,14 @@ TENANT_EVENT_ACTION_REGISTRY: Mapping[str, str] = {
     "agent_version_reviewed": "catalog.agent_version.reviewed",
     "agent_version_published": "catalog.agent_version.published",
     "agent_version_revoked": "catalog.agent_version.revoked",
+    # File-state import (PR-051, ADR-0004 §10). Emitted by the
+    # ``POST /agent-packages:import-file`` router after the importer
+    # materialises a draft Version from ``config.yaml`` + ``SOUL.md``.
+    # ``imported=False`` (idempotent digest hit) still emits the package
+    # action so the audit trail records the attempt; the version action is
+    # emitted only when a new Version is actually created.
+    "agent_package_imported": "catalog.agent_package.imported",
+    "agent_version_imported": "catalog.agent_version.imported",
 }
 
 

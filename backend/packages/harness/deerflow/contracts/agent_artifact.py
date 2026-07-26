@@ -212,3 +212,65 @@ class AgentVersionResponse(BaseModel):
     created_at: datetime
     published_at: datetime | None
     revoked_at: datetime | None
+
+
+# ---------------------------------------------------------------------------
+# File-state import envelopes (PR-051, ADR-0004 §10)
+# ---------------------------------------------------------------------------
+
+
+class ImportFileRequest(BaseModel):
+    """Body of ``POST /api/v1/agent-packages:import-file`` (PR-051, ADR §10).
+
+    Triggers a one-shot, single-agent import from the file-state layout
+    (``{base_dir}/users/{user_id?}/agents/{name}/`` or the legacy
+    ``{base_dir}/agents/{name}/``). The caller supplies the SemVer ``version``
+    explicitly — there is no implicit version derivation. ``user_id`` selects
+    whose agents directory to read; ``None`` (default) resolves to the legacy
+    shared layout then the per-user default bucket, matching
+    :func:`deerflow.config.agents_config.resolve_agent_dir`.
+
+    Re-importing identical content is idempotent: the importer recomputes the
+    digest and, if an existing Version already pins that digest in this Org,
+    returns it (``imported=False``) instead of creating a duplicate
+    (ADR §10 "重复 digest 导入幂等"). When the file content changed, the
+    caller MUST bump ``version`` (the ``(org, package, version)`` UNIQUE
+    constraint rejects a same-name/same-version re-import).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120, description="Agent directory name (must match ^[A-Za-z0-9-]+$).")
+    version: str = Field(min_length=1, max_length=64, description="SemVer 2.0 display string for the imported Version.")
+    user_id: str | None = Field(default=None, description="Owner of the per-user agent directory; None = legacy/default resolution.")
+    display_name: str | None = Field(default=None, min_length=1, max_length=200, description="Override the package display_name; default = name.")
+    description: str | None = Field(default=None, description="Override the package description; default = AgentConfig.description.")
+    workspace_id: str | None = Field(default=None)
+
+    @field_validator("version")
+    @classmethod
+    def _version_must_be_semver(cls, value: str) -> str:
+        if not _SEMVER_RE.match(value):
+            raise ValueError("version must be a valid SemVer 2.0.0 string (MAJOR.MINOR.PATCH[-prerelease][+build])")
+        return value
+
+
+class ImportReport(BaseModel):
+    """Response envelope for ``POST /agent-packages:import-file``.
+
+    Carries the resolved Package + Version envelopes and the provenance
+    recorded in ``Manifest.source_metadata`` (path / files / imported_at /
+    source="file_import"). ``imported=False`` marks an idempotent re-import
+    that hit the digest of an existing Version; ``package``/``version`` then
+    reference the pre-existing rows. The Catalog index entry (ADR §10 step 6)
+    is deferred to PR-054 — provenance lives only in the manifest until the
+    cross-resource discovery table + ``GET /catalog`` reader land together.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    package: AgentPackageResponse
+    version: AgentVersionResponse
+    digest: str
+    imported: bool
+    source_metadata: dict

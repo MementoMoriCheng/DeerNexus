@@ -146,6 +146,40 @@ async def get_agent_package(
         return row
 
 
+async def get_agent_package_by_name(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    name: str,
+    session: AsyncSession | None = None,
+) -> AgentPackageRow | None:
+    """Return the package named ``name`` in ``org_id``, or ``None``.
+
+    Used by the file-state importer (PR-051) to detect "package already
+    exists, just add a version" without relying on the UNIQUE-constraint
+    IntegrityError as control flow. Cross-Org existence-hiding: a same-named
+    package in another Org returns ``None``. ``include_archived=True`` semantics
+    are not exposed here — an archived package is reused as-is (archival is a
+    display concern, not an identity one); a caller that needs to exclude
+    archived packages can branch on the returned ``status``.
+    """
+    if not org_id:
+        raise ValueError("org_id is required for AgentPackage reads")
+
+    async def _do(session: AsyncSession) -> AgentPackageRow | None:
+        stmt = select(AgentPackageRow).where(
+            AgentPackageRow.org_id == org_id,
+            AgentPackageRow.name == name,
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    if session is not None:
+        return await _do(session)
+    async with sf() as session:
+        return await _do(session)
+
+
 async def list_agent_packages(
     sf: async_sessionmaker[AsyncSession],
     *,

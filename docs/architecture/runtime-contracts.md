@@ -1491,4 +1491,41 @@ Track E 枢纽 PR,在 PR-050 的 `agent_packages`/`agent_versions` 表之上构�
 
 **回滚边界**:无 schema migration(表在 PR-050);单 PR 新模块 + router + config 字段(默认值向后兼容),`git revert` 一次性回滚(旧配置无 artifact 块仍加载,production.artifact default_factory 兜底)。
 
+### 16.49 PR-051:文件态导入(ADR §10)
+
+在 PR-052 的 Package/Version/digest/store/repository 之上落地 ADR-0004 §10 的文件态导入流程:`discover → validate → materialize → digest → create Package/Version`,经 `get_agent_version_by_digest` 提供 **digest 幂等去重**(同内容重导 → `imported=False` 返回既有 Version;ADR §10「重复 digest 导入幂等」)。无 schema migration(Package/Version 表已在 PR-050)。
+
+**新模块 `persistence/release/importer.py`**:`import_agent_from_file(sf, *, org_id, name, version, user_id?, display_name?, description?, workspace_id?, created_by?, base_dir?, inline_size_threshold=65536, session?) -> (package_row, version_row, digest, imported, source_metadata)`。
+
+- **制品字节 = canonical Manifest JSON**:`config.yaml`(5 字段 `AgentConfig`)+ `SOUL.md` 投影为 `Manifest`(SOUL 内联到 `soul_or_prompt_ref`),digest 对 `json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))` 计算;`source_metadata` **排除在 digest 外**(含非确定性 `imported_at`,纳入会破坏幂等;provenance 仍存于 manifest 列)。同内容两次导入 → 同 digest,与 YAML 字段顺序 / 空白无关。
+- **Manifest 投影映射**:schema_version=`"1.0"` / agent_entry=`"soul"`(sentinel)/ soul_or_prompt_ref=SOUL.md 全文 / model_requirements=`[{"name":model}]` if model / skills=`[{"name":s}]` if list(非 None;`None`=load-all 投影为空,manifest 是快照非 resolver)/ tools=`tool_groups or []` / mcp_servers·dependencies·network_requirements·secret_requirements=`[]`(文件格式无此字段;secret 由 AgentConfig load 时 strip 未知字段保证无明文)/ runtime_limits=None / source_metadata=`{source:file_import, path, files:[config.yaml,SOUL.md], imported_at}`。
+- **Reviewed 门禁子集**(ADR §9.1,本 PR 实现 4/9):路径穿越(`agent_dir.resolve()` 必须 `is_relative_to(base_dir.resolve())` → `ImportPathError`→400)/ 符号链接(agent 目录或 config/SOUL 为 symlink → `ImportPathError`→400)/ 制品大小(单文件 > 1 MiB → `ArtifactTooLargeError`→413)/ digest 校验(PR-052 `compute_artifact_digest` + DB UNIQUE(org,digest))。其余 5 项(binary/依赖锁/Tool-MCP/网络-Secret/加载测试)deferred(多数依赖更丰富 manifest)。
+- **幂等去重**:`get_agent_version_by_digest(org_id, digest)` Org 作用域命中 → 返回既有 `(package, version, digest, imported=False, source_metadata)` 不写;跨 Org 同内容不短路(per-Org UNIQUE)。
+- **Package 复用**:新 `get_agent_package_by_name(org_id, name)` 只读查询(不靠 UNIQUE 异常控制流);命中则复用,未命中 `create_agent_package`(display_name/description 默认从文件)。
+- **session passthrough**:同 PR-052,写函数带 `session: AsyncSession | None`,Class A 同事务 outbox enqueue。
+
+**Router** `POST /api/v1/agent-packages:import-file`(`agent_artifacts.py`,13 端点之一):body=`ImportFileRequest`(name/version 显式 SemVer/user_id?/display_name?/description?/workspace_id?);`@require_rbac(Permission.STUDIO_PACKAGE_WRITE)` 门控;响应 `ImportReport`(package/version/digest/imported/source_metadata);Class A audit 同事务 outbox(imported=True 双事件 `catalog.agent_package.imported` + `catalog.agent_version.imported`;imported=False 仅前者)。错误映射:`ImportPathError`→400 / `FileNotFoundError`→404(existence-hiding)/ `(org,package,version)` UNIQUE→409 / `ArtifactTooLargeError`→413 / Pydantic SemVer→422。
+
+**Contracts**(`contracts/agent_artifact.py`):新增 `ImportFileRequest`(extra=forbid,SemVer `field_validator` 复用 `_SEMVER_RE`)+ `ImportReport`(from_attributes)。
+
+**Catalog scope cut**(对 ADR §10 步骤 6「write Catalog entry(source=file_import)」):本 PR **不建 catalog_entries 表**。`catalog_entries`(agents+skills+mcp+tools 联合发现索引) + `GET /catalog` reader 一起在 PR-054 落地(避免现在写一个无消费者的孤立索引)。provenance 仅记录于 `Manifest.source_metadata`。
+
+**测试**:repo 层 `test_agent_import.py` 30 测(ART-400 manifest 投影 / ART-410 canonical JSON 确定性 + sort_keys + list 序保留 / ART-420 路径穿越+symlink+size+missing 拒绝 + AgentConfig strip 未知字段 / ART-430 fresh 导入+digest 匹配+幂等(含不同 version label)+内容变 bump+UNIQUE+cross-Org+workspace+session passthrough / ART-440 文件变化不污染已导入 Version + published-immutable 继承);router 层 `test_agent_import_router.py` 15 测(ART-410 业务:创建/list/idempotent/404/422/409/413/override/publish-revoke + ART-420 audit outbox 双事件/幂等仅 package 事件 + ART-510 RBAC 矩阵 admin 允许/developer·viewer 403)。
+
+### 16.50 PR-051 不包含
+
+**严格不在本 PR 范围**:
+
+- **catalog_entries 表 + `GET /catalog` reader**(PR-054:联合发现模型一起落地;本 PR provenance 走 `Manifest.source_metadata`)。
+- **bulk 导入端点**(follow-up:本 PR 仅单 Agent `:import-file`)。
+- **secret 剥离**(当前 `AgentConfig` 5 字段无 secret;load 时 strip 未知字段;manifest secret_requirements 留空)。
+- **reviewed 门禁完整 9 项**(本 PR 仅 path/symlink/size/digest 4 项;binary/依赖锁/Tool-MCP/网络-Secret/加载测试 deferred)。
+- **ReleaseChannel / promote / rollback**(PR-053/055)。
+- **ReleaseRef 解析**(PR-054)。
+- **legacy_unpinned 门禁**(PR-056)。
+- **Studio/Admin UI**(PR-057)。
+- **真实 S3 后端 / 签名 URL 下载**(follow-up)。
+
+**回滚边界**:无 schema migration(Package/Version 表在 PR-050);单 PR 新 `importer.py` + contracts 增 2 类 + repository 增 1 只读函数 + router 增 1 端点 + audit action 2 个 + 2 测试文件。`git revert` 一次性回滚;`get_agent_package_by_name` 新增只读函数不影响既有调用。
+
 

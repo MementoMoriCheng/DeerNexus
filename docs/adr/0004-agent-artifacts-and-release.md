@@ -450,7 +450,7 @@ security_incident_id?
 - [ ] 在途 Run 不随 Channel 变化
 - [ ] revoked 不能创建新 Run
 - [ ] 缺失 / 篡改对象拒绝执行
-- [ ] 文件变化不影响已导入 Version
+- [x] 文件变化不影响已导入 Version（PR-051：`import_agent_from_file` 将 `config.yaml` + `SOUL.md` 投影为 Manifest 并对 canonical JSON 计算 digest,写入 `AgentVersionRow` 后源文件改动不再回流——`test_file_change_does_not_pollute_imported_version` 改写 SOUL.md/config.yaml 后重读 Version,断言 digest + content_inline 不变;published-immutable 由 PR-052 `VersionImmutableError` 继承,`test_published_import_is_immutable` 锁定）
 - [ ] prod 不读取文件系统草稿
 - [ ] legacy_unpinned 被 409 拒绝
 - [ ] ReleaseEvent 与 AuditEvent 同事务 / outbox 一致

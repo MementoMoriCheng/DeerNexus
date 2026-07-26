@@ -17,6 +17,9 @@ This PR delivers the studio write path + the inventory (reconciliation)
 read endpoint. It does NOT deliver channel promote/rollback (PR-053/055) or
 ReleaseRef resolution (PR-054) — ``:publish`` here only moves the Version
 into the published state; channel promotion is a separate CAS operation.
+PR-051 adds ``POST /agent-packages:import-file`` for the file-state →
+artifact import flow (ADR §10): ``config.yaml`` + ``SOUL.md`` → ``Manifest``
+→ digest → draft Version, idempotent on digest.
 """
 
 from __future__ import annotations
@@ -35,6 +38,8 @@ from deerflow.contracts.agent_artifact import (
     AgentPackageUpdateRequest,
     AgentVersionCreateRequest,
     AgentVersionResponse,
+    ImportFileRequest,
+    ImportReport,
 )
 from deerflow.contracts.identity import PrincipalRef
 from deerflow.contracts.policy import ResourceRef
@@ -54,6 +59,11 @@ from deerflow.persistence.release import (
     reconcile_versions,
     set_version_status,
     update_agent_package,
+)
+from deerflow.persistence.release.importer import (
+    ArtifactTooLargeError,
+    ImportPathError,
+    import_agent_from_file,
 )
 from deerflow.persistence.release.repository import (
     IllegalVersionTransitionError,
@@ -437,3 +447,111 @@ async def reconcile_inventory(request: Request) -> dict:
         "is_clean": report.is_clean,
         "missing_versions": [vars(m) for m in report.missing_versions],
     }
+
+
+# ---------------------------------------------------------------------------
+# File-state import (PR-051, ADR-0004 §10)
+# ---------------------------------------------------------------------------
+
+
+def _import_report(pkg_row, ver_row, digest: str, imported: bool, source_metadata: dict) -> ImportReport:
+    """Build the response envelope off the row pair returned by the importer."""
+    return ImportReport(
+        package=AgentPackageResponse.model_validate(pkg_row),
+        version=AgentVersionResponse.model_validate(ver_row),
+        digest=digest,
+        imported=imported,
+        source_metadata=source_metadata,
+    )
+
+
+@router.post("/agent-packages:import-file", response_model=ImportReport)
+@require_rbac(Permission.STUDIO_PACKAGE_WRITE)
+async def import_file(request: Request, body: ImportFileRequest) -> ImportReport:
+    """Import one file-state agent into the artifact store (ADR-0004 §10).
+
+    Reads ``{base_dir}/users/{user_id?}/agents/{name}/`` (or the legacy shared
+    layout), projects ``config.yaml`` + ``SOUL.md`` into a ``Manifest``,
+    computes the canonical-JSON digest, and creates a draft ``AgentVersion``
+    (plus the parent ``AgentPackage`` if absent). Idempotent on digest: a
+    re-import of identical content returns the existing Version with
+    ``imported=False`` instead of failing (ADR §10 "重复 digest 导入幂等").
+
+    The Catalog index entry (ADR §10 step 6) is deferred to PR-054; provenance
+    lives in ``Manifest.source_metadata`` until the discovery table lands.
+
+    Error mapping:
+
+    * 400 ``import_path_unsafe`` — path traversal / symlink refused (ADR §9.1)
+    * 404 — agent directory absent (existence-hiding: identical to a missing
+      Package/Version 404)
+    * 409 — ``(org, package, version)`` collision (content changed but caller
+      did not bump ``version``)
+    * 413 — source file exceeds the 1 MiB cap
+    * 422 — Pydantic validation (bad SemVer, etc.) — handled by FastAPI
+    """
+    org_id = _require_org_id(request)
+    sf = _sf(request)
+    actor = _audit_actor(request)
+    actor_id = _actor_id(request)
+    threshold = _inline_threshold(request)
+    try:
+        async with sf() as session:
+            pkg_row, ver_row, digest, imported, source_metadata = await import_agent_from_file(
+                sf,
+                org_id=org_id,
+                name=body.name,
+                version=body.version,
+                user_id=body.user_id,
+                display_name=body.display_name,
+                description=body.description,
+                workspace_id=body.workspace_id,
+                created_by=actor_id,
+                inline_size_threshold=threshold,
+                session=session,
+            )
+            # Always record the package-side import attempt; emit the version
+            # action only when a new Version was actually created (idempotent
+            # re-imports don't get a second version row).
+            await _emit_class_a_audit(
+                session,
+                action="catalog.agent_package.imported",
+                org_id=org_id,
+                actor=actor,
+                resource=_audit_resource(type_="agent_package", id_=pkg_row.id, org_id=org_id),
+                payload={
+                    "package_id": pkg_row.id,
+                    "name": body.name,
+                    "version": body.version,
+                    "imported": imported,
+                    "digest": digest,
+                },
+            )
+            if imported:
+                await _emit_class_a_audit(
+                    session,
+                    action="catalog.agent_version.imported",
+                    org_id=org_id,
+                    actor=actor,
+                    resource=_audit_resource(type_="agent_version", id_=ver_row.id, org_id=org_id),
+                    payload={
+                        "version_id": ver_row.id,
+                        "package_id": pkg_row.id,
+                        "version": ver_row.version,
+                        "digest": digest,
+                        "source": source_metadata.get("source"),
+                    },
+                )
+            await session.commit()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Version already exists for this package in this Org; bump the version if content changed.",
+        ) from exc
+    except ArtifactTooLargeError as exc:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
+    except ImportPathError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found.") from exc
+    return _import_report(pkg_row, ver_row, digest, imported, source_metadata)

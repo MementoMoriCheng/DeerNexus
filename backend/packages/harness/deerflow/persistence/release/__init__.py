@@ -1,4 +1,4 @@
-"""Agent-artifact control-plane: ORM models + repository + storage (PR-050 / PR-052).
+"""Agent-artifact control-plane: ORM models + repository + storage + import (PR-050 / PR-052 / PR-051).
 
 Re-exports:
 
@@ -6,14 +6,27 @@ Re-exports:
   them with ``Base.metadata`` in a single import;
 * the repository write path (PR-052): CRUD, published-immutability,
   session passthrough, inline/object threshold routing;
-* the digest + ObjectStore primitives + the inventory reconciler.
+* the digest + ObjectStore primitives + the inventory reconciler (PR-052);
+* the file-state importer (PR-051): projects ``config.yaml`` + ``SOUL.md``
+  into a ``Manifest``, computes the canonical-JSON digest, dedupes by digest,
+  and creates the parent Package + draft Version in one transactional path.
 
 The app layer (``app/gateway/routers/agent_artifacts.py``) imports the
-repository + inventory from here rather than reaching into submodules, so
-the package boundary is the import surface.
+repository + inventory + importer from here rather than reaching into
+submodules, so the package boundary is the import surface.
 """
 
 from deerflow.persistence.release.digest import compute_artifact_digest
+from deerflow.persistence.release.importer import (
+    AGENT_ENTRY_SOUL,
+    FILE_IMPORT_SCHEMA_VERSION,
+    MAX_SOURCE_FILE_BYTES,
+    SOURCE_FILE_IMPORT,
+    ArtifactTooLargeError,
+    ImportPathError,
+    canonical_manifest_json,
+    import_agent_from_file,
+)
 from deerflow.persistence.release.inventory import ReconcileReport, reconcile_versions
 from deerflow.persistence.release.model import AgentPackageRow, AgentVersionRow
 from deerflow.persistence.release.repository import (
@@ -31,6 +44,7 @@ from deerflow.persistence.release.repository import (
     create_agent_package,
     create_agent_version,
     get_agent_package,
+    get_agent_package_by_name,
     get_agent_version,
     get_agent_version_by_digest,
     list_agent_packages,
@@ -72,6 +86,7 @@ __all__ = [
     "create_agent_package",
     "create_agent_version",
     "get_agent_package",
+    "get_agent_package_by_name",
     "get_agent_version",
     "get_agent_version_by_digest",
     "list_agent_packages",
@@ -82,4 +97,13 @@ __all__ = [
     # inventory (PR-052)
     "ReconcileReport",
     "reconcile_versions",
+    # importer (PR-051)
+    "AGENT_ENTRY_SOUL",
+    "FILE_IMPORT_SCHEMA_VERSION",
+    "MAX_SOURCE_FILE_BYTES",
+    "SOURCE_FILE_IMPORT",
+    "ArtifactTooLargeError",
+    "ImportPathError",
+    "canonical_manifest_json",
+    "import_agent_from_file",
 ]
