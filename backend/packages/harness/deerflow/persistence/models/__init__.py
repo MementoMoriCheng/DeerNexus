@@ -19,6 +19,7 @@ there is no matching entity directory.
 """
 
 from deerflow.persistence.audit.model import AuditEventRow, AuditOutboxRow
+from deerflow.persistence.catalog.model import CatalogEntryRow
 from deerflow.persistence.channel_connections.model import (
     ChannelConnectionRow,
     ChannelConversationRow,
@@ -55,6 +56,7 @@ __all__ = [
     "AgentVersionRow",
     "ReleaseChannelRow",
     "ReleaseEventRow",
+    "CatalogEntryRow",
     "ApiKeyRow",
     "AuditEventRow",
     "AuditOutboxRow",

@@ -513,14 +513,23 @@ class TestProtocolsAreUsable:
         assert evaluator.evaluate(_policy_request()).decision == "allow"
 
     def test_release_resolver_protocol_satisfied_by_duck_type(self):
+        import asyncio
+
         from deerflow.contracts import ReleaseResolver, TenantContext  # noqa: F401
 
         class FakeResolver:
-            def resolve(self, tenant: TenantContext, agent_name: str, channel: str) -> ReleaseRef:
+            async def resolve(self, tenant: TenantContext, agent_name: str, channel: str) -> ReleaseRef:
                 return _release_ref(tenant.org_id)
 
         resolver: ReleaseResolver = FakeResolver()
-        assert resolver.resolve(_tenant(), "demo", "prod").agent_name == "demo"
+
+        async def _drive() -> ReleaseRef:
+            return await resolver.resolve(_tenant(), "demo", "prod")
+
+        # The Protocol is now async (PR-054 DbReleaseResolver is DB-backed),
+        # so drive the duck-typed fake through asyncio.run from this sync test.
+        result = asyncio.run(_drive())
+        assert result.agent_name == "demo"
 
     def test_audit_sink_protocol_satisfied_by_duck_type(self):
         from deerflow.contracts import AuditSink

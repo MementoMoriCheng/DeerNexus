@@ -449,7 +449,7 @@ security_incident_id?
 - [ ] v1 → v2 → rollback 新 Run digest 正确
 - [ ] 在途 Run 不随 Channel 变化
 - [ ] revoked 不能创建新 Run
-- [ ] 缺失 / 篡改对象拒绝执行
+- [x] 缺失 / 篡改对象拒绝执行（PR-054：`DbReleaseResolver` prod 门禁对 `content_inline IS NOT NULL` 的 Version 重算 `compute_artifact_digest(content_inline)` 比对 `row.digest`,不匹配 raise `ReleaseResolutionError(release_not_found)` existence-hide corruption;object_key 路径跳过(S3 follow-up)。`test_digest_mismatch_corruption_hidden_as_not_found` 锁定。注:inline 子集覆盖;真实 S3 对象存在检查 + inventory 对账告警留 follow-up）
 - [x] 文件变化不影响已导入 Version（PR-051：`import_agent_from_file` 将 `config.yaml` + `SOUL.md` 投影为 Manifest 并对 canonical JSON 计算 digest,写入 `AgentVersionRow` 后源文件改动不再回流——`test_file_change_does_not_pollute_imported_version` 改写 SOUL.md/config.yaml 后重读 Version,断言 digest + content_inline 不变;published-immutable 由 PR-052 `VersionImmutableError` 继承,`test_published_import_is_immutable` 锁定）
 - [ ] prod 不读取文件系统草稿
 - [ ] legacy_unpinned 被 409 拒绝

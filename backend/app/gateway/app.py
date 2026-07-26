@@ -19,6 +19,7 @@ from app.gateway.routers import (
     artifacts,
     assistants_compat,
     auth,
+    catalog,
     channel_connections,
     channels,
     feedback,
@@ -595,6 +596,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Artifacts API is mounted at /api/threads/{thread_id}/artifacts
     app.include_router(artifacts.router)
+
+    # Catalog discovery index is mounted at /api/v1/orgs/{org_id}/catalog
+    app.include_router(catalog.router)
 
     # Uploads API is mounted at /api/threads/{thread_id}/uploads
     app.include_router(uploads.router)

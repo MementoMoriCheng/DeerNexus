@@ -71,10 +71,11 @@ _DEFERRED_GATES: tuple[tuple[str, str, str], ...] = (
         "release_channel_points_at_valid_version",
         "ReleaseChannel → AgentVersion reference validity",
         (
-            "Blocked on Track E (PR-054): release_channels landed in PR-053, but the "
-            "ReleaseResolver adapter (Run → ReleaseRef pin + prod published/revoked "
-            "gate) is PR-054. Reference validity needs the resolver to evaluate "
-            "current_version_id against the channel policy."
+            "Blocked on Track E (Run-pin follow-up): release_channels landed in "
+            "PR-053 and the DbReleaseResolver adapter landed in PR-054, but the Run "
+            "side (runs table release columns + RunCreateRequest wiring + start_run "
+            "calling the resolver) is a separate PR. Reference validity verify needs "
+            "the Run to carry the pinned ReleaseRef so a restore can re-resolve it."
         ),
     ),
     (

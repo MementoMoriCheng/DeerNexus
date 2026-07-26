@@ -1571,4 +1571,50 @@ Track E 枢纽 PR,在 PR-050 的 `agent_packages`/`agent_versions` 表之上构�
 
 **回滚边界**:`git revert` + `alembic downgrade 0012` 一次性回滚(两表 expand-only,无既有表改动;新端点不影响既有调用)。
 
+### 16.53 PR-054:Release Resolve(resolver adapter + catalog_entries + GET /catalog)
+
+在 PR-050/052/051/053 之上落地 ADR-0004 §6 **读侧**:ReleaseResolver 具体 adapter(Protocol → DB-backed `DbReleaseResolver`)+ catalog_entries 发现表(建表 + GET reader,写入 lazy)+ prod 门禁(inline digest 校验)。**Run pin 拆出独立 PR**(run row 加列 + RunCreateRequest API 变更 + start_run 改造是热路径破坏性改动,本 PR 只交付读侧,resolver 就位后 Run-pin PR 直接消费)。
+
+**已确认 4 决策**:Run pin 拆出 / resolver 失败 = `ReleaseResolutionError` 异常(code 对齐 ErrorCode enum)/ catalog_entries 表建好写入 lazy / prod digest 校验 = inline 重算。
+
+**新 migration `0014_catalog_entries`**(链自 0013,expand-only):catalog_entries 表(data-model §6.6)+ 3 CHECK(resource_type∈{agent,skill,mcp,tool}/source∈{database,file_import,system}/status∈{active,disabled,archived})+ UNIQUE(org,resource_type,resource_id)(普通约束,无可空列)+ 3 索引 + **无 FK**(ADR §10 发现索引非执行权威)。
+
+**新包 `persistence/catalog/`**:`CatalogEntryRow` ORM(`metadata_` 别名 `catalog_entry_metadata` property 避开 Base.metadata shadow;列名仍是 `metadata` 对齐 data-model §6.6)+ repository `list_catalog_entries`/`get_catalog_entry` 读侧只(默认 active,workspace/type 可选过滤,cross-Org existence-hiding)+ 常量 RESOURCE_TYPE_AGENT/SKILL/MCP/TOOL + SOURCE_DATABASE/FILE_IMPORT/SYSTEM + CATALOG_STATUS_ACTIVE/DISABLED/ARCHIVED。
+
+**ReleaseResolver adapter `app/gateway/release_resolver.py`**:`DbReleaseResolver(sf, inline_digest_check=True)` 实现 `ReleaseResolver` Protocol。`resolve(tenant, agent_name, channel) -> ReleaseRef` 流程:
+1. `tenant.org_id` 空 → `release_tenant_mismatch`
+2. `get_agent_package_by_name(org, agent_name)` → None → `release_not_found`
+3. `get_channel(org, package_id, channel, workspace_id)` → None 或 `current_version_id` NULL → `release_not_found`
+4. `get_agent_version(org, current_version_id)` → None → `release_not_found`
+5. **prod 门禁**(`channel=="prod"`):`status==revoked`→`release_revoked`;`status!=published`→`release_not_published`;inline digest 重算(`content_inline IS NOT NULL` 时 `compute_artifact_digest(content_inline) != row.digest`→`release_not_found` existence-hide corruption;object_key 跳过 S3 follow-up)
+6. 构建 `ReleaseRef(org_id, workspace_id, package_id, agent_name, version, digest, channel, resolved_at)`
+
+**异常** `ReleaseResolutionError(code, message)` 四 code 对齐 `ErrorCode` enum(release_not_found/release_not_published/release_revoked/release_tenant_mismatch);entry point(Run-pin PR 的 router)捕获后 `ContractError.from_code`。
+
+**Protocol 改 async**(`contracts/release.py:ReleaseResolver.resolve` 从 `def` → `async def`,无既有调用方零破坏;`test_contracts_policy_release_event.py` duck-type 测试同步改 `asyncio.run`)。
+
+**Contracts** 新 `contracts/catalog.py:CatalogEntryResponse`(from_attributes,`metadata` 字段用 `AliasChoices` 解析 ORM `catalog_entry_metadata`,`serialization_alias="metadata"` 保持 API key)。
+
+**Router** 新 `app/gateway/routers/catalog.py`:`GET /api/v1/orgs/{org_id}/catalog`(STUDIO_PACKAGE_READ 门控,query params resource_type/workspace_id,**path org_id≠tenant org_id→403** 跨 Org 探测拒绝);注册到 `app.py`。**无 resolver 端点**(resolver 是 server-side,Run-pin PR 的 Run 创建调用)。
+
+**HEAD 常量** bump 0013→0014(bootstrap tests + backup HEAD 断言);`backup/verify.py` `release_channel_points_at_valid_version` SKIP 文案更新(resolver 已就位 PR-054,Run-pin 接入是独立 follow-up,verify 仍需 Run 侧)。
+
+**测试**(47 新,全绿):schema `test_catalog_schema.py` 10(表/列 + 3 CHECK 拒未知 + UNIQUE + migration 0013↔head round-trip)+ repo `test_catalog_repository.py` 13(list org/type/workspace/status 过滤 + 默认 active + get existence-hiding/cross-Org/不滤 status)+ resolver `test_release_resolver.py` 15(Protocol conformance + 成功解析 prod/dev/staging + 四失败 code + cross-Org + **inline digest 校验**:篡改 digest→release_not_found existence-hide / object_key 跳过 / check 可禁用)+ router `test_catalog_router.py` 9(业务 empty/list/filter/workspace/default 排除 archived/path org mismatch→403 + RBAC 矩阵 admin 允许/developer·viewer 403)。
+
+**ADR-0004 §15 验收**新勾 1 项(缺失/篡改对象拒绝执行——inline digest 校验),共 **8/16**。
+
+### 16.54 PR-054 不包含
+
+**严格不在本 PR 范围**:
+
+- **Run pin**(独立 follow-up PR:runs 表加 release_digest/release_version_id/policy_version/idempotency_key 列 + RunCreateRequest 加 agent_name/channel + start_run 调 resolver + 持久化 ReleaseRef)。
+- **catalog_entries 写入**(follow-up:import_agent_from_file + promote_channel 同事务投影;本 PR 表 + reader 就位,初期 GET 返回空)。
+- **真实 S3 digest 存在检查**(follow-up;resolver object_key 路径跳过)。
+- **catalog_entries 跨资源(skill/mcp/tool)填充**(本 PR 只建表 + agent 读侧,skill/mcp/tool 数据源是独立 track)。
+- **Idempotency-Key 重放**(follow-up)。
+- **legacy_unpinned 门禁**(PR-056)。
+- **Studio/Admin UI**(PR-057)。
+
+**回滚边界**:`git revert` + `alembic downgrade 0013` 一次性回滚(catalog 表 expand-only 无既有表改动;resolver 无 Run 创建调用方删除零破坏;Protocol 改回同步签名零破坏因无调用方)。
+
 
