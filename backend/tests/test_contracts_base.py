@@ -228,6 +228,7 @@ _NON_RETRYABLE = {
     ErrorCode.RELEASE_REVOKED,
     ErrorCode.RELEASE_UNPINNED,
     ErrorCode.RELEASE_TENANT_MISMATCH,
+    ErrorCode.RELEASE_GATE_VIOLATION,
     ErrorCode.IDEMPOTENCY_CONFLICT,
     ErrorCode.VALIDATION_ERROR,
 }
@@ -238,7 +239,7 @@ class TestErrorCodeRegistry:
         # Guard against silent drift: every code in runtime-contracts.md §12
         # must be present exactly once, with its canonical string value.
         assert {c.value for c in ErrorCode} == _RETRYABLE | _NON_RETRYABLE
-        assert len(ErrorCode) == 21
+        assert len(ErrorCode) == 22
 
     @pytest.mark.parametrize("code", list(_RETRYABLE))
     def test_retryable_codes(self, code):

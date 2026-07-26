@@ -19,6 +19,15 @@ reaching into submodules, so the package boundary is the import surface.
 """
 
 from deerflow.persistence.release.digest import compute_artifact_digest
+from deerflow.persistence.release.idempotency import (  # noqa: E402 — PR-055 replay store
+    IDEMPOTENCY_KEY_HEADER,
+    IDEMPOTENCY_KEY_MAX_LENGTH,
+    IdempotencyConflictError,
+    compute_request_hash,
+    get_idempotency_record,
+    insert_idempotency_record,
+    resolve_idempotency_outcome,
+)
 from deerflow.persistence.release.importer import (
     AGENT_ENTRY_SOUL,
     FILE_IMPORT_SCHEMA_VERSION,
@@ -142,4 +151,12 @@ __all__ = [
     "list_events",
     "promote_channel",
     "rollback_channel",
+    # idempotency replay store (PR-055)
+    "IDEMPOTENCY_KEY_HEADER",
+    "IDEMPOTENCY_KEY_MAX_LENGTH",
+    "IdempotencyConflictError",
+    "compute_request_hash",
+    "get_idempotency_record",
+    "insert_idempotency_record",
+    "resolve_idempotency_outcome",
 ]

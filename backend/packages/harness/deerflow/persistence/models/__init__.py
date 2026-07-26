@@ -46,6 +46,7 @@ from deerflow.persistence.release.model import (
     AgentVersionRow,
     ReleaseChannelRow,
     ReleaseEventRow,
+    ReleaseIdempotencyRecordRow,
 )
 from deerflow.persistence.run.model import RunRow
 from deerflow.persistence.thread_meta.model import ThreadMetaRow
@@ -56,6 +57,7 @@ __all__ = [
     "AgentVersionRow",
     "ReleaseChannelRow",
     "ReleaseEventRow",
+    "ReleaseIdempotencyRecordRow",
     "CatalogEntryRow",
     "ApiKeyRow",
     "AuditEventRow",

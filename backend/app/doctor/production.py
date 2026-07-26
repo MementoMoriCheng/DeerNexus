@@ -362,7 +362,12 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
         "release",
         "Published ReleaseRef-only production admission validation is not implemented.",
         "planned production agent-release declaration",
-        "Blocked on Track E (PR-054 Release Resolve): contracts/release.py defines ReleaseResolver as a Protocol with no concrete impl. The probe cannot verify 'prod runs only published ReleaseRef' until resolve is real.",
+        (
+            "Blocked on Track E Run-pin follow-up: the DbReleaseResolver adapter "
+            "landed in PR-054 but the runs table does not yet persist a ReleaseRef "
+            "per Run, so the probe cannot verify 'prod runs only published "
+            "ReleaseRef' until start_run calls the resolver and pins the result."
+        ),
     ),
 )
 

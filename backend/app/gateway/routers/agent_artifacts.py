@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy.exc import IntegrityError
 
 from app.gateway.rbac import require_rbac
@@ -52,6 +52,7 @@ from deerflow.contracts.agent_artifact import (
     ReleaseEventResponse,
     RollbackRequest,
 )
+from deerflow.contracts.errors import ContractError, ErrorCode
 from deerflow.contracts.identity import PrincipalRef
 from deerflow.contracts.policy import ResourceRef
 from deerflow.persistence.audit import enqueue_audit_outbox_in_session
@@ -59,24 +60,33 @@ from deerflow.persistence.release import (
     CHANNEL_DEV,
     CHANNEL_PROD,
     CHANNEL_STAGING,
+    EVENT_ACTION_PROMOTE,
+    EVENT_ACTION_ROLLBACK,
+    IDEMPOTENCY_KEY_HEADER,
+    IDEMPOTENCY_KEY_MAX_LENGTH,
     PACKAGE_ARCHIVED,
     VERSION_PUBLISHED,
     VERSION_REVIEWED,
     VERSION_REVOKED,
     ChannelGateError,
+    IdempotencyConflictError,
     ReleaseConflictError,
     archive_agent_package,
+    compute_request_hash,
     create_agent_package,
     create_agent_version,
     get_agent_package,
     get_agent_version,
     get_channel,
+    get_idempotency_record,
+    insert_idempotency_record,
     list_agent_packages,
     list_agent_versions,
     list_channels,
     list_events,
     promote_channel,
     reconcile_versions,
+    resolve_idempotency_outcome,
     rollback_channel,
     set_version_status,
     update_agent_package,
@@ -653,6 +663,302 @@ def _event_response(row) -> ReleaseEventResponse:
     return ReleaseEventResponse.model_validate(row)
 
 
+# ---------------------------------------------------------------------------
+# PR-055: If-Match / ETag / Idempotency-Key helpers (ADR §7/§8)
+# ---------------------------------------------------------------------------
+
+
+def _request_id(request: Request) -> str:
+    """Correlation id of the originating request (never empty).
+
+    CorrelationMiddleware (outermost) sets ``request.state.request_id``; this
+    is the same id the tenant/audit stack uses, so error envelopes share it.
+    """
+    return str(getattr(request.state, "request_id", "") or "unknown")
+
+
+def _contract_error_response(
+    request: Request,
+    code: ErrorCode,
+    *,
+    status_code: int,
+    message: str = "",
+    details: dict | None = None,
+) -> HTTPException:
+    """Build a uniform ``ContractError`` envelope as an ``HTTPException``.
+
+    Mirrors the envelope tenant/release_resolver emit (errors.md §12): the
+    detail is the serialized ``ContractError`` dict, so a caller sees the same
+    ``{code, message, retryable, request_id, details}`` shape across every
+    promote/rollback failure. ``retryable`` is derived from the code by
+    ``ContractError.from_code``.
+    """
+    err = ContractError.from_code(
+        code,
+        request_id=_request_id(request),
+        message=message,
+        details=details or {},
+    )
+    return HTTPException(status_code=status_code, detail=err.model_dump())
+
+
+def _parse_if_match(request: Request) -> int | None:
+    """Parse the ``If-Match`` header into the CAS ``expected_channel_version``.
+
+    Accepts the canonical ``If-Match: "<row_version>"`` form (a quoted integer,
+    matching the ``ETag`` we emit). Bare integers (``If-Match: 3``) are also
+    accepted for ergonomics. Returns ``None`` when the header is absent. An
+    unparseable value surfaces ``validation_error`` (not 412 — ADR §7 keeps
+    the CAS miss on 409 ``release_conflict``; a malformed precondition is a
+    client bug, surfaced as a 400 validation error instead).
+    """
+    raw = request.headers.get("if-match")
+    if raw is None:
+        return None
+    value = raw.strip().strip('"').strip()
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise _contract_error_response(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message=f"If-Match header not a quoted integer: {raw!r}",
+        ) from exc
+    if parsed < 1:
+        raise _contract_error_response(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message=f"If-Match header must be >= 1, got {parsed}",
+        )
+    return parsed
+
+
+def _resolve_expected_version(request: Request, body_expected: int | None) -> int:
+    """Pick the CAS ``expected_channel_version`` (header precedence, ADR §7).
+
+    ``If-Match`` wins when present; otherwise the body field is used. Exactly
+    one MUST be present — the dual-track keeps PR-053's body contract working
+    while letting callers that prefer headers (ADR §8 "使用 If-Match") opt in.
+    """
+    header_val = _parse_if_match(request)
+    if header_val is not None:
+        return header_val
+    if body_expected is None:
+        raise _contract_error_response(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message="expected_channel_version is required: send it in the body or via the If-Match header.",
+        )
+    return body_expected
+
+
+def _set_etag(response: Response, row_version: int) -> None:
+    """Emit ``ETag: "<row_version>"`` so the caller echoes it on the next CAS."""
+    response.headers["ETag"] = f'"{row_version}"'
+
+
+def _read_idempotency_key(request: Request) -> str | None:
+    """Read + validate the optional ``Idempotency-Key`` header (ADR §7).
+
+    Returns ``None`` when absent (the request is non-idempotent — every call
+    mutates). When present, the key is length-bounded (column width) and
+    non-empty; violations surface ``validation_error``.
+    """
+    raw = request.headers.get(IDEMPOTENCY_KEY_HEADER.lower())
+    if raw is None:
+        return None
+    key = raw.strip()
+    if not key:
+        raise _contract_error_response(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message=f"{IDEMPOTENCY_KEY_HEADER} header must not be empty",
+        )
+    if len(key) > IDEMPOTENCY_KEY_MAX_LENGTH:
+        raise _contract_error_response(
+            request,
+            ErrorCode.VALIDATION_ERROR,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message=f"{IDEMPOTENCY_KEY_HEADER} header exceeds {IDEMPOTENCY_KEY_MAX_LENGTH} chars",
+        )
+    return key
+
+
+class _ReplayHit(Exception):
+    """Internal control-flow signal: a replay returned a stored response.
+
+    Carries the stored ``PromoteResponse`` (already materialized) and the
+    original status code, so the handler can return it verbatim and skip the
+    ``_move_channel`` + audit path entirely. Raised only inside
+    :func:`_orchestrate_idempotent_move` when the happy-path read hits a
+    matching record.
+    """
+
+    def __init__(self, *, response: PromoteResponse, status_code: int, etag: str | None) -> None:
+        self.response = response
+        self.status_code = status_code
+        self.etag = etag
+        super().__init__("idempotency replay hit")
+
+
+async def _orchestrate_idempotent_move(
+    request: Request,
+    *,
+    action: str,
+    org_id: str,
+    package_id: str,
+    channel: str,
+    body_target_version_id: str,
+    body_expected_channel_version: int | None,
+    body_workspace_id: str | None,
+    body_reason: str | None,
+    actor_id: str | None,
+    actor: PrincipalRef,
+    move_fn,  # promote_channel | rollback_channel
+    audit_action: str,  # "release.agent.published" | "release.agent.rolled_back"
+    response: Response,
+) -> PromoteResponse:
+    """Run a promote/rollback with optional Idempotency-Key replay (ADR §7).
+
+    Pipeline:
+
+    1. Resolve ``expected_channel_version`` (If-Match header precedence).
+    2. If ``Idempotency-Key`` is present, read the replay record on the same
+       session **before** any mutation:
+       * same ``request_hash`` → raise :class:`_ReplayHit` (caller returns the
+         stored response; ``_move_channel`` + audit are skipped);
+       * different ``request_hash`` → raise :class:`IdempotencyConflictError`
+         (caller → 409 ``idempotency_conflict``).
+    3. Run ``move_fn`` (the CAS promote/rollback) + Class A audit, then
+       ``insert_idempotency_record`` (same session) — all atomic.
+    4. On ``IntegrityError`` (a concurrent same-key writer committed first):
+       re-read on a fresh session, then replay or conflict per the winner's
+       stored request_hash.
+
+    When ``Idempotency-Key`` is absent, step 2 and 4 collapse and this is just
+    the PR-053 path with ETag/If-Match layered on.
+    """
+    sf = _sf(request)
+    expected_channel_version = _resolve_expected_version(request, body_expected_channel_version)
+    idem_key = _read_idempotency_key(request)
+    request_hash = compute_request_hash(
+        action=action,
+        package_id=package_id,
+        channel=channel,
+        target_version_id=body_target_version_id,
+        workspace_id=body_workspace_id,
+        reason=body_reason,
+    )
+
+    try:
+        async with sf() as session:
+            # Happy-path replay read (same transaction as the move so the read
+            # sees nothing uncommitted from a racing writer).
+            if idem_key is not None:
+                existing = await get_idempotency_record(
+                    session,
+                    org_id=org_id,
+                    idempotency_key=idem_key,
+                )
+                if existing is not None:
+                    if existing.request_hash != request_hash:
+                        raise IdempotencyConflictError(org_id=org_id, idempotency_key=idem_key)
+                    replayed = PromoteResponse.model_validate(existing.response_payload)
+                    _set_etag(response, replayed.channel.row_version)
+                    raise _ReplayHit(
+                        response=replayed,
+                        status_code=existing.status_code,
+                        etag=response.headers.get("ETag"),
+                    )
+            # No replay — perform the CAS move + Class A audit.
+            ch_row, ev_row = await move_fn(
+                sf,
+                org_id=org_id,
+                package_id=package_id,
+                channel=channel,
+                target_version_id=body_target_version_id,
+                expected_channel_version=expected_channel_version,
+                actor_id=actor_id,
+                reason=body_reason,
+                workspace_id=body_workspace_id,
+                session=session,
+            )
+            await _emit_class_a_audit(
+                session,
+                action=audit_action,
+                org_id=org_id,
+                actor=actor,
+                resource=_audit_resource(type_="release_channel", id_=ch_row.id, org_id=org_id),
+                payload={
+                    "channel_id": ch_row.id,
+                    "package_id": package_id,
+                    "channel": channel,
+                    "from_version_id": ev_row.from_version_id,
+                    "to_version_id": ev_row.to_version_id,
+                    "row_version": ch_row.row_version,
+                    "action": ev_row.action,
+                },
+            )
+            promote_response = PromoteResponse(
+                channel=_channel_response(ch_row),
+                event=_event_response(ev_row),
+            )
+            if idem_key is not None:
+                await insert_idempotency_record(
+                    session,
+                    org_id=org_id,
+                    idempotency_key=idem_key,
+                    request_hash=request_hash,
+                    response_payload=promote_response.model_dump(mode="json"),
+                    status_code=status.HTTP_200_OK,
+                    record_id=_new_uuid(),
+                )
+            await session.commit()
+    except _ReplayHit as hit:
+        # Replay short-circuits before any mutation; the stored row_version is
+        # the original winner's, so ETag is correct.
+        return hit.response
+    except IntegrityError:
+        # The UNIQUE(org_id, idempotency_key) fence fired — a concurrent
+        # same-key writer committed between our happy-path read and our insert.
+        # Only reachable when idem_key is set. Re-classify on a fresh session.
+        if idem_key is None:
+            raise  # unexpected — re-raise so it surfaces as a 500
+        outcome, record = await resolve_idempotency_outcome(
+            sf,
+            org_id=org_id,
+            idempotency_key=idem_key,
+            request_hash=request_hash,
+        )
+        if outcome == "replay" and record is not None:
+            replayed = PromoteResponse.model_validate(record.response_payload)
+            _set_etag(response, replayed.channel.row_version)
+            return replayed
+        if outcome == "conflict":
+            raise IdempotencyConflictError(org_id=org_id, idempotency_key=idem_key)
+        # outcome == "miss" — the winner rolled back; surface 409 so the
+        # caller backs off and retries the whole request.
+        raise _contract_error_response(
+            request,
+            ErrorCode.RELEASE_CONFLICT,
+            status_code=status.HTTP_409_CONFLICT,
+            message="idempotency race: concurrent writer rolled back; retry the request.",
+        ) from None
+
+    _set_etag(response, promote_response.channel.row_version)
+    return promote_response
+
+
+def _new_uuid() -> str:
+    import uuid
+
+    return str(uuid.uuid4())
+
+
 @router.get(
     "/agent-packages/{package_id}/channels",
     response_model=list[ReleaseChannelResponse],
@@ -711,66 +1017,79 @@ async def list_package_channel_events(request: Request, package_id: str, channel
     response_model=PromoteResponse,
 )
 @require_rbac(Permission.STUDIO_RELEASE_PROMOTE_DEV)
-async def promote_package_channel(request: Request, package_id: str, channel: str, body: PromoteRequest) -> PromoteResponse:
+async def promote_package_channel(
+    request: Request,
+    response: Response,
+    package_id: str,
+    channel: str,
+    body: PromoteRequest,
+) -> PromoteResponse:
     """Promote a Version onto a channel via CAS (ADR §7).
 
-    ``expected_channel_version`` is the CAS predicate (the channel row's
-    current ``row_version``). On a concurrent promote only one caller wins;
-    the others get 409 ``release_conflict``. Dynamic permission gate: dev
-    accepts ``promote_dev`` OR ``promote``; staging/prod require ``promote``.
-    Emits ``release.agent.published`` (channel CAS success — DISTINCT from
-    ``catalog.agent_version.published``).
+    The CAS predicate (``expected_channel_version``) is sourced with
+    ``If-Match`` header precedence, falling back to the body field (PR-055
+    dual-track; exactly one MUST be present). On a concurrent promote only one
+    caller wins; the others get 409 ``release_conflict``. An ``Idempotency-Key``
+    header makes the call a replay-safe idempotent op: same key + same request
+    returns the original result (no second CAS move, no second audit row);
+    same key + different request returns 409 ``idempotency_conflict``.
+
+    Dynamic permission gate: dev accepts ``promote_dev`` OR ``promote``;
+    staging/prod require ``promote``. Emits ``release.agent.published``
+    (channel CAS success — DISTINCT from ``catalog.agent_version.published``).
     """
     org_id = _require_org_id(request)
     _validate_channel(channel)
     await _require_promote_permission(request, channel)
     sf = _sf(request)
-    actor = _audit_actor(request)
-    actor_id = _actor_id(request)
     # Verify the package belongs to the caller's Org (defense-in-depth: the
     # repository also checks, but a 404 here is cheaper than a ValueError→404).
     pkg = await get_agent_package(sf, package_id=package_id, org_id=org_id)
     if pkg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Package not found.")
     try:
-        async with sf() as session:
-            ch_row, ev_row = await promote_channel(
-                sf,
-                org_id=org_id,
-                package_id=package_id,
-                channel=channel,
-                target_version_id=body.target_version_id,
-                expected_channel_version=body.expected_channel_version,
-                actor_id=actor_id,
-                reason=body.reason,
-                workspace_id=body.workspace_id,
-                session=session,
-            )
-            await _emit_class_a_audit(
-                session,
-                action="release.agent.published",
-                org_id=org_id,
-                actor=actor,
-                resource=_audit_resource(type_="release_channel", id_=ch_row.id, org_id=org_id),
-                payload={
-                    "channel_id": ch_row.id,
-                    "package_id": package_id,
-                    "channel": channel,
-                    "from_version_id": ev_row.from_version_id,
-                    "to_version_id": ev_row.to_version_id,
-                    "row_version": ch_row.row_version,
-                    "action": ev_row.action,
-                },
-            )
-            await session.commit()
+        return await _orchestrate_idempotent_move(
+            request,
+            action=EVENT_ACTION_PROMOTE,
+            org_id=org_id,
+            package_id=package_id,
+            channel=channel,
+            body_target_version_id=body.target_version_id,
+            body_expected_channel_version=body.expected_channel_version,
+            body_workspace_id=body.workspace_id,
+            body_reason=body.reason,
+            actor_id=_actor_id(request),
+            actor=_audit_actor(request),
+            move_fn=promote_channel,
+            audit_action="release.agent.published",
+            response=response,
+        )
     except ReleaseConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="release_conflict: " + str(exc)) from exc
+        raise _contract_error_response(
+            request,
+            ErrorCode.RELEASE_CONFLICT,
+            status_code=status.HTTP_409_CONFLICT,
+            message=str(exc),
+            details={"reason": "cas_miss"},
+        ) from exc
     except ChannelGateError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="release_gate_violation: " + str(exc)) from exc
+        raise _contract_error_response(
+            request,
+            ErrorCode.RELEASE_GATE_VIOLATION,
+            status_code=status.HTTP_409_CONFLICT,
+            message=str(exc),
+        ) from exc
+    except IdempotencyConflictError as exc:
+        raise _contract_error_response(
+            request,
+            ErrorCode.IDEMPOTENCY_CONFLICT,
+            status_code=status.HTTP_409_CONFLICT,
+            message=str(exc),
+            details={"idempotency_key": exc.idempotency_key},
+        ) from exc
     except ValueError as exc:
         # target Version absent / wrong Org / wrong package → existence-hiding 404.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.") from exc
-    return PromoteResponse(channel=_channel_response(ch_row), event=_event_response(ev_row))
 
 
 @router.post(
@@ -778,56 +1097,66 @@ async def promote_package_channel(request: Request, package_id: str, channel: st
     response_model=PromoteResponse,
 )
 @require_rbac(Permission.STUDIO_RELEASE_ROLLBACK)
-async def rollback_package_channel(request: Request, package_id: str, channel: str, body: RollbackRequest) -> PromoteResponse:
+async def rollback_package_channel(
+    request: Request,
+    response: Response,
+    package_id: str,
+    channel: str,
+    body: RollbackRequest,
+) -> PromoteResponse:
     """Rollback a channel to a historical Version via CAS (ADR §8).
 
     Rollback moves the pointer without modifying Version content. prod
     rollback requires the target be published and non-revoked. Emits
-    ``release.agent.rolled_back``.
+    ``release.agent.rolled_back``. Same ``If-Match`` / ``Idempotency-Key``
+    semantics as promote (PR-055).
     """
     org_id = _require_org_id(request)
     _validate_channel(channel)
     sf = _sf(request)
     actor = _audit_actor(request)
-    actor_id = _actor_id(request)
     pkg = await get_agent_package(sf, package_id=package_id, org_id=org_id)
     if pkg is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Package not found.")
     try:
-        async with sf() as session:
-            ch_row, ev_row = await rollback_channel(
-                sf,
-                org_id=org_id,
-                package_id=package_id,
-                channel=channel,
-                target_version_id=body.target_version_id,
-                expected_channel_version=body.expected_channel_version,
-                actor_id=actor_id,
-                reason=body.reason,
-                workspace_id=body.workspace_id,
-                session=session,
-            )
-            await _emit_class_a_audit(
-                session,
-                action="release.agent.rolled_back",
-                org_id=org_id,
-                actor=actor,
-                resource=_audit_resource(type_="release_channel", id_=ch_row.id, org_id=org_id),
-                payload={
-                    "channel_id": ch_row.id,
-                    "package_id": package_id,
-                    "channel": channel,
-                    "from_version_id": ev_row.from_version_id,
-                    "to_version_id": ev_row.to_version_id,
-                    "row_version": ch_row.row_version,
-                    "action": ev_row.action,
-                },
-            )
-            await session.commit()
+        return await _orchestrate_idempotent_move(
+            request,
+            action=EVENT_ACTION_ROLLBACK,
+            org_id=org_id,
+            package_id=package_id,
+            channel=channel,
+            body_target_version_id=body.target_version_id,
+            body_expected_channel_version=body.expected_channel_version,
+            body_workspace_id=body.workspace_id,
+            body_reason=body.reason,
+            actor_id=_actor_id(request),
+            actor=actor,
+            move_fn=rollback_channel,
+            audit_action="release.agent.rolled_back",
+            response=response,
+        )
     except ReleaseConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="release_conflict: " + str(exc)) from exc
+        raise _contract_error_response(
+            request,
+            ErrorCode.RELEASE_CONFLICT,
+            status_code=status.HTTP_409_CONFLICT,
+            message=str(exc),
+            details={"reason": "cas_miss"},
+        ) from exc
     except ChannelGateError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="release_gate_violation: " + str(exc)) from exc
+        raise _contract_error_response(
+            request,
+            ErrorCode.RELEASE_GATE_VIOLATION,
+            status_code=status.HTTP_409_CONFLICT,
+            message=str(exc),
+        ) from exc
+    except IdempotencyConflictError as exc:
+        raise _contract_error_response(
+            request,
+            ErrorCode.IDEMPOTENCY_CONFLICT,
+            status_code=status.HTTP_409_CONFLICT,
+            message=str(exc),
+            details={"idempotency_key": exc.idempotency_key},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.") from exc
-    return PromoteResponse(channel=_channel_response(ch_row), event=_event_response(ev_row))

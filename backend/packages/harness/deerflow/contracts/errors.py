@@ -42,6 +42,10 @@ class ErrorCode(StrEnum):
     RELEASE_UNPINNED = "release_unpinned"
     RELEASE_TENANT_MISMATCH = "release_tenant_mismatch"
     RELEASE_CONFLICT = "release_conflict"
+    #: ADR §5 channel status gate rejected the target Version (e.g. promoting
+    #: a draft onto prod). Non-retryable: the caller must publish (or pick a
+    #: different target) and re-send, not back off.
+    RELEASE_GATE_VIOLATION = "release_gate_violation"
     RUN_CONFLICT = "run_conflict"
     IDEMPOTENCY_CONFLICT = "idempotency_conflict"
     AUDIT_UNAVAILABLE = "audit_unavailable"

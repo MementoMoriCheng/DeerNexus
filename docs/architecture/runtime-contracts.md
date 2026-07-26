@@ -498,6 +498,7 @@ MVP 错误码：
 | `release_unpinned`        | prod Run 缺少不可变 ReleaseRef / digest            | 否               |
 | `release_tenant_mismatch` | 制品跨 Org                                         | 否               |
 | `release_conflict`        | ReleaseChannel 的 If-Match / row version 冲突      | 可               |
+| `release_gate_violation`  | ReleaseChannel 状态门禁拒绝(如 prod 指向 draft)   | 否               |
 | `run_conflict`            | 幂等键或状态转换冲突                               | 可               |
 | `idempotency_conflict`    | 同幂等键对应不同请求                               | 否               |
 | `audit_unavailable`       | 强审计写路径不可用                                 | 可               |
@@ -616,7 +617,7 @@ Canonical JSON fixture（`backend/tests/fixtures/contracts/`）：`principal_ref
 - `CONTRACT-010-IDENT`：PrincipalRef 类别、`user_id` 约束、必填与未知字段丢弃；
 - `CONTRACT-010-TENANT`：schema 版本、必填、`auth_method` 闭集、`issued_at` UTC 归一化与 naive 拒绝、`workspace_id` 可空、客户端字段不覆盖可信 `org_id`；
 - `CONTRACT-010-IMMUTABLE`：`PrincipalRef` / `TenantContext` 冻结、嵌套冻结、`model_copy(update=...)` 仍可用；
-- `CONTRACT-010-ERROR`：注册表与 §12 一致（21 码）、可重试集合、`tenant_context_missing` / `release_unpinned` 不可重试；
+- `CONTRACT-010-ERROR`：注册表与 §12 一致（22 码）、可重试集合、`tenant_context_missing` / `release_unpinned` 不可重试；
 - `CONTRACT-010-FIXTURE`：fixture 载入、稳定往返、`v1alpha1` 与 UTC；
 - `CONTRACT-010-COMPAT`：未知可选字段忽略、缺必填失败。
 
@@ -1616,5 +1617,56 @@ Track E 枢纽 PR,在 PR-050 的 `agent_packages`/`agent_versions` 表之上构�
 - **Studio/Admin UI**(PR-057)。
 
 **回滚边界**:`git revert` + `alembic downgrade 0013` 一次性回滚(catalog 表 expand-only 无既有表改动;resolver 无 Run 创建调用方删除零破坏;Protocol 改回同步签名零破坏因无调用方)。
+
+
+### 16.55 PR-055:Promote / Rollback API(If-Match + ETag + Idempotency-Key 重放)
+
+在 PR-053 CAS 之上落地 ADR-0004 §7 的 **请求级幂等重放** + 把 ADR §7/§8 的 CAS 谓词双轨化(If-Match header 与 body `expected_channel_version` 共存,header 优先)。PR-053 已有 CAS + 409 `release_conflict` 路径;本 PR 在其之上叠加:(1) `Idempotency-Key` 重放存储(相同 key + 相同请求回放原结果,无二次 CAS move,无二次 audit 行;相同 key + 不同请求 → 409 `idempotency_conflict`);(2) If-Match header 解析(引号整数 `"3"` 或裸整数,header 优先于 body);(3) ETag 响应头(`ETag: "<new_row_version>"`,下次 CAS 的 If-Match 值);(4) 错误响应统一改 `ContractError` envelope(不再裸 `HTTPException` detail string;`ErrorCode` 补 `release_gate_violation`)。
+
+**已确认 3 决策**:幂等存储 = 独立表存完整响应(Stripe 式,UNIQUE(org,key) 是并发栅栏,IntegrityError 后 re-select 分类 replay/conflict/miss)/ If-Match 与 body 双轨(header 优先,exactly-one 校验,验证错→400 `validation_error`)/ 错误信封统一 `ContractError.from_code`。
+
+**新 migration `0015_release_idempotency`**(链自 0014,expand-only):`release_idempotency_records` 表(`id String(36) PK` / `org_id` / `idempotency_key String(128)` / `request_hash String(128)`(sha256 hex of canonical request identity)/ `response_payload JSON`(序列化 PromoteResponse)/ `status_code Integer` / `created_at`)+ `UNIQUE(org_id, idempotency_key)`(普通约束,无可空列,无需 NULLS NOT DISTINCT)+ 2 索引 + **无 FK**(replay 记录自包含,不耦合 channel 生命周期)+ **无 TTL**(GC follow-up)。
+
+**ORM** `ReleaseIdempotencyRecordRow`(`persistence/release/model.py`,新 `Integer` import)+ 注册到 `persistence/models/__init__.py`。
+
+**新模块 `persistence/release/idempotency.py`**:
+- `compute_request_hash(action, package_id, channel, target_version_id, workspace_id, reason) -> str` —— sha256 hex of canonical JSON(sort_keys + compact separators)。**关键**:`expected_channel_version` **排除在 hash 外**(CAS miss 后重试的新 expected 必须回放原结果,不 conflict);`actor_id` 排除(token refresh 后同用户不 conflict)。
+- `get_idempotency_record(session, *, org_id, idempotency_key)` —— happy-path 读(caller's session,参与同事务)。
+- `insert_idempotency_record(session, *, org_id, idempotency_key, request_hash, response_payload, status_code, record_id)` —— 同事务 insert(caller's session,`flush()` 暴露 UNIQUE 冲突)。
+- `resolve_idempotency_outcome(sf, *, org_id, idempotency_key, request_hash) -> ("replay"|"conflict"|"miss", record|None)` —— UNIQUE 冲突后 fresh session 重读分类(winner 已 commit 同请求→replay / 不同请求→conflict / winner rollback→miss→caller 重试)。
+- `IdempotencyConflictError(org_id, idempotency_key)` 异常(code 对齐 `ErrorCode.IDEMPOTENCY_CONFLICT`,非 retryable)。
+- 常量 `IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"` + `IDEMPOTENCY_KEY_MAX_LENGTH = 128`(列宽)。
+
+**Router `_orchestrate_idempotent_move`**(`app/gateway/routers/agent_artifacts.py`,promote/rollback 共享编排):
+1. `_resolve_expected_version`(If-Match header 优先,body 回退,exactly-one → `validation_error`)
+2. happy-path replay 读(同事务):同 `request_hash` → raise `_ReplayHit`(return stored response,skip move+audit);不同 `request_hash` → raise `IdempotencyConflictError`
+3. 无 record:`move_fn`(promote/rollback CAS)+ Class A audit + `insert_idempotency_record`(同事务)+ commit
+4. `IntegrityError`(并发 same-key winner 先 commit):`resolve_idempotency_outcome` 分类 → replay / conflict / miss(→409 `release_conflict` retry)
+
+promote/rollback 错误全改 `ContractError.from_code` envelope:`ReleaseConflictError`→409 `release_conflict`(retryable,details.reason=cas_miss)/ `ChannelGateError`→409 `release_gate_violation`(非 retryable)/ `IdempotencyConflictError`→409 `idempotency_conflict`(非 retryable,details.idempotency_key)/ `ValueError`→404 existence-hiding(不变)。`ETag` 响应头从 `channel.row_version`(promote 后 / replay 的 stored row_version)。
+
+**Contracts** `PromoteRequest`/`RollbackRequest` 的 `expected_channel_version` 改 `int | None`(default None;If-Match 替代);`ErrorCode` 补 `RELEASE_GATE_VIOLATION = "release_gate_violation"`(非 retryable)。
+
+**HEAD 常量** bump 0014→0015(bootstrap tests + backup HEAD 断言);`doctor/production.py` `agent.release_ref_enforcement` deferred 文案更新(resolver 已就位 PR-054,门禁阻塞改为 Run-pin follow-up)。
+
+**测试**(50 新,全绿):schema `test_release_schema_idempotency.py` 10(ART-1500 表/列/status_code Integer + ART-1510 UNIQUE fence:同 org 同 key 拒 / 同 key 不同 org 允许 / 不同 key 同 org 允许 + ART-1520 create_all↔migrated parity + ART-1530 migration 0014↔head round-trip)+ repo `test_idempotency_repository.py` 20(ART-1600 request_hash 确定性 + target/action/reason 变化 + expected_channel_version 排除 TypeError + sha256 hex / ART-1610 get None + insert+get + cross-Org 隔离 + IntegrityError 冲突 + org/key 必填 / ART-1620 resolve replay/conflict/miss / ART-1630 IdempotencyConflictError shape / ART-1640 常量)+ router `test_channel_router_pr055.py` 20(ART-1700 If-Match 满足 CAS + 裸整数 + header 优先 + 既无 header 又无 body→400 + 畸形→400 / ART-1710 ETag 响应 + ETag→下次 If-Match / ART-1720 同 key 同请求 replay(含 expected_channel_version bump 不 conflict)+ replay 无二次 audit + 同 key 不同请求→409 + 无 key 不 replay + record 存储 + 空 key 拒 + org scope / ART-1730 envelope:release_conflict retryable / gate_violation 非 retryable / idempotency_conflict 非 retryable + 404 existence-hide / ART-1740 rollback parity:If-Match+ETag + idempotency replay)。
+
+**ADR-0004 §15 验收**新勾 1 项(Idempotency-Key 重放安全),共 **9/16**。
+
+
+### 16.56 PR-055 不包含
+
+**严格不在本 PR 范围**:
+
+- **Run pin**(独立 follow-up PR:runs 表加 release_digest/release_version_id/policy_version/idempotency_key 列 + RunCreateRequest 加 agent_name/channel + start_run 调 resolver + 持久化 ReleaseRef)。
+- **catalog_entries 写入**(follow-up:import_agent_from_file + promote_channel 同事务投影;表 + reader 已在 PR-054 就位)。
+- **真实 S3 digest 存在检查**(follow-up;resolver object_key 路径跳过)。
+- **replay 记录 GC / TTL**(follow-up:维护任务按 created_at 清理;本 PR 无 TTL 列,replay 记录无限期保留,加列是 additive)。
+- **If-Match weak ETag / 多值 If-Match**(本 PR 只支持强 ETag 单引号整数;RFC 7232 W/ 前缀与多值列表 follow-up)。
+- **legacy_unpinned 门禁**(PR-056)。
+- **Studio/Admin UI**(PR-057)。
+
+**回滚边界**:`git revert` + `alembic downgrade 0014` 一次性回滚(idempotency 表 expand-only 无既有表改动;promote/rollback 改回 PR-053 直调 + 裸 HTTPException;`expected_channel_version` 改回 required;`ErrorCode.RELEASE_GATE_VIOLATION` 删除是 additive 因 enum 容忍未知值;replay 无 Run 创建调用方)。
+
 
 
