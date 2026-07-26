@@ -333,15 +333,21 @@ class PromoteRequest(BaseModel):
 
     ``expected_channel_version`` is the CAS predicate — the channel row's
     current ``row_version``. On a concurrent promote only one caller's
-    expected value matches; the others get 409 ``release_conflict``.
-    Idempotency-Key replay is deferred to a follow-up (ADR §7 lists it;
-    PR-053 lands the CAS + conflict path).
+    expected value matches; the others get 409 ``release_conflict``. Since
+    PR-055 the CAS predicate may ALSO be supplied via the ``If-Match`` header
+    (``If-Match: "<row_version>"``); the header takes precedence when both are
+    present. Exactly one of (header, body) MUST be present — the router
+    validates this and returns ``validation_error`` otherwise.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     target_version_id: str = Field(min_length=1, description="AgentVersion to promote onto the channel.")
-    expected_channel_version: int = Field(ge=1, description="CAS predicate: the channel row's current row_version.")
+    expected_channel_version: int | None = Field(
+        default=None,
+        ge=1,
+        description=("CAS predicate: the channel row's current row_version. Optional since PR-055 — may be supplied via the If-Match header instead. Exactly one of (If-Match header, this field) must be present."),
+    )
     workspace_id: str | None = Field(default=None, description="Optional workspace scoping for the channel.")
     reason: str | None = Field(default=None, description="Optional human-readable reason (audit trail).")
 
@@ -351,13 +357,19 @@ class RollbackRequest(BaseModel):
 
     Same shape as :class:`PromoteRequest`; rollback moves the pointer to a
     historical Version without modifying Version content. prod rollback
-    requires the target be published and non-revoked.
+    requires the target be published and non-revoked. As with
+    :class:`PromoteRequest`, ``expected_channel_version`` is optional since
+    PR-055 and may be supplied via the ``If-Match`` header instead.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     target_version_id: str = Field(min_length=1, description="Historical AgentVersion to roll back to.")
-    expected_channel_version: int = Field(ge=1, description="CAS predicate: the channel row's current row_version.")
+    expected_channel_version: int | None = Field(
+        default=None,
+        ge=1,
+        description=("CAS predicate: the channel row's current row_version. Optional since PR-055 — may be supplied via the If-Match header instead. Exactly one of (If-Match header, this field) must be present."),
+    )
     workspace_id: str | None = Field(default=None)
     reason: str | None = Field(default=None)
 

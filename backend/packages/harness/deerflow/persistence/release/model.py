@@ -55,6 +55,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -312,4 +313,42 @@ class ReleaseEventRow(Base):
         ),
         Index("idx_release_events_channel", "channel_id"),
         Index("idx_release_events_org", "org_id"),
+    )
+
+
+class ReleaseIdempotencyRecordRow(Base):
+    """Idempotency-Key replay store for promote/rollback (ADR-0004 §7, PR-055).
+
+    A replay record persists the **exact original response** (serialized
+    ``PromoteResponse`` — channel + event) plus a ``request_hash`` of the
+    semantically-meaningful request fields, so a retried promote/rollback with
+    the same ``Idempotency-Key`` returns the original result without
+    re-running ``_move_channel`` or emitting a second audit row. A same key
+    with a different request surfaces ``idempotency_conflict``.
+
+    The ``UNIQUE(org_id, idempotency_key)`` constraint is the concurrency
+    fence: two concurrent same-key requests cannot both insert; the loser
+    rolls back and either replays (identical request) or conflicts (different
+    request). No FK — a replay record is self-contained (it carries its own
+    response snapshot) and is independent of channel lifecycle. No TTL column;
+    pruning old records is a follow-up.
+    """
+
+    __tablename__ = "release_idempotency_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    # sha256 hex of the canonicalized request identity (see
+    # ``_request_fingerprint`` in release/idempotency.py).
+    request_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Serialized PromoteResponse. Replayed verbatim.
+    response_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "idempotency_key", name="uq_release_idempotency_org_key"),
+        Index("idx_release_idempotency_org", "org_id"),
+        Index("idx_release_idempotency_org_key", "org_id", "idempotency_key"),
     )
