@@ -1528,4 +1528,47 @@ Track E 枢纽 PR,在 PR-050 的 `agent_packages`/`agent_versions` 表之上构�
 
 **回滚边界**:无 schema migration(Package/Version 表在 PR-050);单 PR 新 `importer.py` + contracts 增 2 类 + repository 增 1 只读函数 + router 增 1 端点 + audit action 2 个 + 2 测试文件。`git revert` 一次性回滚;`get_agent_package_by_name` 新增只读函数不影响既有调用。
 
+### 16.51 PR-053:ReleaseChannel / ReleaseEvent + CAS promote/rollback
+
+在 PR-050/052/051 之上落地 ADR-0004 §5/§7/§8 通道层:`release_channels` 指针表 + `release_events` 不可变历史 + CAS promote/rollback。**Track E 并发安全核心** —— codebase 首例 `row_version` 乐观并发惯例。
+
+**新 migration `0013_release_channels_events`**(链自 0012,expand-only):两表 + FK RESTRICT + CHECK + **跨方言唯一索引 dialect 分支**(`_create_unique_index`:Postgres 原生 `CREATE UNIQUE INDEX ... NULLS NOT DISTINCT` / SQLite `COALESCE(workspace_id,'_default')` 表达式索引,语义等价 NULL 碰撞)。ORM `ReleaseChannelRow`/`ReleaseEventRow` 在 `__table_args__` 用 `Index(... text("COALESCE(workspace_id, '_default')") ..., unique=True)` 表达式声明同一索引(保证 create_all↔migrated 一致);migration 在 Postgres 额外建 NULLS NOT DISTINCT 形式。常量 `CHANNEL_DEV/STAGING/PROD` + `EVENT_ACTION_PROMOTE/ROLLBACK`。
+
+**Repository channel 段**(codebase 首例 CAS):
+- `_cas_update_channel`:`UPDATE release_channels SET current_version_id=:new, row_version=row_version+1 ... WHERE id=:cid AND org_id=:oid AND row_version=:expected`;`rowcount==0` → `ReleaseConflictError`(409 release_conflict)。session 内运行,caller 提交。
+- `get_or_create_channel`:隐式建 channel(current_version_id=NULL,row_version=1);已存在返回既有。cross-Org 隔离。
+- `promote_channel`/`rollback_channel`:`_move_channel` 核心 —— 校验 channel 属 org → 校验 target Version 同 package/org → **通道门禁 `_assert_gate`**(dev 允许 draft/reviewed/published;staging 允许 reviewed/published;prod 仅 published,rollback prod 额外拒 revoked)→ `_cas_update_channel` → insert `ReleaseEventRow`(from_version_id=旧 current,to_version_id=target)。
+- 异常:`ReleaseConflictError`(409 release_conflict)+ `ChannelGateError`(409 release_gate_violation)。
+
+**Router** 5 端点(挂 /api/v1):
+- `POST /agent-packages/{pkg}/channels/{ch}:promote` —— **动态权限门控** `_require_promote_permission`:dev 接受 `STUDIO_RELEASE_PROMOTE_DEV` 或 `STUDIO_RELEASE_PROMOTE`(developer 可用);staging/prod 强制 `STUDIO_RELEASE_PROMOTE`(admin-only)。装饰器基线 = `PROMOTE_DEV`(looser),handler 内 re-authorize 收紧 staging/prod。bypass 感知(business-path 测试)。
+- `POST .../channels/{ch}:rollback` —— `STUDIO_RELEASE_ROLLBACK`(admin-only)。
+- `GET .../channels` / `GET .../channels/{ch}` / `GET .../channels/{ch}/events` —— `STUDIO_PACKAGE_READ`。
+- Class A audit:`release.agent.published`(promote,≠ `catalog.agent_version.published`,ADR §14 强调不可互换)/ `release.agent.rolled_back`(rollback),同事务 outbox。
+- 错误映射:`ReleaseConflictError`→409 `release_conflict` / `ChannelGateError`→409 `release_gate_violation` / Version 不属 package→404 existence-hiding / 未知 channel 值→404。
+
+**Contracts**(`contracts/agent_artifact.py`):`PromoteRequest`/`RollbackRequest`(extra=forbid,`target_version_id` + `expected_channel_version` CAS 谓词 + `reason`)+ `PromoteResponse`(channel + event)+ `ReleaseChannelResponse`/`ReleaseEventResponse`(from_attributes)。复用既有 `contracts/release.py` 的 `ReleaseChannel = Literal["dev","staging","prod"]`。
+
+**Audit 注册表** 补 `agent_channel_promoted`→`release.agent.published` / `agent_channel_rolled_back`→`release.agent.rolled_back`。
+
+**HEAD 常量** bump 0012→0013(`test_persistence_bootstrap*.py` + `test_backup.py::test_snapshot_records_alembic_head`);`backup/verify.py` `release_channel_points_at_valid_version` SKIP 文案更新(channel 已落地 PR-053,resolver 仍待 PR-054)。
+
+**测试**(58 新,全绿):schema `test_release_schema_channels.py` 13 测(ART-600 表/列 + ART-610 CHECK 拒未知值 + **ART-620 跨方言 UNIQUE**:workspace=NULL 重复拒/不同 workspace·channel 允许 + ART-630 FK RESTRICT + ART-640 migration 0012↔head round-trip)+ repo `test_channel_repository.py` 22 测(ART-700 get_or_create 幂等/cross-Org + ART-710 promote 门禁 + **ART-720 CAS**:stale expected 冲突/correct 成功/两并发一胜一败 + ART-730 rollback 门禁 + ART-740 events 顺序/org 隔离 + ART-750 session passthrough)+ router `test_channel_router.py` 23 测(ART-810 业务全路径 + audit outbox + **ART-910 RBAC 矩阵**:9 promote + 3 rollback 组合,developer 仅 dev promote 允许)。
+
+**ADR-0004 §15 验收**新勾 4 项,共 **7/16**(dev/staging/prod 门禁 + Developer dev-only promote + OrgA≠OrgB channel + 并发 promote 一胜;其余依赖 Idempotency follow-up / PR-054 Run 解析 / PR-056 legacy_unpinned)。
+
+### 16.52 PR-053 不包含
+
+**严格不在本 PR 范围**:
+
+- **Idempotency-Key 重放**(follow-up:独立表 + hash + result 存储;ADR §7 列出,本 PR 仅 CAS + 冲突路径)。
+- **ReleaseRef 解析**(PR-054:ReleaseResolver 具体实现、prod 门禁、Run admission)。
+- **catalog_entries 表 + GET /catalog reader**(PR-054)。
+- **legacy_unpinned 门禁**(PR-056:409 `release_unpinned`)。
+- **真实 S3 后端 digest 对象存在检查**(follow-up;inline backend 永真,`_move_channel` 该步为 no-op)。
+- **E2E v1→v2→rollback digest 验证**(依赖 PR-054 Run 解析)。
+- **Studio/Admin UI**(PR-057)。
+
+**回滚边界**:`git revert` + `alembic downgrade 0012` 一次性回滚(两表 expand-only,无既有表改动;新端点不影响既有调用)。
+
 

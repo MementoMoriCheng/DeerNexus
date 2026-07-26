@@ -34,10 +34,22 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from deerflow.persistence.release.digest import compute_artifact_digest
-from deerflow.persistence.release.model import AgentPackageRow, AgentVersionRow
+from deerflow.persistence.release.model import (
+    _ALLOWED_CHANNELS,
+    CHANNEL_DEV,
+    CHANNEL_PROD,
+    CHANNEL_STAGING,
+    EVENT_ACTION_PROMOTE,
+    EVENT_ACTION_ROLLBACK,
+    AgentPackageRow,
+    AgentVersionRow,
+    ReleaseChannelRow,
+    ReleaseEventRow,
+)
 from deerflow.persistence.release.storage import (
     InlineObjectStore,
     ObjectStore,
@@ -572,3 +584,388 @@ async def count_versions_by_org(
         stmt = select(func.count()).select_from(AgentVersionRow).where(AgentVersionRow.org_id == org_id)
         result = await session.execute(stmt)
         return int(result.scalar_one())
+
+
+# ===========================================================================
+# Channel layer (PR-053, ADR-0004 §5/§7/§8, data-model.md §6.4/§6.5)
+# ===========================================================================
+#
+# This section lands the mutable channel pointer + its CAS update primitive +
+# the append-only ReleaseEvent history. The CAS idiom
+# (``WHERE row_version = :expected`` then ``rowcount`` check) is the codebase's
+# first optimistic-concurrency caller — promote/rollback establish the
+# convention future CAS callers (e.g. run admission policy_version) will mirror.
+
+
+class ReleaseConflictError(Exception):
+    """Raised when a channel CAS update misses (``row_version`` mismatch).
+
+    ADR §7: only one of N concurrent promotes with the same
+    ``expected_channel_version`` wins; the others get 409 ``release_conflict``.
+    """
+
+
+class ChannelGateError(Exception):
+    """Raised when a promote/rollback violates the channel status gate (ADR §5).
+
+    Mapping (ADR §5 channel policy):
+
+    * ``dev``      — draft / reviewed / published
+    * ``staging``  — reviewed / published
+    * ``prod``     — published (and not revoked, per §8)
+
+    The router maps this to 409 ``release_gate_violation``.
+    """
+
+
+# ADR §5 channel → allowed target Version statuses. prod additionally rejects
+# revoked versions at the rollback path (§8: prod rollback must land on a
+# published, non-revoked version).
+_CHANNEL_ALLOWED_VERSION_STATUSES: dict[str, frozenset[str]] = {
+    CHANNEL_DEV: frozenset({VERSION_DRAFT, VERSION_REVIEWED, VERSION_PUBLISHED}),
+    CHANNEL_STAGING: frozenset({VERSION_REVIEWED, VERSION_PUBLISHED}),
+    CHANNEL_PROD: frozenset({VERSION_PUBLISHED}),
+}
+
+
+def _assert_channel_allowed(channel: str) -> None:
+    if channel not in _ALLOWED_CHANNELS:
+        raise ValueError(f"Unknown channel {channel!r}; allowed: {sorted(_ALLOWED_CHANNELS)}")
+
+
+def _assert_gate(channel: str, version: AgentVersionRow, *, is_rollback: bool) -> None:
+    """Enforce the ADR §5 channel status gate on the target Version.
+
+    prod rollback additionally requires the target be non-revoked (ADR §8:
+    "目标 Version 为允许状态,prod 必须 published 且未 revoked").
+    """
+    allowed = _CHANNEL_ALLOWED_VERSION_STATUSES[channel]
+    if version.status not in allowed:
+        raise ChannelGateError(f"Channel {channel!r} requires target Version status in {sorted(allowed)}; got {version.status!r} (ADR-0004 §5).")
+    if channel == CHANNEL_PROD and is_rollback and version.status == VERSION_REVOKED:
+        raise ChannelGateError("prod rollback target must be published and not revoked (ADR-0004 §8).")
+
+
+async def _cas_update_channel(
+    session: AsyncSession,
+    *,
+    channel_id: str,
+    org_id: str,
+    expected_row_version: int,
+    new_version_id: str | None,
+    updated_by: str | None,
+) -> ReleaseChannelRow:
+    """Compare-And-Swap update on ``release_channels`` (ADR §7).
+
+    Atomically: ``UPDATE ... SET current_version_id=:new, row_version=row_version+1,
+    updated_by=:actor, updated_at=now WHERE id=:cid AND org_id=:oid AND
+    row_version=:expected``. ``rowcount == 0`` means the expected version was
+    stale (a concurrent writer won, or the channel was deleted / cross-Org) →
+    :class:`ReleaseConflictError` (router → 409 ``release_conflict``).
+
+    Runs inside the caller's session — no commit. The caller stages the
+    ReleaseEvent row + audit-outbox row in the same transaction and commits
+    once (ADR-0005 §7.1 Class A).
+    """
+    stmt = (
+        sa_update(ReleaseChannelRow)
+        .where(
+            ReleaseChannelRow.id == channel_id,
+            ReleaseChannelRow.org_id == org_id,
+            ReleaseChannelRow.row_version == expected_row_version,
+        )
+        .values(
+            current_version_id=new_version_id,
+            row_version=ReleaseChannelRow.row_version + 1,
+            updated_by=updated_by,
+            updated_at=datetime.now(UTC),
+        )
+    )
+    result = await session.execute(stmt)
+    if result.rowcount == 0:
+        raise ReleaseConflictError(f"Channel {channel_id!r} CAS failed: expected row_version={expected_row_version} no longer matches (concurrent writer won or channel absent/wrong Org).")
+    await session.flush()
+    # Re-fetch the post-update row so the caller sees incremented row_version
+    # + refreshed updated_at (the UPDATE bypasses ORM dirty-tracking).
+    return await session.get(ReleaseChannelRow, channel_id)
+
+
+async def get_or_create_channel(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    package_id: str,
+    channel: str,
+    workspace_id: str | None = None,
+    session: AsyncSession | None = None,
+) -> ReleaseChannelRow:
+    """Return the channel row for ``(org, workspace, package, channel)``, creating it if absent.
+
+    ADR §5: exactly one pointer per (org, workspace, package, channel). The
+    first promote to a channel implicitly creates the row with
+    ``current_version_id=NULL`` and ``row_version=1``; the caller then CAS-updates
+    it to the target version. This is the "implicit create" decision — no
+    dedicated ``POST .../channels`` endpoint (dev/staging/prod are a fixed
+    enum, not independent lifecycle objects).
+
+    Cross-Org existence-hiding: a channel in another Org is invisible
+    (returns None on lookup → this function creates a fresh row in the
+    caller's Org). The cross-dialect unique INDEX guarantees two Orgs can
+    each have their own (org, NULL, package, channel) row without colliding.
+    """
+    if not org_id:
+        raise ValueError("org_id is required for channel operations")
+    _assert_channel_allowed(channel)
+
+    async def _do(session: AsyncSession) -> ReleaseChannelRow:
+        stmt = select(ReleaseChannelRow).where(
+            ReleaseChannelRow.org_id == org_id,
+            ReleaseChannelRow.package_id == package_id,
+            ReleaseChannelRow.channel == channel,
+        )
+        if workspace_id is None:
+            stmt = stmt.where(ReleaseChannelRow.workspace_id.is_(None))
+        else:
+            stmt = stmt.where(ReleaseChannelRow.workspace_id == workspace_id)
+        existing = (await session.execute(stmt)).scalars().first()
+        if existing is not None:
+            return existing
+        row = ReleaseChannelRow(
+            id=_new_id(),
+            org_id=org_id,
+            workspace_id=workspace_id,
+            package_id=package_id,
+            channel=channel,
+            current_version_id=None,
+            row_version=1,
+            updated_by=None,
+        )
+        session.add(row)
+        await session.flush()
+        return row
+
+    if session is not None:
+        return await _do(session)
+    async with sf() as session:
+        row = await _do(session)
+        await session.commit()
+        await session.refresh(row)
+        return row
+
+
+async def get_channel(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    package_id: str,
+    channel: str,
+    workspace_id: str | None = None,
+) -> ReleaseChannelRow | None:
+    """Return the channel row scoped to ``org_id``, or ``None`` if absent/wrong Org."""
+    if not org_id:
+        raise ValueError("org_id is required for channel reads")
+    _assert_channel_allowed(channel)
+    async with sf() as session:
+        stmt = select(ReleaseChannelRow).where(
+            ReleaseChannelRow.org_id == org_id,
+            ReleaseChannelRow.package_id == package_id,
+            ReleaseChannelRow.channel == channel,
+        )
+        if workspace_id is None:
+            stmt = stmt.where(ReleaseChannelRow.workspace_id.is_(None))
+        else:
+            stmt = stmt.where(ReleaseChannelRow.workspace_id == workspace_id)
+        return (await session.execute(stmt)).scalars().first()
+
+
+async def list_channels(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    package_id: str | None = None,
+) -> list[ReleaseChannelRow]:
+    """Return channels in ``org_id`` (optionally filtered by package), newest-first."""
+    if not org_id:
+        raise ValueError("org_id is required for channel reads")
+    async with sf() as session:
+        stmt = select(ReleaseChannelRow).where(ReleaseChannelRow.org_id == org_id)
+        if package_id is not None:
+            stmt = stmt.where(ReleaseChannelRow.package_id == package_id)
+        stmt = stmt.order_by(ReleaseChannelRow.updated_at.desc())
+        return list((await session.execute(stmt)).scalars().all())
+
+
+async def list_events(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    channel_id: str | None = None,
+) -> list[ReleaseEventRow]:
+    """Return release events in ``org_id`` (optionally filtered by channel), newest-first."""
+    if not org_id:
+        raise ValueError("org_id is required for release-event reads")
+    async with sf() as session:
+        stmt = select(ReleaseEventRow).where(ReleaseEventRow.org_id == org_id)
+        if channel_id is not None:
+            stmt = stmt.where(ReleaseEventRow.channel_id == channel_id)
+        stmt = stmt.order_by(ReleaseEventRow.created_at.desc())
+        return list((await session.execute(stmt)).scalars().all())
+
+
+async def _move_channel(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    package_id: str,
+    channel: str,
+    target_version_id: str,
+    expected_channel_version: int,
+    action: str,  # EVENT_ACTION_PROMOTE | EVENT_ACTION_ROLLBACK
+    actor_id: str | None,
+    actor_type: str | None = "user",
+    reason: str | None = None,
+    workspace_id: str | None = None,
+    session: AsyncSession | None = None,
+) -> tuple[ReleaseChannelRow, ReleaseEventRow]:
+    """Shared promote/rollback core (ADR §7/§8).
+
+    1. Resolve / implicitly-create the channel row.
+    2. Verify the target Version belongs to the same package + Org.
+    3. Run the ADR §5 channel status gate (rollback is stricter on prod).
+    4. (digest object-existence check is a no-op for the inline backend; the
+       real S3 store lands in a follow-up — ADR §11.2.)
+    5. CAS-update the channel pointer (``row_version``guarded).
+    6. Append the ReleaseEvent row (domain history; the compliance-side
+       ``release.agent.published`` / ``release.agent.rolled_back`` audit row
+       is enqueued by the router in the same transaction).
+
+    Returns ``(updated_channel, event)``. Raises :class:`ReleaseConflictError`
+    on CAS miss, :class:`ChannelGateError` on a status-gate violation,
+    ``ValueError`` if the target Version is absent / wrong Org (router → 404).
+    """
+    is_rollback = action == EVENT_ACTION_ROLLBACK
+
+    async def _do(session: AsyncSession) -> tuple[ReleaseChannelRow, ReleaseEventRow]:
+        # 1. Channel row (implicit create on first promote).
+        ch = await get_or_create_channel(
+            sf,
+            org_id=org_id,
+            package_id=package_id,
+            channel=channel,
+            workspace_id=workspace_id,
+            session=session,
+        )
+        # 2. Target Version must exist + belong to the same package + Org.
+        target = await session.get(AgentVersionRow, target_version_id)
+        if target is None or target.org_id != org_id or target.package_id != package_id:
+            raise ValueError(f"AgentVersion {target_version_id!r} not found in package {package_id!r} / org {org_id!r}")
+        # 3. Channel status gate.
+        _assert_gate(channel, target, is_rollback=is_rollback)
+        # 4. CAS update (raises ReleaseConflictError on stale expected).
+        previous_version_id = ch.current_version_id
+        updated = await _cas_update_channel(
+            session,
+            channel_id=ch.id,
+            org_id=org_id,
+            expected_row_version=expected_channel_version,
+            new_version_id=target_version_id,
+            updated_by=actor_id,
+        )
+        # 5. Append ReleaseEvent (domain history).
+        event = ReleaseEventRow(
+            id=_new_id(),
+            org_id=org_id,
+            channel_id=updated.id,
+            from_version_id=previous_version_id,
+            to_version_id=target_version_id,
+            action=action,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            reason=reason,
+        )
+        session.add(event)
+        await session.flush()
+        return updated, event
+
+    if session is not None:
+        return await _do(session)
+    async with sf() as session:
+        updated, event = await _do(session)
+        await session.commit()
+        await session.refresh(updated)
+        await session.refresh(event)
+        return updated, event
+
+
+async def promote_channel(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    package_id: str,
+    channel: str,
+    target_version_id: str,
+    expected_channel_version: int,
+    actor_id: str | None = None,
+    actor_type: str | None = "user",
+    reason: str | None = None,
+    workspace_id: str | None = None,
+    session: AsyncSession | None = None,
+) -> tuple[ReleaseChannelRow, ReleaseEventRow]:
+    """Promote a Version onto a channel (ADR §7).
+
+    The caller supplies ``expected_channel_version`` (the CAS predicate — the
+    channel row's current ``row_version``). On a concurrent promote, only one
+    caller's expected version matches; the others get
+    :class:`ReleaseConflictError` (→ 409 ``release_conflict``).
+    """
+    return await _move_channel(
+        sf,
+        org_id=org_id,
+        package_id=package_id,
+        channel=channel,
+        target_version_id=target_version_id,
+        expected_channel_version=expected_channel_version,
+        action=EVENT_ACTION_PROMOTE,
+        actor_id=actor_id,
+        actor_type=actor_type,
+        reason=reason,
+        workspace_id=workspace_id,
+        session=session,
+    )
+
+
+async def rollback_channel(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    org_id: str,
+    package_id: str,
+    channel: str,
+    target_version_id: str,
+    expected_channel_version: int,
+    actor_id: str | None = None,
+    actor_type: str | None = "user",
+    reason: str | None = None,
+    workspace_id: str | None = None,
+    session: AsyncSession | None = None,
+) -> tuple[ReleaseChannelRow, ReleaseEventRow]:
+    """Rollback a channel to a historical Version (ADR §8).
+
+    Rollback does NOT modify Version content — it only moves the pointer.
+    Target must belong to the same package/Org and satisfy the channel gate
+    (prod must land on a published, non-revoked Version). Same CAS contract
+    as promote.
+    """
+    return await _move_channel(
+        sf,
+        org_id=org_id,
+        package_id=package_id,
+        channel=channel,
+        target_version_id=target_version_id,
+        expected_channel_version=expected_channel_version,
+        action=EVENT_ACTION_ROLLBACK,
+        actor_id=actor_id,
+        actor_type=actor_type,
+        reason=reason,
+        workspace_id=workspace_id,
+        session=session,
+    )

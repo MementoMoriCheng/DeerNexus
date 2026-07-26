@@ -40,7 +40,12 @@ from deerflow.persistence.orgs.model import (
     OrgMembershipRow,
     WorkspaceRow,
 )
-from deerflow.persistence.release.model import AgentPackageRow, AgentVersionRow
+from deerflow.persistence.release.model import (
+    AgentPackageRow,
+    AgentVersionRow,
+    ReleaseChannelRow,
+    ReleaseEventRow,
+)
 from deerflow.persistence.run.model import RunRow
 from deerflow.persistence.thread_meta.model import ThreadMetaRow
 from deerflow.persistence.user.model import UserRow
@@ -48,6 +53,8 @@ from deerflow.persistence.user.model import UserRow
 __all__ = [
     "AgentPackageRow",
     "AgentVersionRow",
+    "ReleaseChannelRow",
+    "ReleaseEventRow",
     "ApiKeyRow",
     "AuditEventRow",
     "AuditOutboxRow",

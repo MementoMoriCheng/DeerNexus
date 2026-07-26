@@ -20,6 +20,12 @@ into the published state; channel promotion is a separate CAS operation.
 PR-051 adds ``POST /agent-packages:import-file`` for the file-state →
 artifact import flow (ADR §10): ``config.yaml`` + ``SOUL.md`` → ``Manifest``
 → digest → draft Version, idempotent on digest.
+PR-053 adds the channel layer (ADR §5/§7/§8): ``:promote`` / ``:rollback``
+CAS on ``release_channels`` + ``GET`` channel/event reads. Promote uses a
+dynamic permission gate — dev accepts ``studio:release:promote_dev`` OR
+``studio:release:promote`` (so developers can move dev), staging/prod
+require ``studio:release:promote`` (admin-only); rollback requires
+``studio:release:rollback`` (admin-only).
 """
 
 from __future__ import annotations
@@ -40,23 +46,38 @@ from deerflow.contracts.agent_artifact import (
     AgentVersionResponse,
     ImportFileRequest,
     ImportReport,
+    PromoteRequest,
+    PromoteResponse,
+    ReleaseChannelResponse,
+    ReleaseEventResponse,
+    RollbackRequest,
 )
 from deerflow.contracts.identity import PrincipalRef
 from deerflow.contracts.policy import ResourceRef
 from deerflow.persistence.audit import enqueue_audit_outbox_in_session
 from deerflow.persistence.release import (
+    CHANNEL_DEV,
+    CHANNEL_PROD,
+    CHANNEL_STAGING,
     PACKAGE_ARCHIVED,
     VERSION_PUBLISHED,
     VERSION_REVIEWED,
     VERSION_REVOKED,
+    ChannelGateError,
+    ReleaseConflictError,
     archive_agent_package,
     create_agent_package,
     create_agent_version,
     get_agent_package,
     get_agent_version,
+    get_channel,
     list_agent_packages,
     list_agent_versions,
+    list_channels,
+    list_events,
+    promote_channel,
     reconcile_versions,
+    rollback_channel,
     set_version_status,
     update_agent_package,
 )
@@ -555,3 +576,258 @@ async def import_file(request: Request, body: ImportFileRequest) -> ImportReport
     except FileNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found.") from exc
     return _import_report(pkg_row, ver_row, digest, imported, source_metadata)
+
+
+# ---------------------------------------------------------------------------
+# Release channels (PR-053, ADR-0004 §5/§7/§8)
+# ---------------------------------------------------------------------------
+
+_ALLOWED_CHANNEL_VALUES = {CHANNEL_DEV, CHANNEL_STAGING, CHANNEL_PROD}
+
+
+def _validate_channel(channel: str) -> str:
+    """Reject unknown channel path params with 404 (existence-hiding).
+
+    A bad channel value is not a 422 (the path schema accepts any string);
+    treating it as 404 avoids leaking the closed set to an unauthorised
+    caller and matches the cross-Org miss convention.
+    """
+    if channel not in _ALLOWED_CHANNEL_VALUES:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found.")
+    return channel
+
+
+async def _require_promote_permission(request: Request, channel: str) -> None:
+    """Dynamic promote permission gate (ADR §14).
+
+    dev channel accepts ``studio:release:promote_dev`` OR
+    ``studio:release:promote`` (admin has both; developer has only
+    ``promote_dev``). staging / prod require ``studio:release:promote``
+    (admin-only). The decorator baseline is ``promote_dev`` (the looser
+    permission) so devs reach this handler for dev; non-dev channels are
+    re-checked here for the stricter ``promote``.
+
+    Honours the test-bypass flag (``_deerflow_test_bypass_auth``) the same way
+    ``@require_rbac`` does, so business-path tests with
+    ``make_rbac_test_app(bypass_authorize=True)`` skip the in-handler
+    re-authorize as well.
+    """
+    from app.gateway.authorize import AuthorizeError, get_authorize_service
+    from app.gateway.rbac import _request_has_bypass_flag
+
+    if _request_has_bypass_flag(request):
+        return  # business-path test bypass — decorator already short-circuited
+    ctx = get_tenant_context()
+    if ctx is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    svc = get_authorize_service()
+    if channel == CHANNEL_DEV:
+        # dev: accept either. Try the stricter first (admin fast-path), then
+        # fall back to promote_dev (developer path). Either allow short-circuits.
+        for perm in (Permission.STUDIO_RELEASE_PROMOTE, Permission.STUDIO_RELEASE_PROMOTE_DEV):
+            try:
+                await svc.authorize(ctx, perm)
+                return  # allowed
+            except AuthorizeError:
+                continue
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="promote to dev requires studio:release:promote_dev or studio:release:promote.",
+        )
+    # staging / prod: strict promote. The decorator already enforced
+    # promote_dev (insufficient here), so re-authorize promote.
+    try:
+        await svc.authorize(ctx, Permission.STUDIO_RELEASE_PROMOTE)
+    except AuthorizeError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"promote to {channel} requires studio:release:promote.",
+        ) from None
+
+
+def _channel_response(row) -> ReleaseChannelResponse:
+    return ReleaseChannelResponse.model_validate(row)
+
+
+def _event_response(row) -> ReleaseEventResponse:
+    return ReleaseEventResponse.model_validate(row)
+
+
+@router.get(
+    "/agent-packages/{package_id}/channels",
+    response_model=list[ReleaseChannelResponse],
+)
+@require_rbac(Permission.STUDIO_PACKAGE_READ)
+async def list_package_channels(request: Request, package_id: str) -> list[ReleaseChannelResponse]:
+    """List channels for a package in the caller's Org (ADR §5)."""
+    org_id = _require_org_id(request)
+    # Verify the package belongs to the caller's Org before listing channels.
+    pkg = await get_agent_package(_sf(request), package_id=package_id, org_id=org_id)
+    if pkg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Package not found.")
+    rows = await list_channels(_sf(request), org_id=org_id, package_id=package_id)
+    return [_channel_response(r) for r in rows]
+
+
+@router.get(
+    "/agent-packages/{package_id}/channels/{channel}",
+    response_model=ReleaseChannelResponse,
+)
+@require_rbac(Permission.STUDIO_PACKAGE_READ)
+async def get_package_channel(request: Request, package_id: str, channel: str) -> ReleaseChannelResponse:
+    """Get one channel. Cross-Org / unknown-channel miss → 404 (existence-hiding)."""
+    org_id = _require_org_id(request)
+    _validate_channel(channel)
+    pkg = await get_agent_package(_sf(request), package_id=package_id, org_id=org_id)
+    if pkg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Package not found.")
+    row = await get_channel(_sf(request), org_id=org_id, package_id=package_id, channel=channel, workspace_id=None)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found.")
+    return _channel_response(row)
+
+
+@router.get(
+    "/agent-packages/{package_id}/channels/{channel}/events",
+    response_model=list[ReleaseEventResponse],
+)
+@require_rbac(Permission.STUDIO_PACKAGE_READ)
+async def list_package_channel_events(request: Request, package_id: str, channel: str) -> list[ReleaseEventResponse]:
+    """List promote/rollback events for a channel (ADR §14 domain history)."""
+    org_id = _require_org_id(request)
+    _validate_channel(channel)
+    pkg = await get_agent_package(_sf(request), package_id=package_id, org_id=org_id)
+    if pkg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Package not found.")
+    ch = await get_channel(_sf(request), org_id=org_id, package_id=package_id, channel=channel, workspace_id=None)
+    if ch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found.")
+    rows = await list_events(_sf(request), org_id=org_id, channel_id=ch.id)
+    return [_event_response(r) for r in rows]
+
+
+@router.post(
+    "/agent-packages/{package_id}/channels/{channel}:promote",
+    response_model=PromoteResponse,
+)
+@require_rbac(Permission.STUDIO_RELEASE_PROMOTE_DEV)
+async def promote_package_channel(request: Request, package_id: str, channel: str, body: PromoteRequest) -> PromoteResponse:
+    """Promote a Version onto a channel via CAS (ADR §7).
+
+    ``expected_channel_version`` is the CAS predicate (the channel row's
+    current ``row_version``). On a concurrent promote only one caller wins;
+    the others get 409 ``release_conflict``. Dynamic permission gate: dev
+    accepts ``promote_dev`` OR ``promote``; staging/prod require ``promote``.
+    Emits ``release.agent.published`` (channel CAS success — DISTINCT from
+    ``catalog.agent_version.published``).
+    """
+    org_id = _require_org_id(request)
+    _validate_channel(channel)
+    await _require_promote_permission(request, channel)
+    sf = _sf(request)
+    actor = _audit_actor(request)
+    actor_id = _actor_id(request)
+    # Verify the package belongs to the caller's Org (defense-in-depth: the
+    # repository also checks, but a 404 here is cheaper than a ValueError→404).
+    pkg = await get_agent_package(sf, package_id=package_id, org_id=org_id)
+    if pkg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Package not found.")
+    try:
+        async with sf() as session:
+            ch_row, ev_row = await promote_channel(
+                sf,
+                org_id=org_id,
+                package_id=package_id,
+                channel=channel,
+                target_version_id=body.target_version_id,
+                expected_channel_version=body.expected_channel_version,
+                actor_id=actor_id,
+                reason=body.reason,
+                workspace_id=body.workspace_id,
+                session=session,
+            )
+            await _emit_class_a_audit(
+                session,
+                action="release.agent.published",
+                org_id=org_id,
+                actor=actor,
+                resource=_audit_resource(type_="release_channel", id_=ch_row.id, org_id=org_id),
+                payload={
+                    "channel_id": ch_row.id,
+                    "package_id": package_id,
+                    "channel": channel,
+                    "from_version_id": ev_row.from_version_id,
+                    "to_version_id": ev_row.to_version_id,
+                    "row_version": ch_row.row_version,
+                    "action": ev_row.action,
+                },
+            )
+            await session.commit()
+    except ReleaseConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="release_conflict: " + str(exc)) from exc
+    except ChannelGateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="release_gate_violation: " + str(exc)) from exc
+    except ValueError as exc:
+        # target Version absent / wrong Org / wrong package → existence-hiding 404.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.") from exc
+    return PromoteResponse(channel=_channel_response(ch_row), event=_event_response(ev_row))
+
+
+@router.post(
+    "/agent-packages/{package_id}/channels/{channel}:rollback",
+    response_model=PromoteResponse,
+)
+@require_rbac(Permission.STUDIO_RELEASE_ROLLBACK)
+async def rollback_package_channel(request: Request, package_id: str, channel: str, body: RollbackRequest) -> PromoteResponse:
+    """Rollback a channel to a historical Version via CAS (ADR §8).
+
+    Rollback moves the pointer without modifying Version content. prod
+    rollback requires the target be published and non-revoked. Emits
+    ``release.agent.rolled_back``.
+    """
+    org_id = _require_org_id(request)
+    _validate_channel(channel)
+    sf = _sf(request)
+    actor = _audit_actor(request)
+    actor_id = _actor_id(request)
+    pkg = await get_agent_package(sf, package_id=package_id, org_id=org_id)
+    if pkg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Package not found.")
+    try:
+        async with sf() as session:
+            ch_row, ev_row = await rollback_channel(
+                sf,
+                org_id=org_id,
+                package_id=package_id,
+                channel=channel,
+                target_version_id=body.target_version_id,
+                expected_channel_version=body.expected_channel_version,
+                actor_id=actor_id,
+                reason=body.reason,
+                workspace_id=body.workspace_id,
+                session=session,
+            )
+            await _emit_class_a_audit(
+                session,
+                action="release.agent.rolled_back",
+                org_id=org_id,
+                actor=actor,
+                resource=_audit_resource(type_="release_channel", id_=ch_row.id, org_id=org_id),
+                payload={
+                    "channel_id": ch_row.id,
+                    "package_id": package_id,
+                    "channel": channel,
+                    "from_version_id": ev_row.from_version_id,
+                    "to_version_id": ev_row.to_version_id,
+                    "row_version": ch_row.row_version,
+                    "action": ev_row.action,
+                },
+            )
+            await session.commit()
+    except ReleaseConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="release_conflict: " + str(exc)) from exc
+    except ChannelGateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="release_gate_violation: " + str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found.") from exc
+    return PromoteResponse(channel=_channel_response(ch_row), event=_event_response(ev_row))

@@ -274,3 +274,102 @@ class ImportReport(BaseModel):
     digest: str
     imported: bool
     source_metadata: dict
+
+
+# ---------------------------------------------------------------------------
+# Release channel envelopes (PR-053, ADR-0004 §5/§7/§8)
+# ---------------------------------------------------------------------------
+
+
+class ReleaseChannelResponse(BaseModel):
+    """Response envelope for a ``release_channels`` row (ADR §5).
+
+    1:1 projection of ``ReleaseChannelRow``. ``current_version_id`` is the
+    version this channel currently points at (NULL = channel exists but is
+    empty). ``row_version`` is the optimistic-concurrency token the caller
+    MUST echo back as ``expected_channel_version`` on the next promote /
+    rollback (ADR §7 CAS).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    org_id: str
+    workspace_id: str | None
+    package_id: str
+    channel: str
+    current_version_id: str | None
+    row_version: int
+    updated_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReleaseEventResponse(BaseModel):
+    """Response envelope for a ``release_events`` row (ADR §14, domain history).
+
+    Distinct from the compliance-grade audit event: this is the domain
+    record of who moved which channel from which version to which version.
+    ``from_version_id`` is NULL on the first promote (channel had no prior
+    current version).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    org_id: str
+    channel_id: str
+    from_version_id: str | None
+    to_version_id: str
+    action: str
+    actor_type: str | None
+    actor_id: str | None
+    reason: str | None
+    created_at: datetime
+
+
+class PromoteRequest(BaseModel):
+    """Body of ``POST /agent-packages/{pkg}/channels/{ch}:promote`` (ADR §7).
+
+    ``expected_channel_version`` is the CAS predicate — the channel row's
+    current ``row_version``. On a concurrent promote only one caller's
+    expected value matches; the others get 409 ``release_conflict``.
+    Idempotency-Key replay is deferred to a follow-up (ADR §7 lists it;
+    PR-053 lands the CAS + conflict path).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_version_id: str = Field(min_length=1, description="AgentVersion to promote onto the channel.")
+    expected_channel_version: int = Field(ge=1, description="CAS predicate: the channel row's current row_version.")
+    workspace_id: str | None = Field(default=None, description="Optional workspace scoping for the channel.")
+    reason: str | None = Field(default=None, description="Optional human-readable reason (audit trail).")
+
+
+class RollbackRequest(BaseModel):
+    """Body of ``POST /agent-packages/{pkg}/channels/{ch}:rollback`` (ADR §8).
+
+    Same shape as :class:`PromoteRequest`; rollback moves the pointer to a
+    historical Version without modifying Version content. prod rollback
+    requires the target be published and non-revoked.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_version_id: str = Field(min_length=1, description="Historical AgentVersion to roll back to.")
+    expected_channel_version: int = Field(ge=1, description="CAS predicate: the channel row's current row_version.")
+    workspace_id: str | None = Field(default=None)
+    reason: str | None = Field(default=None)
+
+
+class PromoteResponse(BaseModel):
+    """Response envelope for promote / rollback (ADR §7/§8).
+
+    Carries the updated channel (with the new ``row_version`` the caller
+    echoes on the next CAS) and the appended ReleaseEvent row.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    channel: ReleaseChannelResponse
+    event: ReleaseEventResponse

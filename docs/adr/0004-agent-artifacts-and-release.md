@@ -441,10 +441,10 @@ security_incident_id?
 
 - [x] draft 可变、published 不可变（PR-052：repository `update_agent_version` 在 `status in {published,revoked,archived}` 时 raise `VersionImmutableError`；`test_published_is_immutable` / `test_revoked_is_immutable` 锁定；draft 可变由 `test_draft_is_mutable` 证明）
 - [x] digest 与内容匹配（PR-052：`compute_artifact_digest(content)` → `sha256:<hex>` 对原始字节，`create_agent_version` 自动回填 + `UNIQUE(org_id, digest)` 去重；`test_digest_deterministic` / `test_create_computes_digest_and_routes_inline` 锁定。注：对象存储 re-read 校验在 inventory `verify_digest` 路径，inline backend 同库即匹配）
-- [ ] dev / staging / prod 状态门禁正确
-- [ ] Developer 可 promote dev，但不能 promote staging / prod 或 rollback prod
-- [ ] OrgA Channel 不能引用 OrgB Version
-- [ ] 并发 promote 只有一个成功
+- [x] dev / staging / prod 状态门禁正确（PR-053：repository `_assert_gate` + `_CHANNEL_ALLOWED_VERSION_STATUSES` 矩阵锁定;dev 允许 draft/reviewed/published、staging 允许 reviewed/published、prod 仅 published,rollback prod 额外拒 revoked;`test_staging_rejects_draft`/`test_prod_rejects_reviewed`/`test_prod_allows_published`/`test_prod_rollback_to_revoked_rejected` 覆盖）
+- [x] Developer 可 promote dev，但不能 promote staging / prod 或 rollback prod（PR-053：router `_require_promote_permission` 动态门控——dev 接受 `promote_dev` OR `promote`,staging/prod 强制 `promote`,rollback 强制 `rollback`;`test_rbac_matrix_promote` 9 组合 + `test_rbac_matrix_rollback` 3 组合锁定,developer 仅 dev promote 200,其余 403）
+- [x] OrgA Channel 不能引用 OrgB Version（PR-053：`_move_channel` 校验 `target.org_id == org_id and target.package_id == package_id`,违反 raise ValueError→404 existence-hiding;`test_target_version_wrong_org_raises` + `test_target_version_not_in_package_is_404` 锁定）
+- [x] 并发 promote 只有一个成功（PR-053：`_cas_update_channel` 用 `UPDATE ... WHERE row_version=:expected` + `rowcount==0 → ReleaseConflictError`;`test_stale_expected_version_conflicts` + `test_two_concurrent_promotes_same_expected_one_wins` 锁定;router→409 `release_conflict`）
 - [ ] Idempotency-Key 重放安全
 - [ ] v1 → v2 → rollback 新 Run digest 正确
 - [ ] 在途 Run 不随 Channel 变化
