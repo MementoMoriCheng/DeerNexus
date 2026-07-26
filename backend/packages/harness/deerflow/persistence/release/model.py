@@ -1,9 +1,16 @@
-"""ORM models for the agent-artifact control-plane tables (PR-050).
+"""ORM models for the agent-artifact control-plane tables (PR-050 / PR-053).
 
-These two tables — ``agent_packages`` and ``agent_versions`` — are the
-immutable-content backbone described in ``docs/architecture/data-model.md``
-§6.2/§6.3 and ADR-0004 §3. They are introduced additively (expand-only
-migration ``0012_agent_artifacts``); no existing table is modified.
+Three layers of ADR-0004 live here:
+
+* ``agent_packages`` / ``agent_versions`` (PR-050, data-model.md §6.2/§6.3) —
+  the immutable-content backbone. ``AgentPackage`` is the stable logical
+  identity; ``AgentVersion`` is the immutable content version whose
+  ``digest`` is the execution identity.
+* ``release_channels`` / ``release_events`` (PR-053, data-model.md §6.4/§6.5)
+  — the mutable per-(org, workspace, package, channel) pointer
+  (``current_version_id``) plus the append-only promote/rollback history.
+  Channel updates go through Compare-And-Swap on ``row_version`` (the
+  codebase's first CAS caller).
 
 Cross-backend note: same conventions as ``iam/model.py`` / ``orgs/model.py``
 — ``JSON`` (not ``JSONB``), ``DateTime(timezone=True)``, ``String(36)``
@@ -29,11 +36,12 @@ Key design points (data-model.md §6, ADR-0004 §3):
   lands in PR-052. The DB CHECK here only constrains ``status`` to the
   state machine (``draft → reviewed → published → revoked``, plus
   ``draft | reviewed → archived``, ADR §4).
-
-This PR lands the tables only — there are **no callers** yet (no repository,
-router, or contract envelope). It follows the "land the table first"
-philosophy established by PR-030 (builtin-roles table) and PR-040
-(audit_events table).
+* ``release_channels`` carries a cross-dialect unique INDEX (not a
+  table-level ``UniqueConstraint``) so NULL ``workspace_id`` collides on
+  both Postgres (``NULLS NOT DISTINCT``) and SQLite (``COALESCE`` sentinel).
+  See migration ``0013_release_channels_events`` for the dialect branch —
+  the ORM deliberately omits the constraint so ``create_all`` does not emit
+  a SQLite-incompatible plain UNIQUE.
 """
 
 from __future__ import annotations
@@ -50,6 +58,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -176,4 +185,131 @@ class AgentVersionRow(Base):
         Index("idx_agent_versions_org", "org_id"),
         Index("idx_agent_versions_package", "package_id"),
         Index("idx_agent_versions_org_status", "org_id", "status"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Channel layer (PR-053, ADR-0004 §5/§7/§8, data-model.md §6.4/§6.5)
+# ---------------------------------------------------------------------------
+
+#: Allowed channel values (ADR §5). Mirrored as module constants so callers
+#: avoid string literals; the DB CHECK (``ck_release_channels_channel``) is
+#: the authoritative closed set.
+CHANNEL_DEV = "dev"
+CHANNEL_STAGING = "staging"
+CHANNEL_PROD = "prod"
+_ALLOWED_CHANNELS: frozenset[str] = frozenset({CHANNEL_DEV, CHANNEL_STAGING, CHANNEL_PROD})
+
+#: ReleaseEvent action constants (ADR §7/§8). ``promote`` advances the
+#: pointer forward; ``rollback`` moves it to a historical version.
+EVENT_ACTION_PROMOTE = "promote"
+EVENT_ACTION_ROLLBACK = "rollback"
+
+
+class ReleaseChannelRow(Base):
+    """Mutable per-(org, workspace, package, channel) version pointer (data-model.md §6.4).
+
+    Exactly one row per ``(org_id, workspace_id, package_id, channel)`` — the
+    cross-dialect unique INDEX (``uq_release_channels_org_ws_pkg_channel``)
+    enforces this even when ``workspace_id IS NULL`` (Postgres
+    ``NULLS NOT DISTINCT``; SQLite ``COALESCE`` sentinel). The constraint is
+    INDEX-based, not a table-level ``UniqueConstraint``, so ``create_all``
+    does not emit a SQLite-incompatible plain UNIQUE — see migration
+    ``0013_release_channels_events`` and the module docstring.
+
+    ``current_version_id`` is the version this channel currently resolves;
+    ``row_version`` is the optimistic-concurrency token for promote/rollback
+    CAS (``WHERE row_version = :expected`` then check ``rowcount``). A NULL
+    ``current_version_id`` means the channel exists but points at nothing
+    yet (the initial state after :func:`get_or_create_channel`).
+    """
+
+    __tablename__ = "release_channels"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # Optional workspace grouping — same soft-reference convention as
+    # AgentPackageRow.workspace_id (no FK; isolation at the query layer).
+    workspace_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    package_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("agent_packages.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    channel: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_version_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("agent_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    row_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    # Polymorphic actor — last promoter/rollbacker. Mirrors AgentPackageRow.
+    updated_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
+
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('dev', 'staging', 'prod')",
+            name="ck_release_channels_channel",
+        ),
+        # Cross-dialect unique INDEX for (org_id, workspace_id, package_id,
+        # channel) with NULL-collision on workspace_id. The COALESCE
+        # expression collapses NULL → '_default' so two NULL-workspace rows
+        # collide on SQLite (which has no NULLS NOT DISTINCT clause). This
+        # Index is emitted by create_all on both backends; migration 0013
+        # ADDITIONALLY creates a native NULLS NOT DISTINCT index on Postgres
+        # 15+ (the production-preferred form). A plain UniqueConstraint is
+        # deliberately omitted — it would treat NULLs as distinct on SQLite
+        # and break create_all↔migrated parity.
+        Index(
+            "uq_release_channels_org_ws_pkg_channel",
+            "org_id",
+            text("COALESCE(workspace_id, '_default')"),
+            "package_id",
+            "channel",
+            unique=True,
+        ),
+        Index("idx_release_channels_lookup", "org_id", "package_id"),
+        Index("idx_release_channels_org", "org_id"),
+    )
+
+
+class ReleaseEventRow(Base):
+    """Append-only promote/rollback history (data-model.md §6.5, ADR-0004 §14).
+
+    Distinct from the compliance-grade ``audit_events`` row: this is the
+    domain history (who moved which channel from which version to which
+    version, when, why). The router writes both in the same transaction —
+    ``release.agent.published`` / ``release.agent.rolled_back`` on the audit
+    side (ADR §14), this row on the domain side. ``from_version_id`` is
+    NULL on the first promote (channel had no prior current version).
+    """
+
+    __tablename__ = "release_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    channel_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("release_channels.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    # NULL on first promote (channel had no prior current_version_id).
+    from_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    to_version_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('promote', 'rollback')",
+            name="ck_release_events_action",
+        ),
+        Index("idx_release_events_channel", "channel_id"),
+        Index("idx_release_events_org", "org_id"),
     )

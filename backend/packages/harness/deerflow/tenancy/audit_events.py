@@ -120,6 +120,14 @@ TENANT_EVENT_ACTION_REGISTRY: Mapping[str, str] = {
     # emitted only when a new Version is actually created.
     "agent_package_imported": "catalog.agent_package.imported",
     "agent_version_imported": "catalog.agent_version.imported",
+    # Release channel CAS (PR-053, ADR-0004 §14). ``release.agent.published``
+    # is the channel-pointer CAS success event — DISTINCT from
+    # ``catalog.agent_version.published`` (Version status → published). A
+    # merged publish+promote MUST write both; they are NOT interchangeable
+    # (ADR §14 line 436). ``release.agent.rolled_back`` is the rollback
+    # counterpart (pointer moved to a historical Version).
+    "agent_channel_promoted": "release.agent.published",
+    "agent_channel_rolled_back": "release.agent.rolled_back",
 }
 
 
