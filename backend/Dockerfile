@@ -10,7 +10,7 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.7.20@sha256:2fd1b38e3398a256d6af3f71f0e2ba6a
 FROM ${UV_IMAGE} AS uv-source
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
-FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b AS builder
+FROM python:3.14-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30 AS builder
 
 ARG NODE_MAJOR=22
 ARG APT_MIRROR
@@ -74,7 +74,7 @@ CMD ["sh", "-c", "cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app 
 # Clean image without build-essential — reduces size (~200 MB) and attack surface.
 # Pinned by digest (baseline §13.2「基础镜像固定 digest」).
 # Named `runtime` so CI (sbom-and-scan.yml) can target the production stage explicitly.
-FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b AS runtime
+FROM python:3.14-slim-bookworm@sha256:86f975aca15cf04a40b399eebede9aea7c82eae084d1f1a0a6ef6bcaae871a30 AS runtime
 
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
