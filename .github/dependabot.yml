@@ -1,0 +1,84 @@
+# Dependabot — ci-cd.md §9「依赖版本锁定」+ §19.6「依赖更新」, baseline §13.1.
+#
+# Four ecosystems cover the full dependency surface: backend (pip via uv), frontend
+# (npm), base images (docker, now digest-pinned by PR-066 so Dependabot proposes digest
+# bumps), and GitHub Actions (SHA-pinned by PR-066 so Dependabot tracks new releases).
+#
+# NOTE on pip ecosystem: Dependabot resolves `backend/pyproject.toml` and updates
+# `backend/uv.lock` via its uv integration. If the uv-lock update proves unreliable
+# in practice (upstream limitation), the docker + github-actions ecosystems still
+# keep base images and Actions current; the pip ecosystem can be removed in a
+# follow-up without affecting the others.
+
+version: 2
+updates:
+  # Backend Python deps — pyproject.toml + uv.lock
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    reviewers:
+      - MementoMoriCheng
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    groups:
+      python-minor:
+        update-types:
+          - minor
+          - patch
+
+  # Frontend npm deps — package.json + pnpm-lock.yaml
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    reviewers:
+      - MementoMoriCheng
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    groups:
+      npm-minor:
+        update-types:
+          - minor
+          - patch
+
+  # Base images — backend + frontend Dockerfiles (digest bumps, PR-066 pinned them)
+  - package-ecosystem: docker
+    directory: /backend
+    schedule:
+      interval: weekly
+    reviewers:
+      - MementoMoriCheng
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+    reviewers:
+      - MementoMoriCheng
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+
+  # GitHub Actions — workflows + the action called by sbom-and-scan/codeql/etc.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    reviewers:
+      - MementoMoriCheng
+    commit-message:
+      prefix: chore(deps)
+      include: scope
+    groups:
+      actions-minor:
+        update-types:
+          - minor
+          - patch

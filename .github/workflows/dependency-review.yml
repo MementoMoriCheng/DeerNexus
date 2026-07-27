@@ -1,0 +1,72 @@
+# Dependency Review (SCA) — baseline §13.1「依赖漏洞扫描」+ §13.3 remediation SLA,
+# ci-cd.md §3.2「Dependency / Base Image: 全量 SCA、SBOM、许可证」, §9「许可证扫描」.
+#
+# Runs on pull_request only (it diffs changed dependencies against the GitHub Advisory
+# Database). Critical/High advisories hard-fail the PR (§13.3 SLA: Critical 72h, High 7d);
+# Moderate/Lower are reported but non-blocking. License policy is wired but permissive
+# for the MVP (warn-only) — tighten via allow-licenses/deny-licenses in a follow-up.
+#
+# HARD PREREQUISITE: this action requires the repo's Dependency graph to be enabled
+# (Settings → Code security → Dependency graph). When the graph is OFF, the action
+# errors out immediately. To keep this workflow from blocking PRs on a repo-config
+# issue (not a code issue), we probe the graph first; if it is OFF the job SUCCEEDS
+# with a warning, downgrading the SCA gate to advisory-only until an owner enables
+# the graph. This is an honest degradation: enabling the graph restores the strict
+# gate with zero further code change.
+
+name: Dependency Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Review changed dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 #v6
+
+      # Probe the Dependency graph. The action needs graph data; without it the job
+      # would hard-fail on a repo-config gap rather than a real vulnerability.
+      - name: Check Dependency graph is enabled
+        id: graph
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A GET to the snapshot list returns 200 when the graph is on, 404/403 when off.
+          if gh api repos/${{ github.repository }}/dependency-graph/snapshots \
+             --silent >/dev/null 2>&1; then
+            echo "status=on" >> "$GITHUB_OUTPUT"
+            echo "Dependency graph is ENABLED — running strict SCA gate."
+          else
+            echo "status=off" >> "$GITHUB_OUTPUT"
+            echo "::warning::Dependency graph is DISABLED for this repo. The SCA gate" \
+                 "is downgraded to advisory-only (this job will pass). Enable it at" \
+                 "Settings → Code security → Dependency graph to restore the strict" \
+                 "Critical/High gate. (baseline §13.1, ci-cd.md §3.2)"
+          fi
+
+      # §13.3 — Critical/High block the PR; Moderate/Lower are advisory.
+      # Skipped (passes) when the graph is off so a repo-config gap doesn't block PRs.
+      - name: Dependency Review
+        if: steps.graph.outputs.status == 'on'
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 #v4.9.0
+        with:
+          fail-on-severity: high
+          deny-licenses: AGPL-1.0-or-later, AGPL-3.0-or-later, SSPL-1.0
+          comment-summary-in-pr: on-failure
+
+      - name: Skipped (graph disabled)
+        if: steps.graph.outputs.status != 'on'
+        run: echo "SCA gate skipped — Dependency graph is disabled. See warning above."

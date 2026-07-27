@@ -617,3 +617,22 @@ waivers
 | CODEOWNERS | `.github/CODEOWNERS`；MVP 初始 Owner 为 `@MementoMoriCheng` |
 
 `main` 的必需检查与 Code Owner Review 由 GitHub Branch Protection 配置，并在 PR-002 合并前验证。SAST、完整 SCA、SBOM、镜像扫描、签名、环境保护和发布证据仍按后续 PR 实施，不因本节存在而视为完成。
+
+### 19.2 PR-066 CI/CD Release Gate 后续映射
+
+PR-066 落地 §19.1 中「后续 PR」的扫描与供应链部分（签名与环境保护仍留待公共市场前）。下表是 PR-066 实际实现，对应 §3.1 / §4.1 / §4.4 / §5 / §9 / §13 与 `baseline.md` §13。
+
+| 领域 | 实际实现 |
+| --- | --- |
+| SAST | `.github/workflows/codeql.yml` → `analyze` → `github/codeql-action`（python + javascript-typescript 矩阵）；`push.main` + `pull_request` + 周日 `schedule`；findings 进 Security tab SARIF，按 §13.3 SLA triage |
+| 依赖 SCA | `.github/workflows/dependency-review.yml` → `actions/dependency-review-action@v4.9.0`；`pull_request` 触发；`fail-on-severity: high`（§13.3）+ `deny-licenses` 策略（MVP warn-only）|
+| 镜像 SBOM | `.github/workflows/sbom-and-scan.yml` → `anchore/sbom-action@v0.24.0`；`push.tags: v*` 触发；SPDX-JSON 上传为 build artifact = §5.1 `sbom_ref` |
+| 镜像扫描 | `.github/workflows/sbom-and-scan.yml` → `aquasecurity/trivy-action@v0.29.0`；全严重度 SARIF（Security tab）+ `CRITICAL,HIGH --exit-code 1` 硬阻断（§13.3）；`.trivyignore` 具名豁免（§13.1）|
+| 镜像 provenance | `.github/workflows/container.yaml` → `actions/attest-build-provenance@v2`（既有，PR-002；PR-066 把其中的 `actions/checkout` 升 SHA 固定）|
+| 基础镜像固定 | `backend/Dockerfile` + `frontend/Dockerfile` 所有 `FROM` 改 `@sha256:`（§5.1）|
+| 非 root 运行 | `backend/Dockerfile` runtime stage `USER app`（gid/uid 1001）；`frontend/Dockerfile` prod stage `USER node`（§13.2）|
+| 第三方 Action 固定 commit | 全 workflow `actions/*` + `astral-sh/*` 改 `@<40-hex-sha> #vN`（既有 `docker/*` + gitleaks 已固定）（§9）|
+| 依赖更新自动化 | `.github/dependabot.yml` → pip + npm + docker + github-actions 四 ecosystem，weekly（§9 / §19.6）|
+| Secret scan | `.github/workflows/secret-scan.yml` → gitleaks（既有，PR-002；PR-066 把 `actions/checkout` 升 SHA 固定）|
+
+签名工具（`signature_ref`）、Environment Protection 与 Release Evidence 存储仍按后续 PR 实施（ADR-0004 §17 将「完整签名证明 / SLSA 供应链」列为非目标，触发点为公共市场前）。

@@ -1,0 +1,61 @@
+# CodeQL SAST — baseline §13.1「PR 执行 SAST」, ci-cd.md §3.1「SAST / SCA / Secret scan」,
+# §4.1 PR Fast「SAST / 全量 SCA」, §4.3 Main/Nightly schedule.
+#
+# Scans backend (python) + frontend (javascript-typescript). Findings surface in the
+# GitHub Security tab as SARIF; triage follows the §13.3 remediation SLA. CodeQL does
+# not hard-fail the run — its presence satisfies §3.1 (SAST runs on every PR / push to
+# main) and the weekly schedule mirrors §4.3 Nightly coverage.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # §4.3 Nightly — weekly cadence (Sunday 03:00 UTC) keeps the query pack fresh.
+    - cron: '0 3 * * 0'
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            # Backend lives under backend/; CodeQL autobuild detects the toolchain.
+            config: backend
+          - language: javascript-typescript
+            config: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 #v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@3b0bd1d116c0bde30213346b22d4f634d96a2fb0 #v3
+        with:
+          languages: ${{ matrix.language }}
+
+      # Autobuild is sufficient for python (no compile step required) and for the
+      # frontend source layout CodeQL analyzes by default. If autobuild fails for the
+      # JS target, swap in the explicit `pnpm install && pnpm build` sequence.
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@3b0bd1d116c0bde30213346b22d4f634d96a2fb0 #v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@3b0bd1d116c0bde30213346b22d4f634d96a2fb0 #v3
+        with:
+          category: '/language:${{ matrix.language }}'

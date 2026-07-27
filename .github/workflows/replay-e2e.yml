@@ -50,13 +50,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 #v6
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 #v6
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 #v7
       - name: Install backend dependencies
         working-directory: backend
         run: uv sync --group dev
@@ -70,18 +70,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 #v6
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 #v6
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 #v7
       - name: Install backend dependencies (replay gateway)
         working-directory: backend
         run: uv sync --group dev
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 #v4
         with:
           node-version: "22"
       - name: Enable Corepack
@@ -98,7 +98,7 @@ jobs:
         working-directory: frontend
         run: pnpm exec playwright test -c playwright.real-backend.config.ts
       - name: Upload report + render artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 #v4
         if: ${{ !cancelled() }}
         with:
           name: replay-render

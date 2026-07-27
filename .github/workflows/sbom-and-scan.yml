@@ -1,0 +1,96 @@
+# Image SBOM + CVE scan — baseline §13.1「生成或保存 SBOM」+ §13.2「镜像进入生产前扫描」,
+# ci-cd.md §4.4 平台 Release「镜像、依赖、SBOM、签名验证」, §5.1 build artifact record
+# {sbom_ref, scan_ref}, §19.6 SBOM / Image Scanner.
+#
+# Triggers on release tags (v*), the same trigger as container.yaml. It rebuilds the
+# image locally WITHOUT pushing (the publish workflow owns the push) purely to run:
+#   1. syft → SPDX JSON SBOM (uploaded as a build artifact = §5.1 sbom_ref evidence);
+#   2. trivy → full SARIF (Security tab) + Critical/High hard-fail (§13.3 SLA).
+# Medium/Low findings surface as SARIF alerts only (baseline §13.1 allows named
+# exemptions; add to .trivyignore when a Critical/High must be deferred with a reason).
+
+name: SBOM & Image Scan
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  sbom-and-scan:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: backend
+            dockerfile: backend/Dockerfile
+            # Prod runtime stage (Stage 3) is the deployable identity.
+            build_stage: runtime
+          - target: frontend
+            dockerfile: frontend/Dockerfile
+            build_stage: prod
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 #v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 #v3.11.1
+
+      # Build the prod stage locally; do NOT push (container.yaml owns the registry push).
+      # The image digest pins (PR-066) ensure a reproducible scan subject.
+      - name: Build image (no push)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 #v6.18.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.build_stage }}
+          load: true
+          tags: deernexus-${{ matrix.target }}:${{ github.ref_name }}
+          push: false
+
+      # §5.1 sbom_ref — SPDX JSON via syft, retained as a build artifact.
+      - name: Generate SBOM (syft)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 #v0.24.0
+        with:
+          image: deernexus-${{ matrix.target }}:${{ github.ref_name }}
+          format: spdx-json
+          output-file: ${{ matrix.target }}-sbom.spdx.json
+          artifact-name: ${{ matrix.target }}-sbom-spdx.json
+
+      # Full CVE scan → SARIF (uploaded to the Security tab for triage).
+      - name: Scan image (trivy SARIF)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 #v0.29.0
+        with:
+          image-ref: deernexus-${{ matrix.target }}:${{ github.ref_name }}
+          format: sarif
+          output: ${{ matrix.target }}-trivy-results.sarif
+          severity: LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@3b0bd1d116c0bde30213346b22d4f634d96a2fb0 #v3
+        with:
+          sarif_file: ${{ matrix.target }}-trivy-results.sarif
+          category: trivy-image-${{ matrix.target }}
+
+      # §13.3 — Critical/High gate the release; exit-code 1 fails the workflow.
+      # Named exemptions go in .trivyignore (baseline §13.1 permits named exemptions
+      # but forbids silently ignoring Critical/High without one).
+      - name: Enforce Critical/High gate (trivy)
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 #v0.29.0
+        with:
+          image-ref: deernexus-${{ matrix.target }}:${{ github.ref_name }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+          args: --ignorefile=.trivyignore
