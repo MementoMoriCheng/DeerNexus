@@ -41,7 +41,12 @@ export class StudioRequestError extends Error {
   readonly code: string | null;
   /** Whether the backend marked this error retryable (ContractError.retryable). */
   readonly retryable: boolean;
-  constructor(status: number, message: string, code: string | null = null, retryable = false) {
+  constructor(
+    status: number,
+    message: string,
+    code: string | null = null,
+    retryable = false,
+  ) {
     super(message);
     this.name = "StudioRequestError";
     this.status = status;
@@ -96,7 +101,10 @@ async function readErrorDetail(
 /** Throw a StudioRequestError if !ok, parsing the ContractError envelope. */
 async function ensureOk(response: Response, fallback: string): Promise<void> {
   if (response.ok) return;
-  const { message, code, retryable } = await readErrorDetail(response, fallback);
+  const { message, code, retryable } = await readErrorDetail(
+    response,
+    fallback,
+  );
   throw new StudioRequestError(response.status, message, code, retryable);
 }
 
@@ -116,7 +124,9 @@ function buildMutationHeaders(options?: {
   ifMatch?: number;
   idempotencyKey?: string;
 }): Record<string, string> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
   if (options?.ifMatch !== undefined) {
     // If-Match takes a quoted integer (PR-055 ETag shape).
     headers["If-Match"] = `"${options.ifMatch}"`;
@@ -143,7 +153,9 @@ export async function getPackage(packageId: string): Promise<AgentPackage> {
 
 // ── Package mutations ─────────────────────────────────────────────────
 
-export async function createPackage(request: CreatePackageRequest): Promise<AgentPackage> {
+export async function createPackage(
+  request: CreatePackageRequest,
+): Promise<AgentPackage> {
   const response = await fetch(apiUrl("/api/v1/agent-packages"), {
     method: "POST",
     headers: buildMutationHeaders(),
@@ -167,10 +179,13 @@ export async function updatePackage(
 }
 
 export async function archivePackage(packageId: string): Promise<AgentPackage> {
-  const response = await fetch(apiUrl(`/api/v1/agent-packages/${packageId}:archive`), {
-    method: "POST",
-    headers: buildMutationHeaders(),
-  });
+  const response = await fetch(
+    apiUrl(`/api/v1/agent-packages/${packageId}:archive`),
+    {
+      method: "POST",
+      headers: buildMutationHeaders(),
+    },
+  );
   await ensureOk(response, "Failed to archive agent package");
   return (await response.json()) as AgentPackage;
 }
@@ -178,7 +193,9 @@ export async function archivePackage(packageId: string): Promise<AgentPackage> {
 // ── Version fetchers (GET) ────────────────────────────────────────────
 
 export async function listVersions(packageId: string): Promise<AgentVersion[]> {
-  const response = await fetch(apiUrl(`/api/v1/agent-packages/${packageId}/versions`));
+  const response = await fetch(
+    apiUrl(`/api/v1/agent-packages/${packageId}/versions`),
+  );
   await ensureOk(response, "Failed to load versions");
   return (await response.json()) as AgentVersion[];
 }
@@ -189,10 +206,13 @@ async function versionStateChange(
   versionId: string,
   action: "review" | "publish" | "revoke",
 ): Promise<AgentVersion> {
-  const response = await fetch(apiUrl(`/api/v1/agent-versions/${versionId}:${action}`), {
-    method: "POST",
-    headers: buildMutationHeaders(),
-  });
+  const response = await fetch(
+    apiUrl(`/api/v1/agent-versions/${versionId}:${action}`),
+    {
+      method: "POST",
+      headers: buildMutationHeaders(),
+    },
+  );
   await ensureOk(response, `Failed to ${action} version`);
   return (await response.json()) as AgentVersion;
 }
@@ -211,8 +231,12 @@ export function revokeVersion(versionId: string): Promise<AgentVersion> {
 
 // ── Channel fetchers (GET) ────────────────────────────────────────────
 
-export async function listChannels(packageId: string): Promise<ReleaseChannel[]> {
-  const response = await fetch(apiUrl(`/api/v1/agent-packages/${packageId}/channels`));
+export async function listChannels(
+  packageId: string,
+): Promise<ReleaseChannel[]> {
+  const response = await fetch(
+    apiUrl(`/api/v1/agent-packages/${packageId}/channels`),
+  );
   await ensureOk(response, "Failed to load channels");
   return (await response.json()) as ReleaseChannel[];
 }
@@ -221,7 +245,9 @@ export async function getChannel(
   packageId: string,
   channel: ReleaseChannelName,
 ): Promise<ReleaseChannel> {
-  const response = await fetch(apiUrl(`/api/v1/agent-packages/${packageId}/channels/${channel}`));
+  const response = await fetch(
+    apiUrl(`/api/v1/agent-packages/${packageId}/channels/${channel}`),
+  );
   await ensureOk(response, "Failed to load channel");
   return (await response.json()) as ReleaseChannel;
 }
@@ -295,7 +321,9 @@ async function channelMove(
 
 // ── File-state import (PR-051) ────────────────────────────────────────
 
-export async function importAgent(request: ImportAgentRequest): Promise<ImportReport> {
+export async function importAgent(
+  request: ImportAgentRequest,
+): Promise<ImportReport> {
   const response = await fetch(apiUrl("/api/v1/agent-packages:import-file"), {
     method: "POST",
     headers: buildMutationHeaders(),

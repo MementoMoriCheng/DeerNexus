@@ -3,7 +3,13 @@
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useImportAgent } from "@/core/studio";
@@ -18,9 +24,7 @@ export default function StudioImportPage() {
   const [userId, setUserId] = useState("");
 
   const canSubmit =
-    name.trim() !== "" &&
-    version.trim() !== "" &&
-    !importMutation.isPending;
+    name.trim() !== "" && version.trim() !== "" && !importMutation.isPending;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,9 +43,9 @@ export default function StudioImportPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Import agent</h1>
         <p className="text-muted-foreground text-sm">
-          Import an agent from the file-state layout (SOUL / config). The importer
-          computes a digest and is idempotent: re-importing identical content
-          returns the existing version instead of duplicating.
+          Import an agent from the file-state layout (SOUL / config). The
+          importer computes a digest and is idempotent: re-importing identical
+          content returns the existing version instead of duplicating.
         </p>
       </div>
 
@@ -49,8 +53,13 @@ export default function StudioImportPage() {
         <CardHeader>
           <CardTitle className="text-base">File-state import</CardTitle>
           <CardDescription>
-            Reads <code className="font-mono text-xs">agents/&lbrace;name&rbrace;/</code> from the
-            server-side agent directory. Requires the <code className="font-mono text-xs">studio:package:write</code> permission.
+            Reads{" "}
+            <code className="font-mono text-xs">
+              agents/&lbrace;name&rbrace;/
+            </code>{" "}
+            from the server-side agent directory. Requires the{" "}
+            <code className="font-mono text-xs">studio:package:write</code>{" "}
+            permission.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -142,7 +151,15 @@ function ImportReportCard({ report }: { report: ImportReport }) {
   );
 }
 
-function MetaRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function MetaRow({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
   return (
     <div className="flex gap-2 text-sm">
       <span className="text-muted-foreground w-24 shrink-0">{label}</span>

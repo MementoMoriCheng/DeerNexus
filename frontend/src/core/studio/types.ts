@@ -145,5 +145,9 @@ export interface ReconcileReport {
   org_id: string;
   checked_count: number;
   is_clean: boolean;
-  missing_versions: Array<{ version_id: string; object_key: string; reason: string }>;
+  missing_versions: Array<{
+    version_id: string;
+    object_key: string;
+    reason: string;
+  }>;
 }

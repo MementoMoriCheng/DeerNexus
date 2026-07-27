@@ -32,7 +32,11 @@ import { fetch as fetcher } from "@/core/api/fetcher";
 
 const mockedFetch = rs.mocked(fetcher);
 
-function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+function jsonResponse(
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "Content-Type": "application/json", ...headers },
@@ -49,13 +53,17 @@ describe("listPackages", () => {
     mockedFetch.mockResolvedValueOnce(jsonResponse(200, packages));
     const result = await listPackages();
     expect(result).toEqual(packages);
-    expect(mockedFetch.mock.calls[0][0]).toBe("/api/v1/agent-packages");
+    expect(mockedFetch.mock.calls[0]![0]).toBe("/api/v1/agent-packages");
   });
 
   test("throws StudioRequestError on 403 with parsed ContractError envelope", async () => {
     mockedFetch.mockResolvedValueOnce(
       jsonResponse(403, {
-        detail: { code: "permission_denied", message: "Permission denied", retryable: false },
+        detail: {
+          code: "permission_denied",
+          message: "Permission denied",
+          retryable: false,
+        },
       }),
     );
     await expect(listPackages()).rejects.toMatchObject({
@@ -68,9 +76,7 @@ describe("listPackages", () => {
   });
 
   test("403 exposes isPermissionDenied getter", async () => {
-    mockedFetch.mockResolvedValueOnce(
-      jsonResponse(403, { detail: "no perm" }),
-    );
+    mockedFetch.mockResolvedValueOnce(jsonResponse(403, { detail: "no perm" }));
     try {
       await listPackages();
       expect.fail("should have thrown");
@@ -97,7 +103,7 @@ describe("publishVersion", () => {
     mockedFetch.mockResolvedValueOnce(jsonResponse(200, version));
     const result = await publishVersion("v-1");
     expect(result).toEqual(version);
-    const call = mockedFetch.mock.calls[0];
+    const call = mockedFetch.mock.calls[0]!;
     expect(call[0]).toBe("/api/v1/agent-versions/v-1:publish");
     expect((call[1] as RequestInit).method).toBe("POST");
   });
@@ -105,7 +111,11 @@ describe("publishVersion", () => {
   test("throws StudioRequestError on non-2xx", async () => {
     mockedFetch.mockResolvedValueOnce(
       jsonResponse(409, {
-        detail: { code: "release_conflict", message: "CAS mismatch", retryable: true },
+        detail: {
+          code: "release_conflict",
+          message: "CAS mismatch",
+          retryable: true,
+        },
       }),
     );
     await expect(publishVersion("v-1")).rejects.toMatchObject({
@@ -128,7 +138,7 @@ describe("promoteChannel (CAS + Idempotency-Key)", () => {
       { target_version_id: "v-2", expected_channel_version: 1 },
       { ifMatch: 1, idempotencyKey: "idem-abc" },
     );
-    const call = mockedFetch.mock.calls[0];
+    const call = mockedFetch.mock.calls[0]!;
     const init = call[1] as RequestInit;
     const headers = init.headers as Record<string, string>;
     expect(headers["If-Match"]).toBe('"1"');
@@ -141,12 +151,14 @@ describe("promoteChannel (CAS + Idempotency-Key)", () => {
   });
 
   test("falls back to body expected_channel_version when no If-Match header", async () => {
-    mockedFetch.mockResolvedValueOnce(jsonResponse(200, { channel: {}, event: {} }));
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, { channel: {}, event: {} }),
+    );
     await promoteChannel("pkg-1", "dev", {
       target_version_id: "v-1",
       expected_channel_version: 3,
     });
-    const init = mockedFetch.mock.calls[0][1] as RequestInit;
+    const init = mockedFetch.mock.calls[0]![1] as RequestInit;
     const headers = init.headers as Record<string, string>;
     expect(headers["If-Match"]).toBe('"3"');
     const body = JSON.parse(init.body as string);
@@ -164,7 +176,10 @@ describe("promoteChannel (CAS + Idempotency-Key)", () => {
       }),
     );
     await expect(
-      promoteChannel("pkg-1", "prod", { target_version_id: "v-1", expected_channel_version: 1 }),
+      promoteChannel("pkg-1", "prod", {
+        target_version_id: "v-1",
+        expected_channel_version: 1,
+      }),
     ).rejects.toMatchObject({
       status: 409,
       code: "release_gate_violation",

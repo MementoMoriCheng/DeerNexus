@@ -5,7 +5,12 @@ import Link from "next/link";
 import { PackageStatusBadge } from "@/components/studio/studio-badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -24,7 +29,9 @@ export default function StudioPackagesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Agent Packages</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Agent Packages
+          </h1>
           <p className="text-muted-foreground text-sm">
             Manage agent artifacts, versions, and release channels.
           </p>

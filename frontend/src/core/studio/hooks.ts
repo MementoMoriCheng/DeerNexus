@@ -78,7 +78,10 @@ export function useStudioPackages(options?: ReadOptions<AgentPackage[]>) {
   });
 }
 
-export function useStudioPackage(packageId: string, options?: ReadOptions<AgentPackage>) {
+export function useStudioPackage(
+  packageId: string,
+  options?: ReadOptions<AgentPackage>,
+) {
   return useQuery({
     queryKey: [...STUDIO_KEY, "packages", packageId],
     queryFn: () => getPackage(packageId),
@@ -87,7 +90,10 @@ export function useStudioPackage(packageId: string, options?: ReadOptions<AgentP
   });
 }
 
-export function useStudioVersions(packageId: string, options?: ReadOptions<AgentVersion[]>) {
+export function useStudioVersions(
+  packageId: string,
+  options?: ReadOptions<AgentVersion[]>,
+) {
   return useQuery({
     queryKey: [...STUDIO_KEY, "packages", packageId, "versions"],
     queryFn: () => listVersions(packageId),
@@ -96,7 +102,10 @@ export function useStudioVersions(packageId: string, options?: ReadOptions<Agent
   });
 }
 
-export function useStudioChannels(packageId: string, options?: ReadOptions<ReleaseChannel[]>) {
+export function useStudioChannels(
+  packageId: string,
+  options?: ReadOptions<ReleaseChannel[]>,
+) {
   return useQuery({
     queryKey: [...STUDIO_KEY, "packages", packageId, "channels"],
     queryFn: () => listChannels(packageId),
@@ -111,7 +120,14 @@ export function useStudioChannelEvents(
   options?: ReadOptions<ReleaseEvent[]>,
 ) {
   return useQuery({
-    queryKey: [...STUDIO_KEY, "packages", packageId, "channels", channel, "events"],
+    queryKey: [
+      ...STUDIO_KEY,
+      "packages",
+      packageId,
+      "channels",
+      channel,
+      "events",
+    ],
     queryFn: () => listChannelEvents(packageId, channel!),
     enabled: Boolean(packageId) && channel !== null,
     ...options,
@@ -138,7 +154,11 @@ function useInvalidateStudio() {
 
 // ── Version lifecycle mutations ───────────────────────────────────────
 
-export function useReviewVersion(): UseMutationResult<AgentVersion, Error, string> {
+export function useReviewVersion(): UseMutationResult<
+  AgentVersion,
+  Error,
+  string
+> {
   const invalidate = useInvalidateStudio();
   return useMutation({
     mutationFn: reviewVersion,
@@ -146,11 +166,16 @@ export function useReviewVersion(): UseMutationResult<AgentVersion, Error, strin
       toast.success(`Version ${version.version} submitted for review`);
       void invalidate();
     },
-    onError: (error) => toast.error(errorMessage(error, "Failed to review version")),
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to review version")),
   });
 }
 
-export function usePublishVersion(): UseMutationResult<AgentVersion, Error, string> {
+export function usePublishVersion(): UseMutationResult<
+  AgentVersion,
+  Error,
+  string
+> {
   const invalidate = useInvalidateStudio();
   return useMutation({
     mutationFn: publishVersion,
@@ -158,11 +183,16 @@ export function usePublishVersion(): UseMutationResult<AgentVersion, Error, stri
       toast.success(`Version ${version.version} published`);
       void invalidate();
     },
-    onError: (error) => toast.error(errorMessage(error, "Failed to publish version")),
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to publish version")),
   });
 }
 
-export function useRevokeVersion(): UseMutationResult<AgentVersion, Error, string> {
+export function useRevokeVersion(): UseMutationResult<
+  AgentVersion,
+  Error,
+  string
+> {
   const invalidate = useInvalidateStudio();
   return useMutation({
     mutationFn: revokeVersion,
@@ -170,7 +200,8 @@ export function useRevokeVersion(): UseMutationResult<AgentVersion, Error, strin
       toast.success(`Version ${version.version} revoked`);
       void invalidate();
     },
-    onError: (error) => toast.error(errorMessage(error, "Failed to revoke version")),
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to revoke version")),
   });
 }
 
@@ -225,7 +256,11 @@ export function useRollbackChannel(): UseMutationResult<
 
 // ── Import mutation ───────────────────────────────────────────────────
 
-export function useImportAgent(): UseMutationResult<ImportReport, Error, ImportAgentRequest> {
+export function useImportAgent(): UseMutationResult<
+  ImportReport,
+  Error,
+  ImportAgentRequest
+> {
   const invalidate = useInvalidateStudio();
   return useMutation({
     mutationFn: importAgent,
@@ -237,13 +272,18 @@ export function useImportAgent(): UseMutationResult<ImportReport, Error, ImportA
       );
       void invalidate();
     },
-    onError: (error) => toast.error(errorMessage(error, "Failed to import agent")),
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to import agent")),
   });
 }
 
 // ── Package CRUD mutations ────────────────────────────────────────────
 
-export function useCreatePackage(): UseMutationResult<AgentPackage, Error, CreatePackageRequest> {
+export function useCreatePackage(): UseMutationResult<
+  AgentPackage,
+  Error,
+  CreatePackageRequest
+> {
   const invalidate = useInvalidateStudio();
   return useMutation({
     mutationFn: createPackage,
@@ -251,7 +291,8 @@ export function useCreatePackage(): UseMutationResult<AgentPackage, Error, Creat
       toast.success(`Package ${pkg.name} created`);
       void invalidate();
     },
-    onError: (error) => toast.error(errorMessage(error, "Failed to create package")),
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to create package")),
   });
 }
 
@@ -267,11 +308,16 @@ export function useUpdatePackage(): UseMutationResult<
       toast.success(`Package ${pkg.name} updated`);
       void invalidate();
     },
-    onError: (error) => toast.error(errorMessage(error, "Failed to update package")),
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to update package")),
   });
 }
 
-export function useArchivePackage(): UseMutationResult<AgentPackage, Error, string> {
+export function useArchivePackage(): UseMutationResult<
+  AgentPackage,
+  Error,
+  string
+> {
   const invalidate = useInvalidateStudio();
   return useMutation({
     mutationFn: archivePackage,
@@ -279,13 +325,18 @@ export function useArchivePackage(): UseMutationResult<AgentPackage, Error, stri
       toast.success(`Package ${pkg.name} archived`);
       void invalidate();
     },
-    onError: (error) => toast.error(errorMessage(error, "Failed to archive package")),
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to archive package")),
   });
 }
 
 // ── Inventory reconciliation ──────────────────────────────────────────
 
-export function useReconcileInventory(): UseMutationResult<ReconcileReport, Error, void> {
+export function useReconcileInventory(): UseMutationResult<
+  ReconcileReport,
+  Error,
+  void
+> {
   const invalidate = useInvalidateStudio();
   return useMutation({
     mutationFn: reconcileInventory,
@@ -299,6 +350,7 @@ export function useReconcileInventory(): UseMutationResult<ReconcileReport, Erro
       }
       void invalidate();
     },
-    onError: (error) => toast.error(errorMessage(error, "Failed to reconcile inventory")),
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to reconcile inventory")),
   });
 }

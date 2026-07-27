@@ -10,7 +10,12 @@ import {
 } from "@/components/studio/studio-badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -82,7 +87,9 @@ function PackageHeader({ packageId }: { packageId: string }) {
     <div className="flex items-start justify-between gap-4">
       <div>
         <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-semibold tracking-tight">{pkg.display_name}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {pkg.display_name}
+          </h1>
           <PackageStatusBadge status={pkg.status} />
         </div>
         <p className="text-muted-foreground font-mono text-sm">{pkg.name}</p>
@@ -94,7 +101,12 @@ function PackageHeader({ packageId }: { packageId: string }) {
 // ── Versions tab ──────────────────────────────────────────────────────
 
 function VersionsTab({ packageId }: { packageId: string }) {
-  const { data: versions, isLoading, isError, error } = useStudioVersions(packageId);
+  const {
+    data: versions,
+    isLoading,
+    isError,
+    error,
+  } = useStudioVersions(packageId);
 
   if (isLoading) return <Skeleton className="h-32 w-full" />;
   if (isError) {
@@ -206,7 +218,12 @@ function VersionActions({
 // ── Channels tab ──────────────────────────────────────────────────────
 
 function ChannelsTab({ packageId }: { packageId: string }) {
-  const { data: channels, isLoading, isError, error } = useStudioChannels(packageId);
+  const {
+    data: channels,
+    isLoading,
+    isError,
+    error,
+  } = useStudioChannels(packageId);
   const { data: versions } = useStudioVersions(packageId);
 
   if (isLoading) return <Skeleton className="h-32 w-full" />;
@@ -260,7 +277,9 @@ function ChannelCard({
   const rollback = useRollbackChannel();
 
   // Versions eligible to promote onto this channel (published for prod, broader for dev/staging).
-  const promotableVersions = versions.filter((v) => v.status !== "revoked" && v.status !== "archived");
+  const promotableVersions = versions.filter(
+    (v) => v.status !== "revoked" && v.status !== "archived",
+  );
   const currentVersion = versions.find((v) => v.id === currentVersionId);
 
   return (
@@ -294,7 +313,10 @@ function ChannelCard({
               promote.mutate({
                 packageId,
                 channel: channelName,
-                request: { target_version_id: targetVersionId, expected_channel_version: expectedChannelVersion },
+                request: {
+                  target_version_id: targetVersionId,
+                  expected_channel_version: expectedChannelVersion,
+                },
               })
             }
           />
@@ -307,19 +329,25 @@ function ChannelCard({
               rollback.mutate({
                 packageId,
                 channel: channelName,
-                request: { target_version_id: targetVersionId, expected_channel_version: expectedChannelVersion },
+                request: {
+                  target_version_id: targetVersionId,
+                  expected_channel_version: expectedChannelVersion,
+                },
               })
             }
           />
         </div>
         {events && events.length > 0 && (
           <div className="border-t pt-3">
-            <p className="text-muted-foreground mb-2 text-xs font-medium uppercase tracking-wide">
+            <p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
               History
             </p>
             <div className="space-y-1">
               {events.slice(0, 5).map((e) => (
-                <div key={e.id} className="text-muted-foreground flex items-center gap-2 text-xs">
+                <div
+                  key={e.id}
+                  className="text-muted-foreground flex items-center gap-2 text-xs"
+                >
                   <span className="font-mono">{e.action}</span>
                   <span>by {e.actor_id ?? "system"}</span>
                   <span className="tabular-nums">
@@ -355,7 +383,9 @@ function ChannelMoveSelect({
       onSubmit={(e) => {
         e.preventDefault();
         const form = e.currentTarget;
-        const select = form.elements.namedItem("target") as HTMLSelectElement | null;
+        const select = form.elements.namedItem(
+          "target",
+        ) as HTMLSelectElement | null;
         const target = select?.value;
         if (target && expectedChannelVersion !== undefined) {
           onSubmit(target, expectedChannelVersion);
@@ -415,8 +445,14 @@ function OverviewTab({ packageId }: { packageId: string }) {
         <MetaRow label="Status" value={pkg.status} />
         <MetaRow label="Workspace" value={pkg.workspace_id ?? "—"} mono />
         <MetaRow label="Created by" value={pkg.created_by ?? "—"} mono />
-        <MetaRow label="Created at" value={new Date(pkg.created_at).toLocaleString()} />
-        <MetaRow label="Updated at" value={new Date(pkg.updated_at).toLocaleString()} />
+        <MetaRow
+          label="Created at"
+          value={new Date(pkg.created_at).toLocaleString()}
+        />
+        <MetaRow
+          label="Updated at"
+          value={new Date(pkg.updated_at).toLocaleString()}
+        />
         <div className="flex flex-wrap gap-2 border-t pt-3">
           <Button
             size="sm"
@@ -442,7 +478,15 @@ function OverviewTab({ packageId }: { packageId: string }) {
   );
 }
 
-function MetaRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function MetaRow({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
   return (
     <div className="flex gap-2 text-sm">
       <span className="text-muted-foreground w-32 shrink-0">{label}</span>
