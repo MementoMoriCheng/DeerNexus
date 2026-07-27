@@ -71,27 +71,18 @@ _DEFERRED_GATES: tuple[tuple[str, str, str], ...] = (
         "release_channel_points_at_valid_version",
         "ReleaseChannel → AgentVersion reference validity",
         (
-            "Blocked on Track E (Run-pin follow-up): release_channels landed in "
-            "PR-053 and the DbReleaseResolver adapter landed in PR-054, but the Run "
-            "side (runs table release columns + RunCreateRequest wiring + start_run "
-            "calling the resolver) is a separate PR. Reference validity verify needs "
-            "the Run to carry the pinned ReleaseRef so a restore can re-resolve it."
+            "Blocked on Track E (re-resolve follow-up): release_channels landed in "
+            "PR-053 and the Run now carries a pinned ReleaseRef (PR-056 release columns), "
+            "but verify does not yet re-resolve a restored channel against the release "
+            "tables to confirm the pinned version still satisfies the prod gate. The "
+            "Run's frozen digest is the integrity guarantee (ADR §6 step 9); a re-resolve "
+            "check that drifts would need a resolver wired into the verify path."
         ),
     ),
     (
         "agent_digest_matches",
         "Agent object digest matches manifest",
         "Blocked on Track E (PR-052): AgentPackage/AgentVersion tables exist (PR-050) but digest computation + object-store existence check are not implemented.",
-    ),
-    (
-        "new_run_pinned_to_release_ref",
-        "New Run is pinned to a published ReleaseRef",
-        "Blocked on Track E (PR-054/056): ReleaseRef enforcement is not implemented.",
-    ),
-    (
-        "legacy_unpinned_count_zero",
-        "legacy_unpinned Run count is 0",
-        "Blocked on Track E (PR-056): legacy_run gate not implemented.",
     ),
     (
         "secret_references_resolve",
@@ -240,6 +231,87 @@ async def _check_no_null_org_id(session: AsyncSession) -> VerifyGateResult:
     )
 
 
+async def _check_new_run_pinned(session: AsyncSession) -> VerifyGateResult:
+    """A run that is NOT legacy-unpinned must carry a frozen ReleaseRef (PR-056).
+
+    ``legacy_unpinned = false`` means ``start_run`` resolved and pinned a
+    ReleaseRef, so ``release_version_id`` must be non-NULL. A row violating
+    this would be a half-written pin (bug or crash mid-write) — the run claims
+    to be pinned but has no execution identity, which the resume gate would
+    silently treat as legacy. This gate catches that corruption.
+    """
+    runs = Base.metadata.tables.get("runs")
+    if runs is None or "legacy_unpinned" not in runs.c or "release_version_id" not in runs.c:
+        # Predates migration 0016 — schema_compatible already FAILed on head
+        # mismatch; surface a SKIP rather than a second cascading FAIL so the
+        # report points at the real cause (schema drift, not pin corruption).
+        return _gate(
+            "new_run_pinned_to_release_ref",
+            "New Run is pinned to a published ReleaseRef",
+            "SKIP",
+            "runs table predates the release-pin columns (migration 0016); schema_compatible gate reports the drift.",
+        )
+    orphan = int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(runs)
+                .where(runs.c.legacy_unpinned.is_(False), runs.c.release_version_id.is_(None))
+            )
+        ).scalar_one()
+    )
+    if orphan > 0:
+        return _gate(
+            "new_run_pinned_to_release_ref",
+            "New Run is pinned to a published ReleaseRef",
+            "FAIL",
+            f"{orphan} run(s) marked legacy_unpinned=false but missing release_version_id (half-written pin).",
+        )
+    return _gate(
+        "new_run_pinned_to_release_ref",
+        "New Run is pinned to a published ReleaseRef",
+        "PASS",
+    )
+
+
+async def _check_legacy_unpinned_count_zero(session: AsyncSession) -> VerifyGateResult:
+    """prod must admit zero legacy-unpinned runs (ADR-0004 §9.2).
+
+    A restored DB containing legacy runs (``legacy_unpinned = true``) means the
+    prod resume gate would reject them with ``409 release_unpinned`` once
+    ``production.agent_release.enforce`` is flipped on. This gate surfaces that
+    so an operator knows to backfill / clean those runs before enabling the gate
+    (runbook §14.2). Non-zero is a FAIL for a prod-readiness drill.
+    """
+    runs = Base.metadata.tables.get("runs")
+    if runs is None or "legacy_unpinned" not in runs.c:
+        return _gate(
+            "legacy_unpinned_count_zero",
+            "legacy_unpinned Run count is 0",
+            "SKIP",
+            "runs table predates the release-pin columns (migration 0016); schema_compatible gate reports the drift.",
+        )
+    legacy = int(
+        (
+            await session.execute(
+                select(func.count()).select_from(runs).where(runs.c.legacy_unpinned.is_(True))
+            )
+        ).scalar_one()
+    )
+    if legacy > 0:
+        return _gate(
+            "legacy_unpinned_count_zero",
+            "legacy_unpinned Run count is 0",
+            "FAIL",
+            f"{legacy} legacy-unpinned run(s) present — prod resume gate (production.agent_release.enforce) would reject them with 409 release_unpinned (ADR §9.2 / §12).",
+        )
+    return _gate(
+        "legacy_unpinned_count_zero",
+        "legacy_unpinned Run count is 0",
+        "PASS",
+    )
+
+
 async def _check_audit_org_isolation(sf: async_sessionmaker) -> VerifyGateResult:
     """Insert two org-distinct audit events; confirm list_audit_events is scoped.
 
@@ -356,6 +428,8 @@ async def verify_restore(sf: async_sessionmaker, manifest: BackupManifest) -> Ve
         await _run_gate(lambda: _check_row_counts(session, manifest), "row_counts_match", gates)
         await _run_gate(lambda: _check_content_digests(session, manifest), "content_digests_match", gates)
         await _run_gate(lambda: _check_no_null_org_id(session), "no_null_org_id", gates)
+        await _run_gate(lambda: _check_new_run_pinned(session), "new_run_pinned_to_release_ref", gates)
+        await _run_gate(lambda: _check_legacy_unpinned_count_zero(session), "legacy_unpinned_count_zero", gates)
 
     await _run_gate(lambda: _check_audit_org_isolation(sf), "audit_org_isolation", gates)
     await _run_gate(lambda: _check_audit_roundtrip(sf), "audit_roundtrip", gates)

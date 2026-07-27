@@ -1668,5 +1668,50 @@ promote/rollback 错误全改 `ContractError.from_code` envelope:`ReleaseConflic
 
 **回滚边界**:`git revert` + `alembic downgrade 0014` 一次性回滚(idempotency 表 expand-only 无既有表改动;promote/rollback 改回 PR-053 直调 + 裸 HTTPException;`expected_channel_version` 改回 required;`ErrorCode.RELEASE_GATE_VIOLATION` 删除是 additive 因 enum 容忍未知值;replay 无 Run 创建调用方)。
 
+### 16.57 PR-056:Legacy Run 门禁(Run-pin 写侧 + legacy resume 门禁)
+
+吸收 PR-052/053/054/055 各自 deferred 的「Run-pin write side」——PR-055 之后无独立 PR 槽位,且 §12 门禁无 `legacy_unpinned` 列无法触发,故 PR-056 同时交付写侧(resolver 接入 + 持久化 ReleaseRef)与读侧(resume/join 门禁)。
+
+**已确认 2 决策**(单开关默认关 + 仅配置默认 channel):
+- `production.agent_release.enforce` 默认 **false** → 部署零行为变化(start_run 不调 resolver、新 Run 标 `legacy_unpinned=true`、门禁 no-op)。开后 start_run 调 `resolve()` 并 pin ReleaseRef,门禁对 legacy Run 返回 409 `release_unpinned`。
+- channel 仅来自配置 `production.agent_release.default_channel`(默认 `dev`),**不改 `RunCreateRequest` 公开 API**,客户端无法越权选 channel 绕 prod 门禁。
+
+**Schema 迁移 `0016_run_release_pin`**(链自 0015,expand-only):`runs` 加 5 列——`release_package_id`/`release_version_id`/`release_channel`/`release_digest`(全 nullable,冻结快照语义,**无 FK**:digest 是完整性保证非 relational join,镜像 `release_idempotency_records` 的「无 FK 自包含」决策)+ `legacy_unpinned`(**NOT NULL + server_default 'true'**:ALTER 时存量行直接成 legacy,新行 enforcement off 时也成 legacy;NOT NULL 匹配 ORM `Mapped[bool] default=True` 保持 create_all↔migrated parity)。`legacy_unpinned` 列式 ADR §12「存量 Run」标记。**不加** `policy_version`(无 policy 计算路径,Track E)/ **不加** Run 级 `idempotency_key`(独立 Run 去重特性)。
+
+**ORM/Store 层**:`RunRow` 加 5 列 + `legacy_unpinned` ORM `default=True` + `nullable=False`;`RunRecord` dataclass 同步;`_store_put_payload` 镜像 `org_id` insert-only(release 字段进 payload 但 `put()` 只在 INSERT 分支写,UPDATE 分支不动——冻结 pin 不可变);`RunRepository.put` 签名加 5 kwargs + `pin_values` dict 不进 update `values`;`MemoryRunStore.put` 保留既有 release 字段(retry/status follow-up 不覆盖);`_record_from_store` 重构 RunRecord 时回填 release 字段(缺列 → 默认 legacy)。
+
+**Contracts**:`ReleaseRef` 加 `version_id: str`(min_length=1,version row UUID;`version` 仍是 SemVer display 字符串)——resolver 在构造 ReleaseRef 时填 `ver.id`;duck-typed fake + canonical fixture + 测试 helper 同步。
+
+**配置** 新 `ProductionAgentReleaseConfig`(`enforce: bool=False` + `default_channel: Literal["dev","staging","prod"]="dev"` + `extra=forbid`),挂 `ProductionConfig.agent_release`;`config_version` **21→22**;`config.example.yaml` 增 `agent_release:` 块。
+
+**共享错误信封**:提取 `app/gateway/errors.py`(从 `agent_artifacts.py` 抽 `request_id` + `contract_error_response` 为公开函数,agent_artifacts 改薄 wrapper 向后兼容)+ `release_resolution_error_response`(`ReleaseResolutionError.code` → HTTP 状态:`release_not_found`→404 / `release_not_published`·`release_revoked`→409 / `release_tenant_mismatch`→403;未知 code fallback 409 + existence-hide。`release_unpinned` 不在 resolver 路径,由门禁 raise)。
+
+**DI**:`get_release_resolver(request)` 懒构造 `DbReleaseResolver(_sf(request))`(resolver 无状态 per-request 构造即可,blast radius 最小;测试可 monkeypatch `app.state.release_resolver` 注入 fake)。
+
+**start_run 写侧**(`services.py`):在 `resolved_org_id` 与 `create_or_reject` 之间——`enforce=false` → `release_pin=None, legacy_unpinned=True`(今天行为);`enforce=true` → `resolver.resolve(run_ctx.tenant, agent_name or _DEFAULT_ASSISTANT_ID, default_channel)`;`ReleaseResolutionError` → `release_resolution_error_response(request, exc)`(run 不创建,无 partial state);成功 pin → `create_or_reject(...release_package_id/version_id/channel/digest=..., legacy_unpinned=False)`。
+
+**门禁读侧**(`routers/thread_runs.py`):`_gate_legacy_resume(request, run_id, record)` helper——`enforce=false` no-op;`enforce=true` 且 `legacy_unpinned` → 409 `release_unpinned`(非 retryable,envelope)。`join_run` 在 `store_only` 检查后调;`stream_existing_run` 仅 `action is None`(纯 resume)调——**cancel POST(action≠None)不阻断**(ADR §12 允许取消 legacy Run,镜像现有 `store_only and action is None` 模式)。
+
+**Doctor 探针转 LIVE**:新 `app/doctor/probes/release_ref_probe.py::probe_release_ref_enforcement`——`enforce=false` → WARN(门禁未激活);`enforce=true` + memory backend → WARN(非持久 backend);`enforce=true` + 持久 backend → throwaway engine JOIN `release_channels`+`agent_versions` 计数 default_channel 的 published version;0 → FAIL(每新 Run 会被拒);>0 → PASS。`production.py::DEFERRED_LIVE_CHECKS` 删 `agent.release_ref_enforcement` 行(7→6 项)+ `_live_probe_registry()` 注册第 8 个 probe。
+
+**Backup verify 闸门转 LIVE**(`persistence/backup/verify.py`):`new_run_pinned_to_release_ref` 真检查(无 Run 满足 `legacy_unpinned=false AND release_version_id IS NULL`)+ `legacy_unpinned_count_zero` 真检查(`count(legacy_unpinned=true)==0`,ADR §9.2);`release_channel_points_at_valid_version` 文案更新(re-resolve 仍 follow-up)保留 SKIP。clean restore 现在 8 PASS / 6 SKIP。
+
+**HEAD 常量** bump 0015→0016(`test_persistence_bootstrap*.py` + `test_backup.py::test_snapshot_records_alembic_head`)。
+
+**测试**(全绿):`test_run_release_pin_schema.py` 5(列存在 + legacy NOT NULL+default + parity create_all↔migrated + 0015↔0016 round-trip)+ `test_start_run_release_pin.py` 4(RunRepository.put insert-only legacy 默认 + pin 持久化 + status update 不覆盖 pin + retry 保留 pin)+ `test_run_legacy_gate.py` 4(legacy+enforce→409 精确 code + pinned 放行 + enforce=false 放行 + non-retryable 契约)+ `test_doctor_probes.py::TestReleaseRefProbe` 5(enforce off WARN / memory WARN / 无 published FAIL / 有 published PASS / unreachable FAIL)+ 更新 `test_production_doctor.py`(expected deferred set 删 release_ref)+ `test_backup.py`(6→8 PASS)+ 3 bootstrap HEAD 常量。
+
+**ADR-0004 §15 验收**新勾 1 项(legacy_unpinned 被 409 拒绝),共 **10/16**。
+
+**严格不在本 PR 范围**:
+- **policy_version 列**(无 policy 计算路径,Track E;加列是 additive)。
+- **Run 级 idempotency_key**(Run 创建去重特性,与 promote/rollback Idempotency-Key replay(PR-055)不同,独立 follow-up)。
+- **按请求选 channel**(`RunCreateRequest` 不加字段;客户端无法越权,per-request channel + 白名单校验是 follow-up)。
+- **E2E v1→v2→rollback digest**(ADR §15 项,依赖 Studio UI + 已发布 agent,留 PR-057+)。
+- **catalog_entries 写入**(follow-up:import/promote 同事务投影;表 + reader 已在 PR-054 就位)。
+- **真实 S3 digest 检查**(resolver object_key 路径跳过;InlineObjectStore 永真)。
+- **Studio/Admin UI**(PR-057)。
+
+**回滚边界**:`git revert` + `alembic downgrade 0015` 一次性回滚(`runs` 表 5 列 expand-only 无既有数据依赖;`enforce` 默认 false 保证 revert 后行为不变;`ReleaseRef.version_id` 删除是 additive 因 `extra=forbid` 容忍多余字段,但生产 resolver 已填故向后兼容)。
+
 
 

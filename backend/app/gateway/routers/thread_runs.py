@@ -20,9 +20,12 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.gateway.deps import get_checkpointer, get_current_user, get_feedback_repo, get_run_event_store, get_run_manager, get_run_store, get_stream_bridge
+from app.gateway.errors import contract_error_response
 from app.gateway.pagination import trim_run_message_page
 from app.gateway.rbac import require_rbac
 from app.gateway.services import sse_consumer, start_run, wait_for_run_completion
+from deerflow.config.app_config import get_app_config
+from deerflow.contracts.errors import ErrorCode
 from deerflow.contracts.rbac import Permission
 from deerflow.runtime import RunRecord, RunStatus, serialize_channel_values_for_api
 
@@ -111,6 +114,27 @@ def _cancel_conflict_detail(run_id: str, record: RunRecord) -> str:
     if record.status in (RunStatus.pending, RunStatus.running):
         return f"Run {run_id} is not active on this worker and cannot be cancelled"
     return f"Run {run_id} is not cancellable (status: {record.status.value})"
+
+
+def _gate_legacy_resume(request: Request, run_id: str, record: RunRecord) -> None:
+    """PR-056 legacy Run resume gate (ADR-0004 §12).
+
+    A ``legacy_unpinned`` run (created before/without release enforcement) may
+    only be read / cancelled / archived. Resume / continue (``join`` /
+    ``stream`` without a cancel action) is rejected with ``409
+    release_unpinned`` once enforcement is on. When enforcement is off the gate
+    is inert — today's behaviour is preserved. Cancellation (``action`` present)
+    bypasses this gate: ADR §12 explicitly allows cancelling a legacy run.
+    """
+    if not get_app_config().production.agent_release.enforce:
+        return
+    if getattr(record, "legacy_unpinned", True):
+        raise contract_error_response(
+            request,
+            ErrorCode.RELEASE_UNPINNED,
+            status_code=409,
+            message=f"Run {run_id} is legacy-unpinned and cannot be resumed in prod (release gate)",
+        )
 
 
 def _record_to_response(record: RunRecord) -> RunResponse:
@@ -271,6 +295,10 @@ async def join_run(thread_id: str, run_id: str, request: Request) -> StreamingRe
     if record.store_only:
         raise HTTPException(status_code=409, detail=f"Run {run_id} is not active on this worker and cannot be streamed")
 
+    # PR-056: legacy resume gate — only resume/continue is blocked; cancel POST
+    # below passes ``action`` and is explicitly allowed (ADR §12).
+    _gate_legacy_resume(request, run_id, record)
+
     bridge = get_stream_bridge(request)
     return StreamingResponse(
         sse_consumer(bridge, record, request, run_mgr),
@@ -310,6 +338,12 @@ async def stream_existing_run(
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     if record.store_only and action is None:
         raise HTTPException(status_code=409, detail=f"Run {run_id} is not active on this worker and cannot be streamed")
+
+    # PR-056: legacy resume gate. Only the pure-resume path (``action is None``)
+    # is blocked — a cancel POST (action=interrupt/rollback) is explicitly allowed
+    # so a legacy run can still be stopped (ADR §12: read / cancel / archive).
+    if action is None:
+        _gate_legacy_resume(request, run_id, record)
 
     # Cancel if an action was requested (stop-button / interrupt flow)
     if action is not None:

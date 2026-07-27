@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0015_release_idempotency"
+HEAD = "0016_run_release_pin"
 BASELINE = "0001_baseline"
 
 

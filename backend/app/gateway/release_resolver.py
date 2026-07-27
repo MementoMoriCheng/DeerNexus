@@ -168,6 +168,7 @@ class DbReleaseResolver:
             org_id=org_id,
             workspace_id=workspace_id,
             package_id=pkg.id,
+            version_id=ver.id,
             agent_name=pkg.name,
             version=ver.version,
             digest=ver.digest,

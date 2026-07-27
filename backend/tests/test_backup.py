@@ -207,7 +207,7 @@ class TestSnapshot:
     async def test_snapshot_records_alembic_head(self, sf):
         manifest = await take_snapshot(sf, backend="sqlite", declared_rpo_hours=24)
         # The test engine stamps head on bootstrap; the snapshot must record it.
-        assert manifest.schema_version == "0015_release_idempotency"
+        assert manifest.schema_version == "0016_run_release_pin"
 
     def test_normalise_value_handles_datetime_bytes_uuid(self):
         from uuid import UUID
@@ -340,14 +340,19 @@ class TestVerifyGates:
         manifest, dest = await _build_snapshot_on_disk(sf, tmp_path)
         report = await _verify_after_restore(manifest, dest, tmp_path)
         assert report.failed == 0, [g.name for g in report.gates if g.status == "FAIL"]
-        # 6 reachable gates all PASS.
-        assert report.passed == 6
+        # 8 reachable gates all PASS (PR-056 promoted new_run_pinned_to_release_ref
+        # and legacy_unpinned_count_zero from SKIP to LIVE).
+        assert report.passed == 8
         # Every infra-blocked gate is a SKIP, never a silent PASS.
-        assert report.skipped == 8
+        assert report.skipped == 6
         skip_names = {g.name for g in report.gates if g.status == "SKIP"}
         assert "release_channel_points_at_valid_version" in skip_names
         assert "deletion_ledger_replayed" in skip_names
         assert "audit_archive_watermark_consistent" in skip_names
+        # PR-056 gates must now PASS (not SKIP) on a clean restore.
+        pass_names = {g.name for g in report.gates if g.status == "PASS"}
+        assert "new_run_pinned_to_release_ref" in pass_names
+        assert "legacy_unpinned_count_zero" in pass_names
 
     @pytest.mark.anyio
     async def test_skip_gates_carry_track_specific_remediation(self, sf, tmp_path):

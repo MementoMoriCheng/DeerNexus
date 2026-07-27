@@ -452,7 +452,7 @@ security_incident_id?
 - [x] 缺失 / 篡改对象拒绝执行（PR-054：`DbReleaseResolver` prod 门禁对 `content_inline IS NOT NULL` 的 Version 重算 `compute_artifact_digest(content_inline)` 比对 `row.digest`,不匹配 raise `ReleaseResolutionError(release_not_found)` existence-hide corruption;object_key 路径跳过(S3 follow-up)。`test_digest_mismatch_corruption_hidden_as_not_found` 锁定。注:inline 子集覆盖;真实 S3 对象存在检查 + inventory 对账告警留 follow-up）
 - [x] 文件变化不影响已导入 Version（PR-051：`import_agent_from_file` 将 `config.yaml` + `SOUL.md` 投影为 Manifest 并对 canonical JSON 计算 digest,写入 `AgentVersionRow` 后源文件改动不再回流——`test_file_change_does_not_pollute_imported_version` 改写 SOUL.md/config.yaml 后重读 Version,断言 digest + content_inline 不变;published-immutable 由 PR-052 `VersionImmutableError` 继承,`test_published_import_is_immutable` 锁定）
 - [ ] prod 不读取文件系统草稿
-- [ ] legacy_unpinned 被 409 拒绝
+- [x] legacy_unpinned 被 409 拒绝（PR-056：`production.agent_release.enforce` 默认 false 部署零破坏;开后 `start_run` 调 `DbReleaseResolver.resolve` 把 ReleaseRef pin 进 `runs`(新增 5 列 `release_package_id`/`release_version_id`/`release_channel`/`release_digest`/`legacy_unpinned`,insert-only frozen);resume/join/stream 命中 `legacy_unpinned=true` → 409 `release_unpinned`(非 retryable),cancel POST 不阻断(ADR §12 允许取消 legacy Run)。`test_run_legacy_gate` 断言精确 `code=="release_unpinned"`。注:v1→v2→rollback E2E digest(450)/在途 Run 不漂移(450)/revoked 不能创建新 Run(451)依赖 Studio UI 与已发布 agent,留 follow-up）
 - [ ] ReleaseEvent 与 AuditEvent 同事务 / outbox 一致
 - [ ] 对象存储与数据库引用对账
 

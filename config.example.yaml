@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 21
+config_version: 22
 
 # ============================================================================
 # Logging
@@ -1259,6 +1259,17 @@ production:
     # value; a real S3/MinIO backend + its doctor probe (private/encrypted,
     # ADR §11.2) land in a follow-up PR.
     object_store_backend: inline
+  agent_release:
+    # Run admission release-gate (PR-056, ADR-0004 §6/§12). ``enforce`` defaults
+    # false so deploying this code is a pure no-op: the resolver is never
+    # called, new runs are written legacy_unpinned, and the resume gate is
+    # inert. Flip to true only after backfilling / confirming the legacy-unpinned
+    # count is zero (runbook §14.2): then start_run pins a ReleaseRef onto each
+    # new run and resume/join of a legacy run returns 409 release_unpinned.
+    # ``default_channel`` is the only channel source today (config-driven, not
+    # the request body, so a client cannot self-select dev to bypass the prod gate).
+    enforce: false
+    default_channel: dev
   limits:
     max_concurrent_runs: 1
     max_sandbox_replicas: 1

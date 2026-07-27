@@ -30,6 +30,11 @@ class MemoryRunStore(RunStore):
         kwargs=None,
         error=None,
         created_at=None,
+        release_package_id=None,
+        release_version_id=None,
+        release_channel=None,
+        release_digest=None,
+        legacy_unpinned=True,
     ):
         now = datetime.now(UTC).isoformat()
         existing = self._runs.get(run_id)
@@ -38,6 +43,21 @@ class MemoryRunStore(RunStore):
         # (mirrors RunRepository.put, which stamps org_id only on insert).
         if existing is not None and org_id is None and existing.get("org_id") is not None:
             org_id = existing["org_id"]
+        # ReleaseRef pin is immutable once set (PR-056, ADR §6 step 9): a retry
+        # put or a status follow-up must never clobber the frozen execution
+        # identity. A pinned run stays pinned; a legacy run stays legacy unless
+        # the caller explicitly passes a non-default value on the *first* put.
+        release_fields = {
+            "release_package_id": release_package_id,
+            "release_version_id": release_version_id,
+            "release_channel": release_channel,
+            "release_digest": release_digest,
+            "legacy_unpinned": legacy_unpinned,
+        }
+        if existing is not None:
+            for key, value in release_fields.items():
+                if value is None and existing.get(key) is not None:
+                    release_fields[key] = existing[key]
         self._runs[run_id] = {
             "run_id": run_id,
             "thread_id": thread_id,
@@ -52,6 +72,7 @@ class MemoryRunStore(RunStore):
             "error": error,
             "created_at": created_at or now,
             "updated_at": now,
+            **release_fields,
         }
 
     async def get(self, run_id, *, user_id=None, org_id=None):

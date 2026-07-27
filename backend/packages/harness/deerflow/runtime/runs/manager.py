@@ -108,6 +108,14 @@ class RunRecord:
     message_count: int = 0
     last_ai_message: str | None = None
     first_human_message: str | None = None
+    # ReleaseRef pin (PR-056 / ADR-0004 §6 step 7). Frozen at creation; the
+    # store payload writes them insert-only (never updated). ``legacy_unpinned``
+    # defaults true so a run is legacy until start_run pins it.
+    release_package_id: str | None = None
+    release_version_id: str | None = None
+    release_channel: str | None = None
+    release_digest: str | None = None
+    legacy_unpinned: bool = True
 
 
 class RunManager:
@@ -181,6 +189,21 @@ class RunManager:
             payload["user_id"] = record.user_id
         if record.org_id is not None:
             payload["org_id"] = record.org_id
+        # ReleaseRef pin — insert-only (frozen at creation, ADR §6 step 9).
+        # ``RunRepository.put`` only applies these on the INSERT branch; the
+        # UPDATE branch (status/token follow-ups) never overwrites them, so a
+        # later promote/rollback cannot mutate what a run already executed.
+        if record.release_package_id is not None:
+            payload["release_package_id"] = record.release_package_id
+        if record.release_version_id is not None:
+            payload["release_version_id"] = record.release_version_id
+        if record.release_channel is not None:
+            payload["release_channel"] = record.release_channel
+        if record.release_digest is not None:
+            payload["release_digest"] = record.release_digest
+        # legacy_unpinned always carries (defaults True); the INSERT branch
+        # writes it, the UPDATE branch leaves it (an unpinned run stays unpinned).
+        payload["legacy_unpinned"] = record.legacy_unpinned
         return payload
 
     async def _call_store_with_retry(
@@ -304,6 +327,14 @@ class RunManager:
             message_count=row.get("message_count") or 0,
             last_ai_message=row.get("last_ai_message"),
             first_human_message=row.get("first_human_message"),
+            # ReleaseRef pin (PR-056). Rows written before 0016 / before
+            # enforcement lack the columns → default to legacy-unpinned, which
+            # is the safe admission posture for a run with no frozen identity.
+            release_package_id=row.get("release_package_id"),
+            release_version_id=row.get("release_version_id"),
+            release_channel=row.get("release_channel"),
+            release_digest=row.get("release_digest"),
+            legacy_unpinned=row.get("legacy_unpinned", True),
         )
 
     async def update_run_completion(self, run_id: str, **kwargs) -> None:
@@ -585,6 +616,11 @@ class RunManager:
         model_name: str | None = None,
         user_id: str | None = None,
         org_id: str | None = None,
+        release_package_id: str | None = None,
+        release_version_id: str | None = None,
+        release_channel: str | None = None,
+        release_digest: str | None = None,
+        legacy_unpinned: bool = True,
     ) -> RunRecord:
         """Atomically check for inflight runs and create a new one.
 
@@ -632,6 +668,11 @@ class RunManager:
                 created_at=now,
                 updated_at=now,
                 model_name=model_name,
+                release_package_id=release_package_id,
+                release_version_id=release_version_id,
+                release_channel=release_channel,
+                release_digest=release_digest,
+                legacy_unpinned=legacy_unpinned,
             )
             self._runs[run_id] = record
             self._index_run_locked(record)

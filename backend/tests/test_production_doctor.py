@@ -252,6 +252,9 @@ def test_all_runbook_placeholders_remain_fail_closed():
     # tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
     # PR-065 promoted backup.freshness to a live probe (probe_backup_freshness);
     # it is tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
+    # PR-056 promoted agent.release_ref_enforcement to a live probe
+    # (probe_release_ref_enforcement); it is tested in test_doctor_probes.py and
+    # no longer in DEFERRED_LIVE_CHECKS.
     # What remains here are the checks whose code paths do not exist yet;
     # they MUST stay FAIL until their owning Track lands, so an operator
     # never sees a misleading green on an unverified invariant.
@@ -261,7 +264,6 @@ def test_all_runbook_placeholders_remain_fail_closed():
         "sandbox.provisioner_create",
         "secret_store.access",
         "object_storage.security",
-        "agent.release_ref_enforcement",
     }
 
     report = _run_checks(_config())

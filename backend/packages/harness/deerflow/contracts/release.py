@@ -44,6 +44,10 @@ class ReleaseRef(BaseModel):
     org_id: str = Field(min_length=1, description="Owning org; never empty; cross-Org refs forbidden.")
     workspace_id: str | None = Field(default=None, description="Optional workspace within org_id.")
     package_id: str = Field(min_length=1, description="Agent package id (stable logical identity).")
+    version_id: str = Field(
+        min_length=1,
+        description="Agent version row id (the pinned version's UUID; display via ``version``).",
+    )
     agent_name: str = Field(min_length=1, description="Human-readable agent/package name.")
     version: str = Field(min_length=1, description="SemVer display string; execution identity is digest.")
     digest: str = Field(

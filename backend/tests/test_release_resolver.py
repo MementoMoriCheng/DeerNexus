@@ -134,6 +134,7 @@ class TestProtocolConformance:
                 return ReleaseRef(
                     org_id="o",
                     package_id="p",
+                    version_id="v",
                     agent_name="a",
                     version="1.0.0",
                     digest="sha256:x",
@@ -163,6 +164,7 @@ class TestResolveSuccess:
         assert ref.org_id == ORG_ID
         assert ref.workspace_id is None
         assert ref.package_id == pkg.id
+        assert ref.version_id == ver.id
         assert ref.agent_name == "alpha"
         assert ref.version == "1.0.0"
         assert ref.digest == ver.digest

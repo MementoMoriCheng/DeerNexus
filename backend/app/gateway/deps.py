@@ -262,6 +262,28 @@ get_feedback_repo: Callable[[Request], FeedbackRepository] = _require("feedback_
 get_run_store: Callable[[Request], RunStore] = _require("run_store", "Run store")
 
 
+def get_release_resolver(request: Request):
+    """Return a ``ReleaseResolver`` bound to this request's session factory.
+
+    ``DbReleaseResolver`` (PR-054) is stateless — it only carries the session
+    factory and the inline-digest flag — so it is cheap to construct per call
+    rather than registered on lifespan (small blast radius; tests can also
+    monkeypatch ``app.state.release_resolver`` to inject a fake). Mirrors the
+    ``_sf(request)`` pattern in ``routers/agent_artifacts.py``.
+    """
+    cached = getattr(request.app.state, "release_resolver", None)
+    if cached is not None:
+        return cached
+    from app.gateway.release_resolver import DbReleaseResolver
+
+    sf = getattr(request.app.state, "session_factory", None)
+    if sf is None:
+        from deerflow.persistence.engine import get_session_factory
+
+        sf = get_session_factory()
+    return DbReleaseResolver(sf)
+
+
 def get_store(request: Request):
     """Return the global store (may be ``None`` if not configured)."""
     return getattr(request.app.state, "store", None)

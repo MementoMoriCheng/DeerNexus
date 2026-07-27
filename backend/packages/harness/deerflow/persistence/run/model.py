@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from deerflow.persistence.base import Base
@@ -48,6 +48,21 @@ class RunRow(Base):
 
     # Follow-up association
     follow_up_to_run_id: Mapped[str | None] = mapped_column(String(64))
+
+    # ReleaseRef pin (PR-056 / ADR-0004 §6 step 7). Frozen at run creation so
+    # the execution phase consumes the persisted identity and never drifts on a
+    # later promote/rollback (ADR §6 step 9). All nullable: a run is "legacy"
+    # when these are unset. No FK — the digest is the integrity guarantee, not
+    # a relational join (mirrors release_idempotency_records, revision 0015).
+    release_package_id: Mapped[str | None] = mapped_column(String(36))
+    release_version_id: Mapped[str | None] = mapped_column(String(36))
+    release_channel: Mapped[str | None] = mapped_column(String(16))
+    release_digest: Mapped[str | None] = mapped_column(String(96))
+    # Marks runs created before/without release enforcement (ADR §12). Defaults
+    # true (server_default in migration 0016) so existing rows become legacy at
+    # ALTER time and new rows stay legacy until start_run pins them. NOT NULL to
+    # match the migration (test_create_all_and_alembic_upgrade_produce_same_schema).
+    legacy_unpinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))

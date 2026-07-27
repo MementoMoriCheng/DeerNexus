@@ -34,7 +34,20 @@ class RunStore(abc.ABC):
         kwargs: dict[str, Any] | None = None,
         error: str | None = None,
         created_at: str | None = None,
+        release_package_id: str | None = None,
+        release_version_id: str | None = None,
+        release_channel: str | None = None,
+        release_digest: str | None = None,
+        legacy_unpinned: bool = True,
     ) -> None:
+        """Insert or update a run row.
+
+        The ``release_*`` kwargs are the ReleaseRef pin (PR-056 / ADR-0004 §6
+        step 7). Implementations apply them insert-only: a later status/token
+        update must never overwrite a run's frozen execution identity.
+        ``legacy_unpinned`` defaults ``True`` so a run is legacy until
+        ``start_run`` pins it.
+        """
         pass
 
     @abc.abstractmethod

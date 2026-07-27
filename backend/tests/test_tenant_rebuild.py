@@ -70,6 +70,7 @@ def _release_ref(org: str = ORG_A) -> ReleaseRef:
     return ReleaseRef(
         org_id=org,
         package_id="pkg-1",
+        version_id="ver-1",
         agent_name="demo",
         version="1.0.0",
         digest="sha256:abcdef",
