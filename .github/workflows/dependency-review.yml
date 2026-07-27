@@ -61,7 +61,7 @@ jobs:
       # Skipped (passes) when the graph is off so a repo-config gap doesn't block PRs.
       - name: Dependency Review
         if: steps.graph.outputs.status == 'on'
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 #v4.9.0
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 #v5.0.0
         with:
           fail-on-severity: high
           deny-licenses: AGPL-1.0-or-later, AGPL-3.0-or-later, SSPL-1.0
