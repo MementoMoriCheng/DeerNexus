@@ -56,7 +56,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 #v7
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 #v7
       - name: Install backend dependencies
         working-directory: backend
         run: uv sync --group dev
@@ -76,7 +76,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 #v7
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 #v7
       - name: Install backend dependencies (replay gateway)
         working-directory: backend
         run: uv sync --group dev
