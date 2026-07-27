@@ -1713,5 +1713,47 @@ promote/rollback 错误全改 `ContractError.from_code` envelope:`ReleaseConflic
 
 **回滚边界**:`git revert` + `alembic downgrade 0015` 一次性回滚(`runs` 表 5 列 expand-only 无既有数据依赖;`enforce` 默认 false 保证 revert 后行为不变;`ReleaseRef.version_id` 删除是 additive 因 `extra=forbid` 容忍多余字段,但生产 resolver 已填故向后兼容)。
 
+### 16.58 PR-057:Studio / Admin 最小 UI(operator UI for Agent artifact & release)
+
+Track E 出口 PR。PR-050~056 全交付后,release/artifact API 稳定,PR-057 交付 operator 操作 Agent 包/版本/通道的前端 UI。**纯前端 PR**(无 backend/migration/config 改动),`git revert` 一次性回滚。
+
+**已确认 3 决策**:
+- **门禁 = 后端权威 + 开放入口**:`/studio` 任何登录用户可进;后端 `studio:*` RBAC 是权威门禁(org:admin 全允许 / developer 读+dev promote / viewer 只读)。前端**不**在 User 复制权限——后端 403 时 UI 优雅降级(隐藏写按钮/显示原因 toast)。零 contract 改动。按权限精确门控(传 effective_permissions,需 backend `UserResponse` + frontend `userSchema` 扩展)留 follow-up。
+- **页面 = 3 页**:Packages 列表 + Package 详情(Versions/Channels/Overview 三 tab)+ Import 文件态导入。覆盖完整 operator workflow。
+- **写操作 = mutations + toast + 缓存失效**:TanStack Query `useMutation` + sonner `toast.success/error` + `queryClient.invalidateQueries(["studio"])` 全域失效。CAS promote/rollback 的 If-Match/ETag + Idempotency-Key 在 hook 内处理;错误信封 `{code,message,retryable}` 展示给 operator。
+
+**架构完全镜像 PR-061 Admin Console 四层结构**:layout(SSR gate)→ shell(nav)→ core/{types,api,hooks}(domain)→ pages。
+
+**新 segment `app/studio/`**:
+- `layout.tsx`:克隆 `admin/layout.tsx`,**删掉** `system_role !== "admin"` 跳转(开放入口),保留 `force-dynamic` + AuthProvider→QueryClientProvider→StudioShell + Toaster + 深链 `/login?next=/studio/packages`。
+- `page.tsx`:`redirect("/studio/packages")`。
+- `packages/page.tsx`:Packages 列表(Table:name/display_name/status Badge/created_at + Empty/Skeleton 分支 + 点击 → `/studio/packages/{id}`)。
+- `packages/[id]/page.tsx`:核心页,`Tabs` 三段——**Versions tab**(Table:version/digest 截断/status Badge/size/created_at + 行内 lifecycle 按钮 draft→review / reviewed→publish / published→revoke,按 status 启用/禁用,mutation + toast);**Channels tab**(3 channel 卡片 dev/staging/prod:current_version + row_version + promote/rollback 表单(Select 选 target + If-Match from channel.row_version + Idempotency-Key=crypto.randomUUID())+ 历史 events 表;403 时 toast 提示);**Overview tab**(package 元数据 + archive 按钮 + inventory reconcile 触发)。
+- `import/page.tsx`:文件态导入表单(name/version SemVer/display_name?/description?/user_id?)→ `useImportAgent()` mutation → 显示 ImportReport(imported true/false + digest + package/version id)+ toast;错误映射 400/404/409/413/422 → 友好文案。
+
+**新 core `core/studio/`**(barrel `index.ts` re-export):
+- `types.ts`:镜像后端 envelope(plain interfaces 无 zod,gateway 是 trusted source):`AgentPackage`/`AgentVersion`(+`VersionStatus`)/`ReleaseChannel`(+`ReleaseChannelName`)/`ReleaseEvent`/`ChannelMoveRequest`/`ChannelMoveResponse`/`ImportAgentRequest`/`ImportReport`/`CreatePackageRequest`/`UpdatePackageRequest`/`ReconcileReport`。
+- `api.ts`:`StudioRequestError`(携 `status`/`code`/`retryable` + `isPermissionDenied` getter for 403)+ `readErrorDetail`(解析 ContractError 信封 `{detail:{code,message,retryable}}`)+ `buildMutationHeaders`(If-Match 引号 + Idempotency-Key)+ fetchers(listPackages/getPackage/listVersions/listChannels/getChannel/listChannelEvents)+ mutations(createPackage/updatePackage/archivePackage/reviewVersion/publishVersion/revokeVersion/promoteChannel/rollbackChannel——CAS If-Match 双轨:body `expected_channel_version` 当 If-Match 在场时省略(exactly-one validation PR-055)/importAgent/reconcileInventory)。
+- `hooks.ts`:读 `useStudioPackages`/`useStudioPackage`/`useStudioVersions`/`useStudioChannels`/`useStudioChannelEvents`(`useQuery`,`["studio",...]` keys)+ 写 `useReviewVersion`/`usePublishVersion`/`useRevokeVersion`/`usePromoteChannel`/`useRollbackChannel`/`useImportAgent`/`useCreatePackage`/`useUpdatePackage`/`useArchivePackage`/`useReconcileInventory`(`useMutation`,`onSuccess` toast + `void invalidateQueries(["studio"])`,`onError` toast 展示 code)。
+
+**新 components/studio/**:`studio-shell.tsx`(克隆 admin-shell,NAV_ITEMS = Packages/Import,brand "Studio")+ `studio-badges.tsx`(`VersionStatusBadge`/`PackageStatusBadge`/`ChannelBadge` 按 status 映射 badge variant + `TruncatedCell`)。
+
+**Nav 入口**:`workspace-nav-menu.tsx` 加 Studio 链接(PackageIcon,Admin Console 块旁,**开放不门禁**)。
+
+**复用既有**(不造轮子):fetcher(CSRF/credentials/401→login)/AuthProvider/QueryClientProvider/getServerSideUser/assertNever/GatewayOfflineFallback + UI primitives(Card/Badge/Table/Tabs/Select/Input/Textarea/Button/Skeleton/Empty/Toaster)。无新依赖。
+
+**测试**:`tests/unit/core/studio/api.test.ts` 9 测(fetcher URL/方法 + ContractError 信封解析 code/message/retryable + isPermissionDenied getter + CAS If-Match 引号 + Idempotency-Key + body 省略 expected_channel_version 当 If-Match 在场 + legacy string-detail fallback)。typecheck + lint(0 errors,1 pre-existing warning)+ 346 单测全绿(含 9 新)。
+
+**严格不在本 PR 范围**:
+- **按权限精确门控按钮**(传 effective_permissions:backend `UserResponse` + frontend `userSchema` 扩展 + 客户端按钮按权限隐藏;本 PR 靠后端 403 + toast,follow-up)。
+- **新 version 上传 UI**(POST `/versions` 需 manifest+content 复杂 JSON 构造;MVP 用 import-file 文件态导入替代;裸 version create UI 留 follow-up)。
+- **catalog_entries 浏览页**(表写入未落地 PR-054,GET 返空,留 follow-up)。
+- **签名 URL 下载**(需真实 object store,follow-up)。
+- **Playwright e2e**(依赖已发布 agent + IM seed,留 follow-up;本 PR 交付单元测)。
+- **i18n**(Admin Console 也未 i18n,对齐)。
+- **ADR-0004 §15 E2E 项**(v1→v2→rollback digest / 在途 Run 不漂移 / revoked 不能创建新 Run)依赖 Playwright + 已发布 agent,本 PR 只交付 UI 不跑 E2E,留 follow-up。
+
+**回滚边界**:纯前端 PR 无 backend/migration。`git revert` 一次性回滚(删 `/studio` segment + `core/studio/` + `components/studio/` + nav 入口)。本地 build 在 sandbox OOM(Turbopack 内存限制,非代码问题——typecheck/lint/单测全绿),交 CI(Linux runner)验证 build。
+
 
 

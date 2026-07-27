@@ -6,6 +6,7 @@ import {
   GlobeIcon,
   InfoIcon,
   MailIcon,
+  PackageIcon,
   Settings2Icon,
   SettingsIcon,
   ShieldCheckIcon,
@@ -113,6 +114,12 @@ export function WorkspaceNavMenu() {
                       </DropdownMenuItem>
                     </>
                   )}
+                  <DropdownMenuItem asChild>
+                    <Link href="/studio/packages">
+                      <PackageIcon />
+                      Studio
+                    </Link>
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <a
                     href="https://deerflow.tech/"
