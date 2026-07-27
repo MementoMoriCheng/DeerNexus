@@ -1,0 +1,10 @@
+# Trivy vulnerability exemptions — baseline §13.1 permits named exemptions but forbids
+# silently ignoring Critical/High without one. Each line is one vulnerability identifier
+# (CVE-XXXX-XXXX or VULNID). An entry MUST be accompanied by a `# <reason>` comment
+# naming the SLA window (§13.3) and the remediation plan.
+#
+# Format (one per line):
+#   CVE-2024-12345  # tracked in <issue>; deferred until <upstream fix> per §13.3 <SLA>
+#
+# This file is consumed by .github/workflows/sbom-and-scan.yml (Critical/High gate).
+# The SARIF step still reports the full severity range so exemptions are visible.

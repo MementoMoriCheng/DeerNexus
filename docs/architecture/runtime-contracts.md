@@ -1757,3 +1757,41 @@ Track E 出口 PR。PR-050~056 全交付后,release/artifact API 稳定,PR-057 �
 
 
 
+### 16.59 PR-066:CI/CD Release Gate(SBOM / 镜像扫描 / SAST / SCA / 供应链门禁)
+
+把 ci-cd.md §3.1「SAST / SCA / Secret scan」+ §4.1 PR Fast「SAST / 全量 SCA」+ §4.4 平台 Release「镜像、依赖、SBOM、签名验证」+ §5.1 制品记录 `{sbom_ref,scan_ref,signature_ref?}`+ §9「第三方 Action 固定 commit / 基础镜像固定 digest」+ §19.6「SBOM / SAST / SCA / Secret / Image Scanner」从「后续实施」一次性落地。**纯 CI/Dockerfile/config PR**(无 backend/migration/frontend 代码),`git revert` 一次性回滚。`config_version` 不 bump(无 app config 改动)。
+
+**探索结论(交付前缺口)**:既有 = `container.yaml` build-provenance attestation(`attest-build-provenance@v2`,SLSA-lite 溯源但**不**生成 SBOM/扫描/签名)+ `secret-scan.yml` gitleaks + 第三方 docker actions SHA 固定。完全缺失 = SBOM / 镜像 CVE 扫描 / CodeQL SAST / dependency-review SCA / Dependabot / Dockerfile 非 root / 基镜像 digest 固定 / `actions/*` 与 `astral-sh/*` SHA 固定。
+
+**新 3 workflow**:
+- `codeql.yml`(SAST,§3.1/§4.1/§4.3):`on.push.branches:[main]` + `pull_request` + `schedule`(周日 03:00 UTC,§4.3 Nightly)。矩阵 python(backend)+ javascript-typescript(frontend)。`github/codeql-action/init@<sha>#v3` → `autobuild` → `analyze@<sha>#v3`。findings 进 GitHub Security tab SARIF;**不硬 fail**(CodeQL alert 走 Security tab review,处置按 §13.3 SLA;§3.1 满足=扫描存在性)。
+- `dependency-review.yml`(SCA,§3.2/§9/§13.1):`pull_request` 触发 `actions/dependency-review-action@<sha>#v4.9.0`,diff 改动依赖对比 GH Advisory。`fail-on-severity: high`(对齐 §13.3 Critical 72h/High 7d SLA,Moderate/Lower 仅报告不阻断)+ `deny-licenses: AGPL-1.0-or-later,AGPL-3.0-or-later,SSPL-1.0`(§9 许可证扫描,MVP warn-only 待策略收紧)+ `comment-summary-in-pr: on-failure`。
+- `sbom-and-scan.yml`(镜像 SBOM + CVE,§4.4/§5.1/§13.2):`on.push.tags: v*` 触发(复用 container.yaml 触发点)。矩阵 backend(runtime Stage 3)+ frontend(prod stage)。`docker/build-push-action` `load:true, push:false` 本地重建不推送 → `anchore/sbom-action@<sha>#v0.24.0` 生成 SPDX-JSON SBOM(`artifact-name` 上传 = §5.1 sbom_ref 证据)→ `aquasecurity/trivy-action@<sha>#v0.29.0` 两轮:① 全严重度 SARIF → `github/codeql-action/upload-sarif` 进 Security tab;② `--severity CRITICAL,HIGH --exit-code 1` 硬阻断(§13.3),`--ignorefile=.trivyignore` 具名豁免。
+
+**新 config**:
+- `dependabot.yml`(§9/§19.6 依赖更新):四 ecosystem weekly——pip(`/backend` pyproject+uv.lock)+ npm(`/frontend`)+ docker(`/backend`+`/frontend` Dockerfile,PR-066 digest 固定后 Dependabot 提 digest bump)+ github-actions(`/`)。`open-pull-requests-limit:5` + `groups` 合并 minor/patch 减噪 + `reviewers:[MementoMoriCheng]`(CODEOWNERS 一致)。
+- `.trivyignore`(§13.1 具名豁免扩展点):初始空,每行一 CVE,强制 `# <reason>` 注释(命名 SLA 窗口 + remediation 计划;baseline §13.1 禁止无具名豁免忽略 Critical/High)。
+
+**Dockerfile 非 root + digest 固定**(baseline §13.2):
+- `backend/Dockerfile` runtime stage:python:3.12-slim-bookworm + docker:cli + uv-image 全 `@sha256:` 固定;新建 `app` 用户(gid/uid 1001)+ `COPY --chown=app:app` backend + `USER app`。**DooD socket 诚实处理**:镜像内不预置 host docker gid(各 host gid 不同);compose/部署层 `group_add` 注入 host docker gid 让非 root `app` 用 socket;Dockerfile 注释说明。
+- `frontend/Dockerfile` prod stage:node:22-alpine `@sha256:` 固定 ×2(base + prod);`COPY --chown=node:node` + 复用 node:alpine 内置 `node` 用户(uid 1000)+ `USER node`。删 prod stage 的 `PNPM_STORE_PATH`(运行时只需 `pnpm start` 包裹 `next start`,deps 已 bake;端口 3000 > 1024 非 root 可跑)。
+
+**`actions/*` 与 `astral-sh/*` SHA 固定**(§9):跨 10 workflow(`backend-blocking-io-tests`/`backend-unit-tests`/`container`/`e2e-tests`/`frontend-unit-tests`/`label-sync`/`lint-check`/`replay-e2e`/`secret-scan`/`triage`)机械替换 `@vN` → `@<40-hex-sha> #vN`(**版本不变只加 SHA pin**,最小改动;镜像既有 docker actions 的 `@sha + #vX.Y.Z` 双标模式)。Dependabot github-actions ecosystem 接管后续维护。校验:全 workflow 无残留 `@v*`(无 40-hex)引用 + `actionlint v1.7.7` 全绿。
+
+**已确认 4 决策**(AskUserQuestion 用户未答,按推荐方案推进,每项标明便于审阅时否决):
+1. **范围 = 全量六件套**:SBOM(syft)+ 镜像扫描(trivy)+ SAST(CodeQL)+ SCA(dependency-review)+ Dependabot + 非 root/digest/SHA 固定。一次性交付 ci-cd.md §3.1/§4.1/§5/§19 + baseline §13 全部缺口。
+2. **门禁严格度 = 分级阻断**:Critical/High 阻断(§13.3 SLA),Medium/Low 仅 SARIF 告警;允许 `.trivyignore` 具名豁免(§13.1 允许)。避免「全阻断」被上游既有 CVE 卡死,也避免「仅告警」不构成门禁。
+3. **签名 = 不引入**:尊重 ADR-0004 §17「完整签名证明 / SLSA 供应链是**非目标**」MVP 边界;触发点 = 公共市场前(ADR §306)。本 PR 只补 SBOM/扫描/provenance 证据层,cosign 留待那时。
+4. **依赖自动化 = Dependabot**:GitHub 原生、零额外服务、与 dependency-review-action 同源、CODEOWNERS 路由生效。
+
+**ADR-0004 §15 验收**:**不勾新项**(§15 是 Agent artifact 验收,与平台 CI gate 正交;6 个未勾项仍依赖 E2E)。
+
+**严格不在本 PR 范围**:
+- **cosign 镜像签名 / 完整 SLSA L3**(ADR-0004 §17 非目标,触发点公共市场前)。
+- **PR Fast 10min / Integration 25min 分层调度**(§4.1/§4.2 是目标值,本 PR 只让扫描「存在」,分层优化留 follow-up)。
+- **dependabot 对 `uv.lock` 支持**(上游限制;pip ecosystem 走 pyproject.toml,首轮实证后若不生效则删 pip ecosystem,docker/github-actions ecosystem 兜底)。
+- **DooD host docker socket 非 root 权限**(compose/部署层 `group_add` 注入 host gid,镜像内只声明)。
+- **SBOM/trivy 的 `workflow_run` 触发变体**(用独立 tag-push 触发,简化权限传递)。
+- **trivy Critical/High 首轮撞上游 CVE 的豁免**(`.trivyignore` 初始空;首个 release tag 首次实证,若发现阻断性 CVE 在 PR 内建豁免)。
+
+**回滚边界**:纯 CI/Dockerfile/config PR 无 backend/migration/frontend。`git revert` 一次性回滚(删 3 workflow + dependabot.yml + .trivyignore + Dockerfile 非 root/digest 还原 + actions tag 还原)。零运行时影响。

@@ -1,0 +1,40 @@
+# Dependency Review (SCA) — baseline §13.1「依赖漏洞扫描」+ §13.3 remediation SLA,
+# ci-cd.md §3.2「Dependency / Base Image: 全量 SCA、SBOM、许可证」, §9「许可证扫描」.
+#
+# Runs on pull_request only (it diffs changed dependencies against the GitHub Advisory
+# Database). Critical/High advisories hard-fail the PR (§13.3 SLA: Critical 72h, High 7d);
+# Moderate/Lower are reported but non-blocking. License policy is wired but permissive
+# for the MVP (warn-only) — tighten via allow-licenses/deny-licenses in a follow-up.
+
+name: Dependency Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Review changed dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 #v6
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 #v4.9.0
+        with:
+          # §13.3 — Critical/High block the PR; Moderate/Lower are advisory.
+          fail-on-severity: high
+          # §9 license scanning — surface incompatible licenses as comments but do not
+          # block (no allow-list curated yet; tighten once the license policy is set).
+          deny-licenses: AGPL-1.0-or-later, AGPL-3.0-or-later, SSPL-1.0
+          comment-summary-in-pr: on-failure
