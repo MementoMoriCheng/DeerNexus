@@ -28,6 +28,7 @@ from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import EXPECTED_METRIC_NAMES, probe_metrics_presence
 from app.doctor.probes.postgres_probe import _parse_major_version, probe_postgres_connectivity
 from app.doctor.probes.rate_limit_probe import probe_rate_limit_retry_after
+from app.doctor.probes.release_ref_probe import probe_release_ref_enforcement
 from deerflow.config.app_config import AppConfig
 
 
@@ -702,3 +703,108 @@ class TestBackupProbe:
             )
         )
         write_manifest(dest, manifest)
+
+
+# ===========================================================================
+# release_ref probe (PR-056)
+# ===========================================================================
+
+
+class TestReleaseRefProbe:
+    @pytest.mark.anyio
+    async def test_enforce_off_warns(self):
+        """enforce=false (the default) → WARN: the gate is inert by design."""
+        config = _base_config(production={"agent_release": {"enforce": False, "default_channel": "dev"}})
+        result = await probe_release_ref_enforcement(config)
+        assert result.status is DoctorStatus.WARN
+        assert result.check_id == "agent.release_ref_enforcement"
+        assert "enforce=false" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_memory_backend_warns_when_enforced(self):
+        """enforce=true but memory backend → WARN (not a durable production backend)."""
+        config = _base_config(
+            database={"backend": "memory"},
+            production={"agent_release": {"enforce": True, "default_channel": "prod"}},
+        )
+        result = await probe_release_ref_enforcement(config)
+        assert result.status is DoctorStatus.WARN
+        assert "memory" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_enforced_no_published_version_fails(self, tmp_path):
+        """enforce=true + empty release tables → FAIL (every run would be rejected)."""
+        from deerflow.persistence.engine import close_engine, init_engine
+
+        # The probe reads config.database.app_sqlalchemy_url == {sqlite_dir}/deerflow.db;
+        # init_engine must target the SAME file so the migrated schema is visible.
+        await init_engine("sqlite", url=f"sqlite+aiosqlite:///{tmp_path / 'deerflow.db'}", sqlite_dir=str(tmp_path))
+        try:
+            config = _base_config(
+                database={"backend": "sqlite", "sqlite_dir": str(tmp_path)},
+                production={"agent_release": {"enforce": True, "default_channel": "prod"}},
+            )
+            result = await probe_release_ref_enforcement(config)
+        finally:
+            await close_engine()
+        assert result.status is DoctorStatus.FAIL
+        assert "no release_channels" in result.message.lower() or "would be rejected" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_enforced_with_published_version_passes(self, tmp_path):
+        """enforce=true + a published version on the configured channel → PASS."""
+        from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+        from deerflow.persistence.release import (
+            CHANNEL_PROD,
+            create_agent_package,
+            create_agent_version,
+            promote_channel,
+            set_version_status,
+        )
+
+        await init_engine("sqlite", url=f"sqlite+aiosqlite:///{tmp_path / 'deerflow.db'}", sqlite_dir=str(tmp_path))
+        try:
+            sf = get_session_factory()
+            # Seed an org so the release rows' org_id FK resolves.
+            from deerflow.persistence.orgs.model import OrganizationRow
+
+            async with sf() as session:
+                session.add(OrganizationRow(id="org-rel", name="org-rel", slug="org-rel", status="active"))
+                await session.commit()
+            pkg = await create_agent_package(sf, org_id="org-rel", name="alpha", display_name="Alpha")
+            ver = await create_agent_version(
+                sf,
+                org_id="org-rel",
+                package_id=pkg.id,
+                version="1.0.0",
+                manifest={"schema_version": "1.0", "agent_entry": "soul"},
+                content="artifact-bytes",
+            )
+            # draft → published, then promote onto prod (state machine via the
+            # repository helpers, mirroring test_release_resolver's _version/_promote).
+            await set_version_status(sf, version_id=ver.id, org_id="org-rel", status="published")
+            await promote_channel(sf, org_id="org-rel", package_id=pkg.id, channel=CHANNEL_PROD, target_version_id=ver.id, expected_channel_version=1)
+
+            config = _base_config(
+                database={"backend": "sqlite", "sqlite_dir": str(tmp_path)},
+                production={"agent_release": {"enforce": True, "default_channel": "prod"}},
+            )
+            result = await probe_release_ref_enforcement(config)
+        finally:
+            await close_engine()
+        assert result.status is DoctorStatus.PASS
+        assert "resolvable published" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_unreachable_db_fails_without_raising(self):
+        """A dead DB must FAIL (never raise), mirroring the audit/postgres probes."""
+        config = _base_config(
+            database={
+                "backend": "postgres",
+                "postgres_url": "postgresql://user:pass@127.0.0.1:1/deernexus",
+            },
+            production={"agent_release": {"enforce": True, "default_channel": "prod"}},
+        )
+        result = await probe_release_ref_enforcement(config)
+        assert result.status is DoctorStatus.FAIL
+        assert "could not query" in result.message.lower() or "could not reach" in result.message.lower()

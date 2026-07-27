@@ -307,7 +307,9 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     # probes in ``app/doctor/probes/``. PR-042 promoted a sixth
     # (audit.outbox) to live once the Class A same-transaction wiring landed.
     # PR-065 promoted a seventh (backup.freshness) to live alongside the
-    # application-level backup Job.
+    # application-level backup Job. PR-056 promoted an eighth
+    # (agent.release_ref_enforcement) to live once the Run-pin write side
+    # (runs release columns + start_run resolver wiring) landed.
     # What remains here are checks whose code paths do not exist yet — they
     # stay FAIL with a **Track-specific** remediation (replacing the pre-PR-064
     # generic "Implement in PR-064" placeholder) so an operator knows exactly
@@ -357,18 +359,6 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
             "storage private/read-write/encrypted' line stays visible until that backend + its probe land."
         ),
     ),
-    (
-        "agent.release_ref_enforcement",
-        "release",
-        "Published ReleaseRef-only production admission validation is not implemented.",
-        "planned production agent-release declaration",
-        (
-            "Blocked on Track E Run-pin follow-up: the DbReleaseResolver adapter "
-            "landed in PR-054 but the runs table does not yet persist a ReleaseRef "
-            "per Run, so the probe cannot verify 'prod runs only published "
-            "ReleaseRef' until start_run calls the resolver and pins the result."
-        ),
-    ),
 )
 
 
@@ -400,6 +390,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         probe_metrics_presence,
         probe_postgres_connectivity,
         probe_rate_limit_retry_after,
+        probe_release_ref_enforcement,
     )
 
     return (
@@ -410,6 +401,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         (probe_rate_limit_retry_after, "gateway.rate_limit_retry_after", "gateway", "config.yaml:production.gateway_security.rate_limit_enabled"),
         (probe_audit_outbox, "audit.outbox", "audit", "config.yaml:production.audit"),
         (probe_backup_freshness, "backup.freshness", "backup", "config.yaml:production.backup"),
+        (probe_release_ref_enforcement, "agent.release_ref_enforcement", "release", "config.yaml:production.agent_release"),
     )
 
 

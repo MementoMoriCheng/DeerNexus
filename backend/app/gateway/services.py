@@ -21,7 +21,8 @@ from langchain_core.messages import BaseMessage
 from langchain_core.messages.utils import convert_to_messages
 from langgraph.types import Command
 
-from app.gateway.deps import get_run_context, get_run_manager, get_stream_bridge
+from app.gateway.deps import get_release_resolver, get_run_context, get_run_manager, get_stream_bridge
+from app.gateway.errors import release_resolution_error_response
 from app.gateway.internal_auth import INTERNAL_SYSTEM_ROLE, get_trusted_internal_owner_user_id
 from app.gateway.utils import sanitize_log_param
 from deerflow.config.app_config import get_app_config
@@ -365,6 +366,28 @@ async def start_run(
     # persistence so a new run row is tenant-stamped and the retry path stays
     # tenant-scoped even if the contextvar is gone on the retrying task.
     resolved_org_id = run_ctx.tenant.org_id if run_ctx.tenant is not None else None
+
+    # PR-056: resolve a ReleaseRef and pin it onto the new run when release
+    # enforcement is on (ADR-0004 §6 step 7 + §12). When enforcement is off
+    # (the default), the resolver is never called and the run is written
+    # legacy_unpinned=True — a pure no-op that preserves today's behaviour.
+    release_pin = None
+    legacy_unpinned = True
+    agent_release = get_app_config().production.agent_release
+    if agent_release.enforce:
+        from app.gateway.release_resolver import ReleaseResolutionError
+
+        resolver = get_release_resolver(request)
+        agent_name = body.assistant_id or _DEFAULT_ASSISTANT_ID
+        try:
+            release_pin = await resolver.resolve(run_ctx.tenant, agent_name, agent_release.default_channel)
+            legacy_unpinned = False
+        except ReleaseResolutionError as exc:
+            # release_not_found → 404 (existence-hide), not_published/revoked → 409,
+            # tenant_mismatch → 403. ``release_resolution_error_response`` maps the
+            # code; the run is never created, so no partial state to roll back.
+            raise release_resolution_error_response(request, exc) from exc
+
     try:
         try:
             record = await run_mgr.create_or_reject(
@@ -377,6 +400,11 @@ async def start_run(
                 model_name=model_name,
                 user_id=owner_user_id,
                 org_id=resolved_org_id,
+                release_package_id=release_pin.package_id if release_pin else None,
+                release_version_id=release_pin.version_id if release_pin else None,
+                release_channel=release_pin.channel if release_pin else None,
+                release_digest=release_pin.digest if release_pin else None,
+                legacy_unpinned=legacy_unpinned,
             )
         except ConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -96,6 +96,7 @@ def _release_ref(org: str = ORG_A, channel: str = "prod") -> ReleaseRef:
     return ReleaseRef(
         org_id=org,
         package_id="pkg-1",
+        version_id="ver-1",
         agent_name="demo",
         version="1.2.0",
         digest="sha256:abcdef",
@@ -290,6 +291,7 @@ class TestReleaseRef:
             ReleaseRef(
                 org_id=ORG_A,
                 package_id="p",
+                version_id="v1",
                 agent_name="a",
                 version="1.0.0",
                 digest="",
@@ -302,6 +304,7 @@ class TestReleaseRef:
             ReleaseRef(
                 org_id="",
                 package_id="p",
+                version_id="v1",
                 agent_name="a",
                 version="1.0.0",
                 digest="sha256:x",
@@ -314,6 +317,7 @@ class TestReleaseRef:
         r = ReleaseRef(
             org_id=ORG_A,
             package_id="pkg-1",
+            version_id="ver-1",
             agent_name="demo",
             version="1.2.0",
             digest="sha256:abcdef",

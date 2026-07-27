@@ -35,6 +35,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy.exc import IntegrityError
 
+from app.gateway.errors import contract_error_response as _shared_contract_error_response
+from app.gateway.errors import request_id as _shared_request_id
 from app.gateway.rbac import require_rbac
 from deerflow.config.app_config import get_app_config
 from deerflow.contracts import Permission, get_tenant_context
@@ -52,7 +54,7 @@ from deerflow.contracts.agent_artifact import (
     ReleaseEventResponse,
     RollbackRequest,
 )
-from deerflow.contracts.errors import ContractError, ErrorCode
+from deerflow.contracts.errors import ErrorCode
 from deerflow.contracts.identity import PrincipalRef
 from deerflow.contracts.policy import ResourceRef
 from deerflow.persistence.audit import enqueue_audit_outbox_in_session
@@ -671,10 +673,11 @@ def _event_response(row) -> ReleaseEventResponse:
 def _request_id(request: Request) -> str:
     """Correlation id of the originating request (never empty).
 
-    CorrelationMiddleware (outermost) sets ``request.state.request_id``; this
-    is the same id the tenant/audit stack uses, so error envelopes share it.
+    Thin wrapper over the shared :func:`app.gateway.errors.request_id` helper
+    (extracted so the runs router can reuse it without importing the whole
+    release-domain import list of this module).
     """
-    return str(getattr(request.state, "request_id", "") or "unknown")
+    return _shared_request_id(request)
 
 
 def _contract_error_response(
@@ -687,19 +690,13 @@ def _contract_error_response(
 ) -> HTTPException:
     """Build a uniform ``ContractError`` envelope as an ``HTTPException``.
 
-    Mirrors the envelope tenant/release_resolver emit (errors.md §12): the
+    Thin wrapper over :func:`app.gateway.errors.contract_error_response`. The
     detail is the serialized ``ContractError`` dict, so a caller sees the same
     ``{code, message, retryable, request_id, details}`` shape across every
     promote/rollback failure. ``retryable`` is derived from the code by
     ``ContractError.from_code``.
     """
-    err = ContractError.from_code(
-        code,
-        request_id=_request_id(request),
-        message=message,
-        details=details or {},
-    )
-    return HTTPException(status_code=status_code, detail=err.model_dump())
+    return _shared_contract_error_response(request, code, status_code=status_code, message=message, details=details)
 
 
 def _parse_if_match(request: Request) -> int | None:

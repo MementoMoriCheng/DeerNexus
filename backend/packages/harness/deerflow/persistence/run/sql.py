@@ -95,6 +95,11 @@ class RunRepository(RunStore):
         error=None,
         created_at=None,
         follow_up_to_run_id=None,
+        release_package_id: str | None = None,
+        release_version_id: str | None = None,
+        release_channel: str | None = None,
+        release_digest: str | None = None,
+        legacy_unpinned: bool = True,
     ):
         """Insert or update a run row.
 
@@ -125,10 +130,21 @@ class RunRepository(RunStore):
             "follow_up_to_run_id": follow_up_to_run_id,
             "updated_at": now,
         }
+        # ReleaseRef pin — insert-only (ADR-0004 §6 step 9, PR-056). Frozen at
+        # creation so a later promote/rollback cannot mutate what a run already
+        # executed against; intentionally NOT in ``values`` so the UPDATE
+        # branch leaves them untouched, mirroring the ``org_id`` treatment.
+        pin_values = {
+            "release_package_id": release_package_id,
+            "release_version_id": release_version_id,
+            "release_channel": release_channel,
+            "release_digest": release_digest,
+            "legacy_unpinned": legacy_unpinned,
+        }
         async with self._sf() as session:
             row = await session.get(RunRow, run_id)
             if row is None:
-                session.add(RunRow(run_id=run_id, org_id=resolved_org_id, created_at=created, **values))
+                session.add(RunRow(run_id=run_id, org_id=resolved_org_id, created_at=created, **values, **pin_values))
             else:
                 for key, value in values.items():
                     setattr(row, key, value)

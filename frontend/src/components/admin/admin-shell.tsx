@@ -5,6 +5,7 @@ import {
   AlertTriangleIcon,
   BarChart3Icon,
   ShieldCheckIcon,
+  ArrowLeftIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -74,6 +75,15 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
               );
             })}
           </nav>
+          <div className="ml-auto">
+            <Link
+              href="/workspace"
+              className="text-muted-foreground hover:bg-accent hover:text-accent-foreground inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
+            >
+              <ArrowLeftIcon className="size-4" />
+              Back to Workspace
+            </Link>
+          </div>
         </div>
       </header>
       <main className="mx-auto w-full max-w-(--container-width-lg) flex-1 px-8 py-8">

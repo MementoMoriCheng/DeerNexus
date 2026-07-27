@@ -93,8 +93,33 @@ async def _seed_thread(sf, *, thread_id: str, org_id: str | None) -> None:
 
 
 async def _seed_run(sf, *, run_id: str, thread_id: str, org_id: str | None) -> None:
+    # Raw-SQL insert that names every NOT-NULL column of ``runs`` as it exists
+    # at the 0005_resource_org_id revision this fixture downgrades to. The ORM
+    # ``RunRow`` model now also declares the release-pin columns (added in
+    # 0016), so an ORM or Core insert against the model would emit them and fail
+    # against the downgraded table. A literal INSERT names exactly the columns
+    # that exist at 0005. Defaults mirror the ORM's defaults (token counters 0,
+    # JSON '{}'). If a future migration adds another NOT-NULL ``runs`` column
+    # above 0016, this statement is unaffected (it inserts at 0005); a column
+    # added *between* 0005 and 0016 would need adding here — covered by the
+    # bootstrap parity test which fails loudly on such drift.
+    from datetime import UTC, datetime
+
+    from sqlalchemy import text
+
+    now = datetime.now(UTC)
     async with sf() as session:
-        session.add(RunRow(run_id=run_id, thread_id=thread_id, org_id=org_id, status="pending"))
+        await session.execute(
+            text(
+                "INSERT INTO runs (run_id, thread_id, org_id, status, multitask_strategy, "
+                "metadata_json, kwargs_json, message_count, total_input_tokens, "
+                "total_output_tokens, total_tokens, llm_call_count, lead_agent_tokens, "
+                "subagent_tokens, middleware_tokens, token_usage_by_model, created_at, updated_at) "
+                "VALUES (:run_id, :thread_id, :org_id, 'pending', 'reject', "
+                "'{}', '{}', 0, 0, 0, 0, 0, 0, 0, 0, '{}', :now, :now)"
+            ),
+            {"run_id": run_id, "thread_id": thread_id, "org_id": org_id, "now": now},
+        )
         await session.commit()
 
 
@@ -174,16 +199,22 @@ class TestBackfillFillsNullRows:
         async with sf() as session:
             null_thread = await session.get(ThreadMetaRow, "t-null")
             set_thread = await session.get(ThreadMetaRow, "t-set")
-            null_run = await session.get(RunRow, "r-null")
-            set_run = await session.get(RunRow, "r-set")
+            # Read only org_id via raw SQL: the schema is downgraded to 0005, so
+            # an ORM ``session.get(RunRow, ...)`` would SELECT every mapped
+            # column (including the release-pin columns added in 0016) and fail.
+            # The other reads stay ORM because those tables are unchanged.
+            from sqlalchemy import text as _sa_text
+
+            null_run_org = (await session.execute(_sa_text("SELECT org_id FROM runs WHERE run_id = 'r-null'"))).scalar_one()
+            set_run_org = (await session.execute(_sa_text("SELECT org_id FROM runs WHERE run_id = 'r-set'"))).scalar_one()
             null_event = (await session.execute(select(RunEventRow).where(RunEventRow.run_id == "r-null", RunEventRow.seq == 1))).scalar_one()
             null_feedback = await session.get(FeedbackRow, "f-null")
             set_feedback = await session.get(FeedbackRow, "f-set")
 
         assert null_thread.org_id == DEFAULT_ORG_ID
         assert set_thread.org_id == ALT_ORG_ID  # untouched
-        assert null_run.org_id == DEFAULT_ORG_ID
-        assert set_run.org_id == ALT_ORG_ID
+        assert null_run_org == DEFAULT_ORG_ID
+        assert set_run_org == ALT_ORG_ID
         assert null_event.org_id == DEFAULT_ORG_ID
         assert null_feedback.org_id == DEFAULT_ORG_ID
         assert set_feedback.org_id == ALT_ORG_ID
