@@ -8,7 +8,7 @@ ARG NPM_REGISTRY
 
 # ── Base: shared setup ────────────────────────────────────────────────────────
 # Pinned by digest (baseline §13.2「基础镜像固定 digest」).
-FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS base
+FROM node:26-alpine@sha256:e88a35be04478413b7c71c455cd9865de9b9360e1f43456be5951032d7ac1a66 AS base
 ARG PNPM_STORE_PATH
 ARG NPM_REGISTRY
 # Configure corepack registry before installing pnpm so the download itself
@@ -38,7 +38,7 @@ RUN cd /app/frontend && SKIP_ENV_VALIDATION=1 pnpm build
 # ── Prod: minimal runtime with pre-built output ───────────────────────────────
 # Pinned by digest (baseline §13.2「基础镜像固定 digest」).
 # Runs as the non-root `node` user (uid 1000) built into node:alpine (baseline §13.2).
-FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS prod
+FROM node:26-alpine@sha256:e88a35be04478413b7c71c455cd9865de9b9360e1f43456be5951032d7ac1a66 AS prod
 ARG NPM_REGISTRY
 # pnpm is only needed to invoke `pnpm start` (a thin wrapper around next start);
 # no store-dir configuration is required at runtime (deps are already baked in).
