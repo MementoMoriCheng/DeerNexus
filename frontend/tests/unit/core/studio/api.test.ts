@@ -22,15 +22,26 @@ rs.mock("@/core/config", () => ({
   getBackendBaseURL: () => "",
 }));
 
+import { fetch as fetcher } from "@/core/api/fetcher";
 import {
   listPackages,
   promoteChannel,
   publishVersion,
   StudioRequestError,
 } from "@/core/studio/api";
-import { fetch as fetcher } from "@/core/api/fetcher";
 
 const mockedFetch = rs.mocked(fetcher);
+
+/**
+ * Return the first call's (url, init) as a typed tuple. Centralising the
+ * index access avoids `noUncheckedIndexedAccess` + `non-nullable-type-assertion-style`
+ * friction at each call site.
+ */
+function firstCall(): [string, RequestInit] {
+  const call = mockedFetch.mock.calls.at(0);
+  if (!call) throw new Error("expected fetch to have been called");
+  return call as [string, RequestInit];
+}
 
 function jsonResponse(
   status: number,
@@ -53,7 +64,7 @@ describe("listPackages", () => {
     mockedFetch.mockResolvedValueOnce(jsonResponse(200, packages));
     const result = await listPackages();
     expect(result).toEqual(packages);
-    expect(mockedFetch.mock.calls[0]![0]).toBe("/api/v1/agent-packages");
+    expect(firstCall()[0]).toBe("/api/v1/agent-packages");
   });
 
   test("throws StudioRequestError on 403 with parsed ContractError envelope", async () => {
@@ -103,9 +114,9 @@ describe("publishVersion", () => {
     mockedFetch.mockResolvedValueOnce(jsonResponse(200, version));
     const result = await publishVersion("v-1");
     expect(result).toEqual(version);
-    const call = mockedFetch.mock.calls[0]!;
-    expect(call[0]).toBe("/api/v1/agent-versions/v-1:publish");
-    expect((call[1] as RequestInit).method).toBe("POST");
+    const [url, init] = firstCall();
+    expect(url).toBe("/api/v1/agent-versions/v-1:publish");
+    expect(init.method).toBe("POST");
   });
 
   test("throws StudioRequestError on non-2xx", async () => {
@@ -138,8 +149,7 @@ describe("promoteChannel (CAS + Idempotency-Key)", () => {
       { target_version_id: "v-2", expected_channel_version: 1 },
       { ifMatch: 1, idempotencyKey: "idem-abc" },
     );
-    const call = mockedFetch.mock.calls[0]!;
-    const init = call[1] as RequestInit;
+    const [url, init] = firstCall();
     const headers = init.headers as Record<string, string>;
     expect(headers["If-Match"]).toBe('"1"');
     expect(headers["Idempotency-Key"]).toBe("idem-abc");
@@ -147,7 +157,7 @@ describe("promoteChannel (CAS + Idempotency-Key)", () => {
     const body = JSON.parse(init.body as string);
     expect(body).not.toHaveProperty("expected_channel_version");
     expect(body.target_version_id).toBe("v-2");
-    expect(call[0]).toBe("/api/v1/agent-packages/pkg-1/channels/prod:promote");
+    expect(url).toBe("/api/v1/agent-packages/pkg-1/channels/prod:promote");
   });
 
   test("falls back to body expected_channel_version when no If-Match header", async () => {
@@ -158,7 +168,7 @@ describe("promoteChannel (CAS + Idempotency-Key)", () => {
       target_version_id: "v-1",
       expected_channel_version: 3,
     });
-    const init = mockedFetch.mock.calls[0]![1] as RequestInit;
+    const [, init] = firstCall();
     const headers = init.headers as Record<string, string>;
     expect(headers["If-Match"]).toBe('"3"');
     const body = JSON.parse(init.body as string);
