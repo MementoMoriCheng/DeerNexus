@@ -696,9 +696,7 @@ def _contract_error_response(
     promote/rollback failure. ``retryable`` is derived from the code by
     ``ContractError.from_code``.
     """
-    return _shared_contract_error_response(
-        request, code, status_code=status_code, message=message, details=details
-    )
+    return _shared_contract_error_response(request, code, status_code=status_code, message=message, details=details)
 
 
 def _parse_if_match(request: Request) -> int | None:

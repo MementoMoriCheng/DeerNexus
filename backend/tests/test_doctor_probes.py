@@ -783,9 +783,7 @@ class TestReleaseRefProbe:
             # draft → published, then promote onto prod (state machine via the
             # repository helpers, mirroring test_release_resolver's _version/_promote).
             await set_version_status(sf, version_id=ver.id, org_id="org-rel", status="published")
-            await promote_channel(
-                sf, org_id="org-rel", package_id=pkg.id, channel=CHANNEL_PROD, target_version_id=ver.id, expected_channel_version=1
-            )
+            await promote_channel(sf, org_id="org-rel", package_id=pkg.id, channel=CHANNEL_PROD, target_version_id=ver.id, expected_channel_version=1)
 
             config = _base_config(
                 database={"backend": "sqlite", "sqlite_dir": str(tmp_path)},

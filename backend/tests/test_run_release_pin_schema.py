@@ -115,14 +115,9 @@ class TestRunReleasePinParity:
             await close_engine()
 
         # Column set + nullable + (legacy_unpinned) default must agree.
-        assert set(fresh_cols) == set(migrated_cols), (
-            f"runs column-set drift: only-create_all={set(fresh_cols) - set(migrated_cols)} "
-            f"only-alembic={set(migrated_cols) - set(fresh_cols)}"
-        )
+        assert set(fresh_cols) == set(migrated_cols), f"runs column-set drift: only-create_all={set(fresh_cols) - set(migrated_cols)} only-alembic={set(migrated_cols) - set(fresh_cols)}"
         for name in ("legacy_unpinned", "release_package_id", "release_version_id", "release_channel", "release_digest"):
-            assert fresh_cols[name]["nullable"] == migrated_cols[name]["nullable"], (
-                f"runs.{name} nullable drift create_all={fresh_cols[name]['nullable']} alembic={migrated_cols[name]['nullable']}"
-            )
+            assert fresh_cols[name]["nullable"] == migrated_cols[name]["nullable"], f"runs.{name} nullable drift create_all={fresh_cols[name]['nullable']} alembic={migrated_cols[name]['nullable']}"
 
 
 # ---------------------------------------------------------------------------

@@ -251,15 +251,7 @@ async def _check_new_run_pinned(session: AsyncSession) -> VerifyGateResult:
             "SKIP",
             "runs table predates the release-pin columns (migration 0016); schema_compatible gate reports the drift.",
         )
-    orphan = int(
-        (
-            await session.execute(
-                select(func.count())
-                .select_from(runs)
-                .where(runs.c.legacy_unpinned.is_(False), runs.c.release_version_id.is_(None))
-            )
-        ).scalar_one()
-    )
+    orphan = int((await session.execute(select(func.count()).select_from(runs).where(runs.c.legacy_unpinned.is_(False), runs.c.release_version_id.is_(None)))).scalar_one())
     if orphan > 0:
         return _gate(
             "new_run_pinned_to_release_ref",
@@ -291,13 +283,7 @@ async def _check_legacy_unpinned_count_zero(session: AsyncSession) -> VerifyGate
             "SKIP",
             "runs table predates the release-pin columns (migration 0016); schema_compatible gate reports the drift.",
         )
-    legacy = int(
-        (
-            await session.execute(
-                select(func.count()).select_from(runs).where(runs.c.legacy_unpinned.is_(True))
-            )
-        ).scalar_one()
-    )
+    legacy = int((await session.execute(select(func.count()).select_from(runs).where(runs.c.legacy_unpinned.is_(True)))).scalar_one())
     if legacy > 0:
         return _gate(
             "legacy_unpinned_count_zero",

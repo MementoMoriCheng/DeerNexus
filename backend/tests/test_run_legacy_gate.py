@@ -66,9 +66,7 @@ class TestLegacyResumeGate:
         from deerflow.config.production_config import ProductionAgentReleaseConfig
 
         cfg = types.SimpleNamespace()
-        cfg.production = types.SimpleNamespace(
-            agent_release=ProductionAgentReleaseConfig(enforce=True, default_channel="prod")
-        )
+        cfg.production = types.SimpleNamespace(agent_release=ProductionAgentReleaseConfig(enforce=True, default_channel="prod"))
         monkeypatch.setattr(mod, "get_app_config", lambda: cfg)
 
         with pytest.raises(Exception) as exc_info:
@@ -88,9 +86,7 @@ class TestLegacyResumeGate:
         from deerflow.config.production_config import ProductionAgentReleaseConfig
 
         cfg = types.SimpleNamespace()
-        cfg.production = types.SimpleNamespace(
-            agent_release=ProductionAgentReleaseConfig(enforce=True, default_channel="prod")
-        )
+        cfg.production = types.SimpleNamespace(agent_release=ProductionAgentReleaseConfig(enforce=True, default_channel="prod"))
         monkeypatch.setattr(mod, "get_app_config", lambda: cfg)
 
         # Must not raise.
@@ -102,9 +98,7 @@ class TestLegacyResumeGate:
         from deerflow.config.production_config import ProductionAgentReleaseConfig
 
         cfg = types.SimpleNamespace()
-        cfg.production = types.SimpleNamespace(
-            agent_release=ProductionAgentReleaseConfig(enforce=False, default_channel="dev")
-        )
+        cfg.production = types.SimpleNamespace(agent_release=ProductionAgentReleaseConfig(enforce=False, default_channel="dev"))
         monkeypatch.setattr(mod, "get_app_config", lambda: cfg)
 
         # A legacy run must resume freely when the gate is off.
