@@ -68,7 +68,7 @@ jobs:
 
       # Full CVE scan → SARIF (uploaded to the Security tab for triage).
       - name: Scan image (trivy SARIF)
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 #v0.29.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 #v0.36.0
         with:
           image-ref: deernexus-${{ matrix.target }}:${{ github.ref_name }}
           format: sarif
@@ -86,7 +86,7 @@ jobs:
       # Named exemptions go in .trivyignore (baseline §13.1 permits named exemptions
       # but forbids silently ignoring Critical/High without one).
       - name: Enforce Critical/High gate (trivy)
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 #v0.29.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 #v0.36.0
         with:
           image-ref: deernexus-${{ matrix.target }}:${{ github.ref_name }}
           format: table
