@@ -46,7 +46,13 @@ updates:
           - minor
           - patch
 
-  # Base images — backend + frontend Dockerfiles (digest bumps, PR-066 pinned them)
+  # Base images — backend + frontend Dockerfiles (digest bumps, PR-066 pinned them).
+  # Base-image MAJOR jumps are gated: a runtime language bump (python 3.12→3.14,
+  # node 22→26) skips untested compatibility windows for the whole dependency tree
+  # and CI does NOT run tests inside the image (tests use setup-python/setup-node).
+  # So we pin to the current line and require a deliberate, tested upgrade PR.
+  # See PR-066 follow-up: dependabot first round proposed node 26 / python 3.14
+  # which were closed as too aggressive.
   - package-ecosystem: docker
     directory: /backend
     schedule:
@@ -56,6 +62,14 @@ updates:
     commit-message:
       prefix: chore(deps)
       include: scope
+    ignore:
+      # Pin python to 3.12.x — 3.13 removed stdlib modules and the backend dep tree
+      # (LangGraph/SQLAlchemy/FastAPI/pydantic) needs a tested migration. Allow
+      # only patch within 3.12; a 3.13 move is a deliberate PR.
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
   - package-ecosystem: docker
     directory: /frontend
     schedule:
@@ -65,6 +79,14 @@ updates:
     commit-message:
       prefix: chore(deps)
       include: scope
+    ignore:
+      # Pin node to 22.x (current LTS line). Node odd versions (23/25) are non-LTS;
+      # node 26 is not LTS. A move to the next LTS (24) needs full frontend
+      # re-verification (Next.js/React/pnpm). Allow only patch within 22.
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
 
   # GitHub Actions — workflows + the action called by sbom-and-scan/codeql/etc.
   - package-ecosystem: github-actions
