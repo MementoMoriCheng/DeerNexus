@@ -26,7 +26,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { ReleaseChannelName, VersionStatus } from "@/core/studio";
 import {
+  STUDIO_PERM,
   useArchivePackage,
   usePromoteChannel,
   usePublishVersion,
@@ -34,12 +36,13 @@ import {
   useReviewVersion,
   useRevokeVersion,
   useRollbackChannel,
+  useStudioButtonProps,
   useStudioChannels,
   useStudioChannelEvents,
   useStudioPackage,
+  useStudioPermission,
   useStudioVersions,
 } from "@/core/studio";
-import type { ReleaseChannelName, VersionStatus } from "@/core/studio";
 
 const CHANNELS: ReleaseChannelName[] = ["dev", "staging", "prod"];
 
@@ -168,7 +171,8 @@ function VersionsTab({ packageId }: { packageId: string }) {
   );
 }
 
-/** Lifecycle action buttons, gated on the current status (ADR §4 state machine). */
+/** Lifecycle action buttons, gated on the current status (ADR §4 state machine)
+ * and the caller's studio:package:write permission (PR-057 follow-up). */
 function VersionActions({
   versionId,
   status,
@@ -179,13 +183,17 @@ function VersionActions({
   const review = useReviewVersion();
   const publish = usePublishVersion();
   const revoke = useRevokeVersion();
+  // review/publish/revoke all require studio:package:write (org:admin + org:developer).
+  const perm = useStudioButtonProps(STUDIO_PERM.packageWrite);
+  const disabled = (pending: boolean) => pending || perm.disabled;
   return (
     <div className="flex justify-end gap-1.5">
       {status === "draft" && (
         <Button
           size="sm"
           variant="outline"
-          disabled={review.isPending}
+          disabled={disabled(review.isPending)}
+          title={perm.title}
           onClick={() => review.mutate(versionId)}
         >
           {review.isPending ? "Reviewing…" : "Review"}
@@ -195,7 +203,8 @@ function VersionActions({
         <Button
           size="sm"
           variant="outline"
-          disabled={publish.isPending}
+          disabled={disabled(publish.isPending)}
+          title={perm.title}
           onClick={() => publish.mutate(versionId)}
         >
           {publish.isPending ? "Publishing…" : "Publish"}
@@ -205,7 +214,8 @@ function VersionActions({
         <Button
           size="sm"
           variant="outline"
-          disabled={revoke.isPending}
+          disabled={disabled(revoke.isPending)}
+          title={perm.title}
           onClick={() => revoke.mutate(versionId)}
         >
           {revoke.isPending ? "Revoking…" : "Revoke"}
@@ -276,6 +286,18 @@ function ChannelCard({
   const promote = usePromoteChannel();
   const rollback = useRollbackChannel();
 
+  // Permission gating (PR-057 follow-up): dev accepts promote_dev (org:developer+),
+  // staging/prod require promote (org:admin only); rollback requires rollback (admin).
+  const canPromote = useStudioPermission(
+    channelName === "dev" ? STUDIO_PERM.promoteDev : STUDIO_PERM.promote,
+  );
+  const canRollback = useStudioPermission(STUDIO_PERM.rollback);
+  const promotePermTitle =
+    channelName === "dev"
+      ? `Requires ${STUDIO_PERM.promoteDev} permission`
+      : `Requires ${STUDIO_PERM.promote} permission (admin only)`;
+  const rollbackPermTitle = `Requires ${STUDIO_PERM.rollback} permission (admin only)`;
+
   // Versions eligible to promote onto this channel (published for prod, broader for dev/staging).
   const promotableVersions = versions.filter(
     (v) => v.status !== "revoked" && v.status !== "archived",
@@ -306,7 +328,12 @@ function ChannelCard({
         <div className="flex flex-wrap gap-2">
           <ChannelMoveSelect
             label="Promote"
-            disabled={promote.isPending || promotableVersions.length === 0}
+            disabled={
+              promote.isPending ||
+              promotableVersions.length === 0 ||
+              !canPromote
+            }
+            disabledTitle={canPromote ? "" : promotePermTitle}
             versions={promotableVersions}
             expectedChannelVersion={rowVersion}
             onSubmit={(targetVersionId, expectedChannelVersion) =>
@@ -322,7 +349,12 @@ function ChannelCard({
           />
           <ChannelMoveSelect
             label="Rollback"
-            disabled={rollback.isPending || promotableVersions.length === 0}
+            disabled={
+              rollback.isPending ||
+              promotableVersions.length === 0 ||
+              !canRollback
+            }
+            disabledTitle={canRollback ? "" : rollbackPermTitle}
             versions={promotableVersions}
             expectedChannelVersion={rowVersion}
             onSubmit={(targetVersionId, expectedChannelVersion) =>
@@ -367,12 +399,14 @@ function ChannelCard({
 function ChannelMoveSelect({
   label,
   disabled,
+  disabledTitle,
   versions,
   expectedChannelVersion,
   onSubmit,
 }: {
   label: string;
   disabled: boolean;
+  disabledTitle?: string;
   versions: { id: string; version: string; status: string }[];
   expectedChannelVersion?: number;
   onSubmit: (targetVersionId: string, expectedChannelVersion: number) => void;
@@ -397,6 +431,7 @@ function ChannelMoveSelect({
         <select
           name="target"
           disabled={disabled}
+          title={disabledTitle}
           className="bg-input border-input ring-offset-background focus-visible:ring-ring h-8 rounded-md border px-2 text-xs focus-visible:ring-2 focus-visible:outline-none"
           defaultValue=""
         >
@@ -410,7 +445,13 @@ function ChannelMoveSelect({
           ))}
         </select>
       </label>
-      <Button type="submit" size="sm" variant="outline" disabled={disabled}>
+      <Button
+        type="submit"
+        size="sm"
+        variant="outline"
+        disabled={disabled}
+        title={disabledTitle}
+      >
         {label}
       </Button>
     </form>
@@ -423,6 +464,8 @@ function OverviewTab({ packageId }: { packageId: string }) {
   const { data: pkg, isLoading, isError, error } = useStudioPackage(packageId);
   const archive = useArchivePackage();
   const reconcile = useReconcileInventory();
+  // archive + reconcile require studio:package:write (org:admin + org:developer).
+  const writePerm = useStudioButtonProps(STUDIO_PERM.packageWrite);
 
   if (isLoading) return <Skeleton className="h-48 w-full" />;
   if (isError || !pkg) {
@@ -457,7 +500,8 @@ function OverviewTab({ packageId }: { packageId: string }) {
           <Button
             size="sm"
             variant="outline"
-            disabled={reconcile.isPending}
+            disabled={reconcile.isPending || writePerm.disabled}
+            title={writePerm.title}
             onClick={() => reconcile.mutate()}
           >
             {reconcile.isPending ? "Reconciling…" : "Reconcile inventory"}
@@ -466,7 +510,8 @@ function OverviewTab({ packageId }: { packageId: string }) {
             <Button
               size="sm"
               variant="outline"
-              disabled={archive.isPending}
+              disabled={archive.isPending || writePerm.disabled}
+              title={writePerm.title}
               onClick={() => archive.mutate(packageId)}
             >
               {archive.isPending ? "Archiving…" : "Archive package"}

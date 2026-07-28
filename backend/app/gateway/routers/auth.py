@@ -19,6 +19,7 @@ from app.gateway.auth.config import get_auth_config
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
 from app.gateway.csrf_middleware import is_secure_request
 from app.gateway.deps import get_current_user_from_request, get_local_provider
+from deerflow.contracts import get_tenant_context
 from deerflow.contracts.identity import PrincipalRef
 
 logger = logging.getLogger(__name__)
@@ -422,9 +423,41 @@ async def change_password(request: Request, response: Response, body: ChangePass
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(request: Request):
-    """Get current authenticated user info."""
+    """Get current authenticated user info.
+
+    Surfaces the caller's effective permissions for the currently-resolved Org
+    (PR-057 follow-up) so the Studio UI can gate write buttons client-side.
+    Backend RBAC remains authoritative; this field is a UX hint and 403 is
+    still enforced on every write. Fail-closed: a terminal membership state
+    (suspended/invited/removed) or a suspended Org yields an empty permission
+    set rather than failing the whole ``/me`` call, so the user can still see
+    basic profile info and be redirected appropriately.
+    """
     user = await get_current_user_from_request(request)
-    return UserResponse(id=str(user.id), email=user.email, system_role=user.system_role, needs_setup=user.needs_setup)
+
+    effective_permissions: list[str] = []
+    org_id: str | None = None
+    ctx = get_tenant_context()
+    if ctx is not None:
+        org_id = getattr(ctx, "org_id", None)
+    if org_id:
+        try:
+            from app.gateway.authorize import AuthorizeError, get_authorize_service
+
+            perms = await get_authorize_service().compute_permissions_for_user(user, org_id=org_id)
+            effective_permissions = sorted(perms)
+        except AuthorizeError:
+            # Fail-closed: terminal membership/org state → empty perms (buttons hidden).
+            effective_permissions = []
+
+    return UserResponse(
+        id=str(user.id),
+        email=user.email,
+        system_role=user.system_role,
+        needs_setup=user.needs_setup,
+        effective_permissions=effective_permissions,
+        org_id=org_id,
+    )
 
 
 # Per-IP cache: ip → (timestamp, result_dict).

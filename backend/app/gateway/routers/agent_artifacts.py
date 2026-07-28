@@ -4,8 +4,10 @@ Mounted at ``/api/v1``. Mirrors the IAM router (PR-034) for the Class A
 write skeleton: ``async with sf() as session:`` → repository write (session
 passthrough) → ``_emit_class_a_audit`` (same-transaction outbox enqueue) →
 ``session.commit()`` (atomic business write + audit row). RBAC gating uses
-``STUDIO_PACKAGE_READ`` (reads) / ``STUDIO_PACKAGE_WRITE`` (writes), both
-carried only by ``org:admin`` (developer/viewer get 403 via the decorator).
+``STUDIO_PACKAGE_READ`` (reads: org:admin + org:developer + org:viewer) /
+``STUDIO_PACKAGE_WRITE`` (writes: org:admin + org:developer; viewer gets 403
+via the decorator). See ``BUILTIN_ROLE_PERMISSIONS`` (rbac.py) for the exact
+role→permission mapping.
 
 ADR-0004 §3/§4/§11 + ADR-0005 §7.1. Version lifecycle transitions
 (``:review`` / ``:publish`` / ``:revoke``) go through dedicated endpoints
