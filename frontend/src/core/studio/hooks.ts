@@ -29,6 +29,8 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { useAuth } from "@/core/auth/AuthProvider";
+
 import {
   archivePackage,
   createPackage,
@@ -64,6 +66,27 @@ import type {
 
 /** Query-key root for the whole Studio namespace (invalidated after any write). */
 const STUDIO_KEY = ["studio"] as const;
+
+/**
+ * Studio permission strings (mirror backend `Permission` enum, rbac.py:62-66).
+ *
+ * Role mapping (BUILTIN_ROLE_PERMISSIONS):
+ *   - org:admin    → all five
+ *   - org:developer → read, write, promote_dev   (NO promote / rollback)
+ *   - org:viewer   → read only
+ *
+ * The values come from `/api/v1/auth/me` `effective_permissions`. Backend RBAC
+ * stays authoritative; these power client-side button gating (disabled + tooltip).
+ */
+export const STUDIO_PERM = {
+  packageRead: "studio:package:read",
+  packageWrite: "studio:package:write",
+  promoteDev: "studio:release:promote_dev",
+  promote: "studio:release:promote",
+  rollback: "studio:release:rollback",
+} as const;
+
+export type StudioPermission = (typeof STUDIO_PERM)[keyof typeof STUDIO_PERM];
 
 /** Common query options so callers cannot clobber the key/queryFn. */
 type ReadOptions<T> = Omit<UseQueryOptions<T>, "queryKey" | "queryFn">;
@@ -353,4 +376,36 @@ export function useReconcileInventory(): UseMutationResult<
     onError: (error) =>
       toast.error(errorMessage(error, "Failed to reconcile inventory")),
   });
+}
+
+// ── Permission gating (PR-057 follow-up) ─────────────────────────────────
+//
+// Backend RBAC is authoritative (403 still enforced on every write). These
+// hooks read `effective_permissions` surfaced by /me so the UI can disable
+// write buttons proactively instead of relying solely on a post-click 403.
+
+/**
+ * Returns `true` when the current user holds the given Studio permission in the
+ * currently-resolved Org. Fail-closed: missing user / empty perms → `false`.
+ */
+export function useStudioPermission(perm: StudioPermission): boolean {
+  const { user } = useAuth();
+  return (user?.effective_permissions ?? []).includes(perm);
+}
+
+/**
+ * Returns props to spread onto a `<Button>` (or similar) so it is disabled with
+ * a tooltip when the user lacks `perm`. Keeps call sites declarative:
+ *
+ *   <Button {...useStudioButtonProps(STUDIO_PERM.packageWrite)}>Archive</Button>
+ */
+export function useStudioButtonProps(perm: StudioPermission): {
+  disabled: boolean;
+  title: string;
+} {
+  const allowed = useStudioPermission(perm);
+  return {
+    disabled: !allowed,
+    title: allowed ? "" : `Requires ${perm} permission`,
+  };
 }

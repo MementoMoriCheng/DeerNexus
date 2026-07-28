@@ -5,6 +5,16 @@ export const AUTH_DISABLED_USER: User = {
   email: "default@test.local",
   system_role: "admin",
   needs_setup: false,
+  // Auth-disabled mode bypasses RBAC; surface full studio perms so the UI is
+  // fully usable (matches the system-admin short-circuit on the backend).
+  effective_permissions: [
+    "studio:package:read",
+    "studio:package:write",
+    "studio:release:promote_dev",
+    "studio:release:promote",
+    "studio:release:rollback",
+  ],
+  org_id: null,
 };
 
 const PRODUCTION_ENV_VALUES = new Set(["prod", "production"]);

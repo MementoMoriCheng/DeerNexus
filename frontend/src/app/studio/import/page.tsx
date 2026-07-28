@@ -12,11 +12,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useImportAgent } from "@/core/studio";
+import { useImportAgent, useStudioPermission } from "@/core/studio";
+import { STUDIO_PERM } from "@/core/studio";
 import type { ImportReport } from "@/core/studio";
 
 export default function StudioImportPage() {
   const importMutation = useImportAgent();
+  const canWrite = useStudioPermission(STUDIO_PERM.packageWrite);
   const [name, setName] = useState("");
   const [version, setVersion] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -24,7 +26,10 @@ export default function StudioImportPage() {
   const [userId, setUserId] = useState("");
 
   const canSubmit =
-    name.trim() !== "" && version.trim() !== "" && !importMutation.isPending;
+    canWrite &&
+    name.trim() !== "" &&
+    version.trim() !== "" &&
+    !importMutation.isPending;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -63,6 +68,14 @@ export default function StudioImportPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {!canWrite && (
+            <p className="text-muted-foreground mb-4 rounded-md border border-dashed px-3 py-2 text-xs">
+              You need the{" "}
+              <code className="font-mono">studio:package:write</code> permission
+              (org:admin or org:developer) to import agents. The form below is
+              disabled.
+            </p>
+          )}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <label htmlFor="name">Agent directory name *</label>

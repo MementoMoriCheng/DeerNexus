@@ -39,3 +39,11 @@ class UserResponse(BaseModel):
     email: str
     system_role: Literal["admin", "user"]
     needs_setup: bool = False
+    # PR-057 follow-up: effective permissions for the currently-resolved Org,
+    # surfaced so the Studio UI can gate write buttons client-side (backend
+    # RBAC remains authoritative; this is a UX hint, 403 is still enforced).
+    # Empty when no Org is bound (e.g. pre-initialization) or when the
+    # membership is in a terminal state (fail-closed → buttons hidden).
+    effective_permissions: list[str] = Field(default_factory=list)
+    # The Org id these permissions are scoped to (None when no Org is bound).
+    org_id: str | None = None

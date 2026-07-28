@@ -14,6 +14,8 @@ const fakeUser: User = {
   email: "user@example.com",
   system_role: "user",
   needs_setup: false,
+  effective_permissions: [],
+  org_id: null,
 };
 
 function makeResponse(status: number, ok = status >= 200 && status < 300) {

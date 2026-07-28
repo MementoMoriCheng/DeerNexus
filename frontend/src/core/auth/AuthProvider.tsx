@@ -12,7 +12,7 @@ import React, {
 
 import { isStaticWebsiteOnly } from "../static-mode";
 
-import { type User, buildLoginUrl } from "./types";
+import { type User, buildLoginUrl, userSchema } from "./types";
 
 // Re-export for consumers
 export type { User };
@@ -77,7 +77,11 @@ export function AuthProvider({ children, initialUser }: AuthProviderProps) {
 
       if (res.ok) {
         const data = await res.json();
-        setUser(data);
+        // Validate through userSchema so the new effective_permissions / org_id
+        // fields are normalized with their defaults, matching the SSR path
+        // (server.ts uses userSchema.parse too). Previously this set raw JSON,
+        // a latent type-safety gap now closed.
+        setUser(userSchema.parse(data));
       } else if (res.status === 401) {
         // Session expired or invalid
         setUser(null);

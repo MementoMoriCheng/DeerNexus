@@ -7,6 +7,13 @@ export const userSchema = z.object({
   email: z.string().email(),
   system_role: z.enum(["admin", "user"]),
   needs_setup: z.boolean().optional().default(false),
+  // PR-057 follow-up: effective permissions for the currently-resolved Org, surfaced
+  // by /api/v1/auth/me so the Studio UI can gate write buttons client-side. Backend
+  // RBAC remains authoritative (403 still enforced); this is a UX hint. Empty when no
+  // Org is bound or membership is in a terminal state (fail-closed → buttons hidden).
+  effective_permissions: z.array(z.string()).optional().default([]),
+  // The Org id these permissions are scoped to (null when no Org is bound).
+  org_id: z.string().nullable().optional().default(null),
 });
 
 export type User = z.infer<typeof userSchema>;

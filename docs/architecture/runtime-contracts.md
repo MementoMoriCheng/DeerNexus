@@ -1745,7 +1745,7 @@ Track E 出口 PR。PR-050~056 全交付后,release/artifact API 稳定,PR-057 �
 **测试**:`tests/unit/core/studio/api.test.ts` 9 测(fetcher URL/方法 + ContractError 信封解析 code/message/retryable + isPermissionDenied getter + CAS If-Match 引号 + Idempotency-Key + body 省略 expected_channel_version 当 If-Match 在场 + legacy string-detail fallback)。typecheck + lint(0 errors,1 pre-existing warning)+ 346 单测全绿(含 9 新)。
 
 **严格不在本 PR 范围**:
-- **按权限精确门控按钮**(传 effective_permissions:backend `UserResponse` + frontend `userSchema` 扩展 + 客户端按钮按权限隐藏;本 PR 靠后端 403 + toast,follow-up)。
+- ~~**按权限精确门控按钮**(传 effective_permissions:backend `UserResponse` + frontend `userSchema` 扩展 + 客户端按钮按权限隐藏;本 PR 靠后端 403 + toast,follow-up)。~~ **已交付**(PR-057 follow-up:见下方「Follow-up:权限门控」段)。
 - **新 version 上传 UI**(POST `/versions` 需 manifest+content 复杂 JSON 构造;MVP 用 import-file 文件态导入替代;裸 version create UI 留 follow-up)。
 - **catalog_entries 浏览页**(表写入未落地 PR-054,GET 返空,留 follow-up)。
 - **签名 URL 下载**(需真实 object store,follow-up)。
@@ -1754,6 +1754,24 @@ Track E 出口 PR。PR-050~056 全交付后,release/artifact API 稳定,PR-057 �
 - **ADR-0004 §15 E2E 项**(v1→v2→rollback digest / 在途 Run 不漂移 / revoked 不能创建新 Run)依赖 Playwright + 已发布 agent,本 PR 只交付 UI 不跑 E2E,留 follow-up。
 
 **回滚边界**:纯前端 PR 无 backend/migration。`git revert` 一次性回滚(删 `/studio` segment + `core/studio/` + `components/studio/` + nav 入口)。本地 build 在 sandbox OOM(Turbopack 内存限制,非代码问题——typecheck/lint/单测全绿),交 CI(Linux runner)验证 build。
+
+#### Follow-up:按权限精确门控 Studio 按钮
+
+PR-057 原本「不在范围」的首项 follow-up 已交付。把 PR-057 靠后端 403+toast 的降级体验升级为**前端按权限精确门控写按钮**(disabled+tooltip),后端 RBAC 仍权威(403 兜底作纵深防御)。
+
+**Backend**(`app/gateway/auth/models.py` + `routers/auth.py`):`UserResponse` 加 `effective_permissions: list[str]`(排序确定性)+ `org_id: str | None`。`get_me` 扩展——读 `get_tenant_context().org_id`(org 已由 `TenantResolutionMiddleware` 在 `/me` 运行前解析),调现成的 `AuthorizeService.compute_permissions_for_user(user, org_id=...)`(≤60s 缓存)返 `frozenset[str]`;**fail-closed**:抛 `AuthorizeError`(suspended/invited/removed membership)→ permissions=`[]` 不阻塞 `/me`(用户仍能看基本信息+被重定向),仅按钮全隐藏。`register`/`initialize` 保持 `effective_permissions=[]`(无 org 上下文)。
+
+**Frontend**(`core/auth/types.ts` + `AuthProvider.tsx` + `core/studio/hooks.ts` + `app/studio/`):`userSchema` 加 `effective_permissions`+`org_id`(可选带 default,fail-closed);**顺带修 AuthProvider.refreshUser 类型漏洞**(`setUser(data)`→`setUser(userSchema.parse(data))`,与 SSR `server.ts:82` 一致,此前是预存类型安全缺口)。新 `STUDIO_PERM` 常量(镜像 backend `Permission` enum `rbac.py:62-66` 5 个 studio:* )+ `useStudioPermission(perm)`(读 `useAuth().user.effective_permissions`)+ `useStudioButtonProps(perm)`(返 `{disabled,title}` helper)。门控点:Versions tab review/publish/revoke(`package:write`)+ Channels tab promote(dev→`promote_dev` / staging/prod→`promote`)+ rollback(`rollback`,权限依赖 channelName)+ Overview tab archive/reconcile(`package:write`)+ Import 页表单(`package:write`,无权限时整表 disabled + 权限不足提示块)。后端 403 仍保留。
+
+**角色映射**(`BUILTIN_ROLE_PERMISSIONS` `rbac.py:103-149`):org:admin 全 5 个;org:developer read+write+promote_dev(**无** promote/rollback,故 staging/prod promote + 所有 rollback 按钮 disabled);org:viewer 仅 read(所有写按钮 disabled)。
+
+**文档偏差修正**:`agent_artifacts.py:7-8` docstring 原称 `STUDIO_PACKAGE_WRITE`「仅 org:admin」,实际 `BUILTIN_ROLE_PERMISSIONS` 也授予 org:developer(`rbac.py:135-136`)——本 follow-up 顺带修正为「org:admin + org:developer」,避免后续 button-gating 逻辑被误导。
+
+**测试**:`tests/test_auth_me_permissions.py` 4 测(sorted perms + admin 短路 + 无 TenantContext 返空/None + AuthorizeError fail-closed 空);frontend typecheck+lint+现有单测全绿(零回归——UserResponse 加可选字段向后兼容)。
+
+**不在本 follow-up 范围**:多 org 切换 UI(effective_permissions 只反映当前解析的 org)/ 权限实时刷新(依赖 refreshUser 60s 节流,promote 后权限不即时变但 403 兜底)/ 其他 PR-057 follow-up(version 上传 UI / catalog 浏览 / 签名 URL / Playwright e2e / i18n)。
+
+**回滚边界**:backend UserResponse 加 2 可选字段 + `/me` 扩展 + frontend schema/hook/按钮门控。`git revert` 一次性回滚;向后兼容(旧前端忽略新字段;旧后端不返新字段时前端 default [])。零 migration。
 
 
 
