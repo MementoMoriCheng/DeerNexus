@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { use } from "react";
 
 import {
@@ -110,6 +111,15 @@ function VersionsTab({ packageId }: { packageId: string }) {
     isError,
     error,
   } = useStudioVersions(packageId);
+  const writePerm = useStudioButtonProps(STUDIO_PERM.packageWrite);
+
+  const newVersionButton = (
+    <Link href={`/studio/packages/${packageId}/new-version`}>
+      <Button size="sm" disabled={writePerm.disabled} title={writePerm.title}>
+        New version
+      </Button>
+    </Link>
+  );
 
   if (isLoading) return <Skeleton className="h-32 w-full" />;
   if (isError) {
@@ -121,53 +131,60 @@ function VersionsTab({ packageId }: { packageId: string }) {
   }
   if (!versions || versions.length === 0) {
     return (
-      <Empty>
-        <EmptyHeader>
-          <EmptyTitle>No versions</EmptyTitle>
-          <EmptyDescription>
-            Import this agent from the file-state layout to create a version.
-          </EmptyDescription>
-        </EmptyHeader>
-      </Empty>
+      <div className="space-y-4">
+        <div className="flex justify-end">{newVersionButton}</div>
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>No versions</EmptyTitle>
+            <EmptyDescription>
+              Import this agent from the file-state layout, or create a new
+              version manually with the full manifest editor.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </div>
     );
   }
   return (
-    <Card>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Version</TableHead>
-            <TableHead>Digest</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Size</TableHead>
-            <TableHead>Created</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {versions.map((v) => (
-            <TableRow key={v.id}>
-              <TableCell className="font-mono text-sm">{v.version}</TableCell>
-              <TableCell>
-                <TruncatedCell value={v.digest} maxLength={20} />
-              </TableCell>
-              <TableCell>
-                <VersionStatusBadge status={v.status} />
-              </TableCell>
-              <TableCell className="text-muted-foreground text-xs tabular-nums">
-                {formatBytes(v.size_bytes)}
-              </TableCell>
-              <TableCell className="text-muted-foreground text-xs tabular-nums">
-                {new Date(v.created_at).toLocaleDateString()}
-              </TableCell>
-              <TableCell className="text-right">
-                <VersionActions versionId={v.id} status={v.status} />
-              </TableCell>
+    <div className="space-y-4">
+      <div className="flex justify-end">{newVersionButton}</div>
+      <Card>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Version</TableHead>
+              <TableHead>Digest</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Size</TableHead>
+              <TableHead>Created</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </Card>
+          </TableHeader>
+          <TableBody>
+            {versions.map((v) => (
+              <TableRow key={v.id}>
+                <TableCell className="font-mono text-sm">{v.version}</TableCell>
+                <TableCell>
+                  <TruncatedCell value={v.digest} maxLength={20} />
+                </TableCell>
+                <TableCell>
+                  <VersionStatusBadge status={v.status} />
+                </TableCell>
+                <TableCell className="text-muted-foreground text-xs tabular-nums">
+                  {formatBytes(v.size_bytes)}
+                </TableCell>
+                <TableCell className="text-muted-foreground text-xs tabular-nums">
+                  {new Date(v.created_at).toLocaleDateString()}
+                </TableCell>
+                <TableCell className="text-right">
+                  <VersionActions versionId={v.id} status={v.status} />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Card>
+    </div>
   );
 }
 

@@ -1746,7 +1746,7 @@ Track E 出口 PR。PR-050~056 全交付后,release/artifact API 稳定,PR-057 �
 
 **严格不在本 PR 范围**:
 - ~~**按权限精确门控按钮**(传 effective_permissions:backend `UserResponse` + frontend `userSchema` 扩展 + 客户端按钮按权限隐藏;本 PR 靠后端 403 + toast,follow-up)。~~ **已交付**(PR-057 follow-up:见下方「Follow-up:权限门控」段)。
-- **新 version 上传 UI**(POST `/versions` 需 manifest+content 复杂 JSON 构造;MVP 用 import-file 文件态导入替代;裸 version create UI 留 follow-up)。
+- ~~**新 version 上传 UI**(POST `/versions` 需 manifest+content 复杂 JSON 构造;MVP 用 import-file 文件态导入替代;裸 version create UI 留 follow-up)。~~ **已交付**(PR-057 follow-up #2:见下方「Follow-up #2:version 上传 UI」段)。
 - **catalog_entries 浏览页**(表写入未落地 PR-054,GET 返空,留 follow-up)。
 - **签名 URL 下载**(需真实 object store,follow-up)。
 - **Playwright e2e**(依赖已发布 agent + IM seed,留 follow-up;本 PR 交付单元测)。
@@ -1772,6 +1772,28 @@ PR-057 原本「不在范围」的首项 follow-up 已交付。把 PR-057 靠后
 **不在本 follow-up 范围**:多 org 切换 UI(effective_permissions 只反映当前解析的 org)/ 权限实时刷新(依赖 refreshUser 60s 节流,promote 后权限不即时变但 403 兜底)/ 其他 PR-057 follow-up(version 上传 UI / catalog 浏览 / 签名 URL / Playwright e2e / i18n)。
 
 **回滚边界**:backend UserResponse 加 2 可选字段 + `/me` 扩展 + frontend schema/hook/按钮门控。`git revert` 一次性回滚;向后兼容(旧前端忽略新字段;旧后端不返新字段时前端 default [])。零 migration。
+
+#### Follow-up #2:完整 Manifest 编辑器(新 version 上传 UI)
+
+PR-057 原本「不在范围」的第二项 follow-up 已交付。在 Studio Package 详情页加「New version」入口(权限门控 `package:write`),跳转 `/studio/packages/{id}/new-version` 完整 manifest 编辑器页,构造 `POST /api/v1/agent-packages/{pkg}/versions` 的 `AgentVersionCreateRequest`(version + manifest{12 字段} + content)。
+
+**关键探索结论**:backend `Manifest` 的 6 个 `list[dict]` 字段无 Pydantic 子模型、无 sub-key 校验(`extra="forbid"` 只作用于顶层),router 直接 `model_dump()` 入 JSONB。**故前端表单的字段形状是产品决策**,基于 ADR §3.3 意图 + importer.py 生产者习惯 + test_release_schema fixture 推导。
+
+**新前端**(`core/studio/{types,api,hooks}.ts` 扩展 + `components/studio/dynamic-list-row.tsx` + `app/studio/packages/[id]/new-version/page.tsx`):
+- `types.ts` 新增 `AgentManifest` interface + 6 子类型(`ModelRequirement{name}` / `SkillRef{name,version?,digest?}` / `McpServerRef{name,version?}` / `DependencyLock{name,version?,source?}` / `NetworkRequirement{host,port?,protocol?}` / `SecretRequirement{name,ref}`)+ `RuntimeLimits{max_steps?,max_tokens?,timeout_s?}` + `CreateVersionRequest{version,manifest,content}`。
+- `api.ts` 新增 `createVersion(packageId, req)` fetcher(POST + JSON body + buildMutationHeaders 含 CSRF)。
+- `hooks.ts` 新增 `useCreateVersion` mutation(`{packageId, request}` 参数对象,onSuccess toast + invalidate `["studio"]`,onError toast)。
+- `components/studio/dynamic-list-row.tsx` 可复用泛型动态行组件(fields 定义 + value + onChange + 增删行),6 个 list[dict] 字段 + tools(string[])共用;空行提交前由页面过滤。
+- `app/studio/packages/[id]/new-version/page.tsx` 完整编辑器页(Basics:version SemVer 校验 + content textarea;Manifest core:schema_version 默认 v1alpha1 + agent_entry + soul_or_prompt_ref;6 个 list[dict] Card 段 + tools + runtime_limits 3 number input;source_metadata 不暴露[手动创建无来源];提交后 router.push 回详情页)。
+- 详情页 Versions tab 加「New version」按钮(`useStudioButtonProps(package:write)` 门控,empty + list 两分支均显示)。
+
+**字段形状证据**:`model_requirements` 来自 importer.py:135 `{name}`;`skills` 取 importer `{name}` + test_release_schema `{id,version}` 并集(对齐 importer 主键 name + 可选 version/digest);`secret_requirements` 来自 test_release_schema:378 `{name,ref}`(最强证据);其余(mcp_servers/dependencies/network_requirements/runtime_limits)无 fixture,按 ADR §3.3 语义推导。
+
+**不在本 follow-up 范围**:Manifest 子键后端校验(当前 free-form,前端按推导形状构造但后端仍接受任意 key,需 Pydantic 子模型独立 PR)/ binary artifact 上传(content 是 UTF-8 string,binary 需 base64/multipart ADR §3.2 follow-up)/ Manifest schema 版本演进(schema_version 固定 v1alpha1,多版本演进 follow-up)/ 其他 PR-057 follow-up(catalog 浏览/签名 URL/Playwright e2e/i18n)。
+
+**测试**:`api.test.ts` 加 2 测(createVersion POST URL/method/body + 409 错误信封);typecheck + lint + 现有单测全绿(零回归——纯新增)。
+
+**回滚边界**:纯前端 PR(无 backend/migration)。新增 1 页面 + 1 组件 + api/hook/types 扩展。`git revert` 一次性回滚;详情页入口还原即恢复。
 
 
 

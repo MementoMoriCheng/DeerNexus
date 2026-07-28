@@ -24,6 +24,7 @@ rs.mock("@/core/config", () => ({
 
 import { fetch as fetcher } from "@/core/api/fetcher";
 import {
+  createVersion,
   listPackages,
   promoteChannel,
   publishVersion,
@@ -195,5 +196,43 @@ describe("promoteChannel (CAS + Idempotency-Key)", () => {
       code: "release_gate_violation",
       retryable: false,
     });
+  });
+});
+
+describe("createVersion", () => {
+  test("POSTs manifest + content to /versions and returns the created version", async () => {
+    const version = { id: "v-2", version: "1.0.0", status: "draft" };
+    mockedFetch.mockResolvedValueOnce(jsonResponse(201, version));
+    const result = await createVersion("pkg-1", {
+      version: "1.0.0",
+      manifest: {
+        schema_version: "v1alpha1",
+        agent_entry: "soul",
+      },
+      content: "artifact payload",
+    });
+    expect(result).toEqual(version);
+    const [url, init] = firstCall();
+    expect(url).toBe("/api/v1/agent-packages/pkg-1/versions");
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(init.body as string);
+    expect(body.version).toBe("1.0.0");
+    expect(body.manifest.agent_entry).toBe("soul");
+    expect(body.content).toBe("artifact payload");
+  });
+
+  test("throws StudioRequestError on 409 (duplicate version/digest)", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(409, {
+        detail: { code: "release_conflict", message: "dup", retryable: false },
+      }),
+    );
+    await expect(
+      createVersion("pkg-1", {
+        version: "1.0.0",
+        manifest: { schema_version: "v1alpha1", agent_entry: "soul" },
+        content: "x",
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "release_conflict" });
   });
 });
