@@ -67,6 +67,78 @@ export type VersionStatus =
   | "revoked"
   | "archived";
 
+// ── Manifest (ADR-0004 §3.3) ─────────────────────────────────────────
+//
+// The backend `Manifest` model declares the list fields as bare `list[dict]`
+// with NO sub-key validation (extra="forbid" applies to the top-level field
+// set only). The sub-key shapes below are a product decision based on:
+//   - importer.py (the only producer of non-empty model_requirements/skills)
+//   - test_release_schema.py fixtures (skills id/version, secret name/ref)
+//   - ADR §3.3 intent ("record stable ID, version or digest; deps/network
+//     must be explicit; Secret is a ref, never plaintext")
+// The backend persists whatever keys are sent, so these interfaces are the
+// authoritative shape the Studio editor produces and round-trips.
+
+export interface ModelRequirement {
+  name: string;
+}
+
+export interface SkillRef {
+  name: string;
+  version?: string;
+  digest?: string;
+}
+
+export interface McpServerRef {
+  name: string;
+  version?: string;
+}
+
+export interface DependencyLock {
+  name: string;
+  version?: string;
+  source?: string;
+}
+
+export interface NetworkRequirement {
+  host: string;
+  port?: number;
+  protocol?: string;
+}
+
+export interface SecretRequirement {
+  name: string;
+  ref: string;
+}
+
+export interface RuntimeLimits {
+  max_steps?: number;
+  max_tokens?: number;
+  timeout_s?: number;
+}
+
+export interface AgentManifest {
+  schema_version: string;
+  agent_entry: string;
+  soul_or_prompt_ref?: string | null;
+  model_requirements?: ModelRequirement[];
+  skills?: SkillRef[];
+  tools?: string[];
+  mcp_servers?: McpServerRef[];
+  dependencies?: DependencyLock[];
+  network_requirements?: NetworkRequirement[];
+  secret_requirements?: SecretRequirement[];
+  runtime_limits?: RuntimeLimits | null;
+  source_metadata?: Record<string, unknown> | null;
+}
+
+/** Body of POST /api/v1/agent-packages/{pkg}/versions. */
+export interface CreateVersionRequest {
+  version: string; // SemVer 2.0 display string
+  manifest: AgentManifest;
+  content: string; // raw artifact payload (UTF-8); digest computed server-side
+}
+
 // ── Release channels & events (ADR-0004 §5/§7/§8) ────────────────────
 
 /** Closed channel set. */

@@ -34,6 +34,7 @@ import { useAuth } from "@/core/auth/AuthProvider";
 import {
   archivePackage,
   createPackage,
+  createVersion,
   getPackage,
   importAgent,
   listChannelEvents,
@@ -55,6 +56,7 @@ import type {
   ChannelMoveRequest,
   ChannelMoveResponse,
   CreatePackageRequest,
+  CreateVersionRequest,
   ImportAgentRequest,
   ImportReport,
   ReconcileReport,
@@ -225,6 +227,29 @@ export function useRevokeVersion(): UseMutationResult<
     },
     onError: (error) =>
       toast.error(errorMessage(error, "Failed to revoke version")),
+  });
+}
+
+/** Args for createVersion: the target package + the full request body. */
+interface CreateVersionArgs {
+  packageId: string;
+  request: CreateVersionRequest;
+}
+
+export function useCreateVersion(): UseMutationResult<
+  AgentVersion,
+  Error,
+  CreateVersionArgs
+> {
+  const invalidate = useInvalidateStudio();
+  return useMutation({
+    mutationFn: ({ packageId, request }) => createVersion(packageId, request),
+    onSuccess: (version) => {
+      toast.success(`Version ${version.version} created (draft)`);
+      void invalidate();
+    },
+    onError: (error) =>
+      toast.error(errorMessage(error, "Failed to create version")),
   });
 }
 

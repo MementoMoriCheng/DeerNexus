@@ -26,6 +26,7 @@ import type {
   ChannelMoveRequest,
   ChannelMoveResponse,
   CreatePackageRequest,
+  CreateVersionRequest,
   ImportAgentRequest,
   ImportReport,
   ReconcileReport,
@@ -227,6 +228,27 @@ export function publishVersion(versionId: string): Promise<AgentVersion> {
 
 export function revokeVersion(versionId: string): Promise<AgentVersion> {
   return versionStateChange(versionId, "revoke");
+}
+
+/**
+ * Create a draft version (ADR §3.2/§11). The caller supplies version (SemVer)
+ * + manifest + content (raw UTF-8 artifact payload); the backend computes the
+ * digest and routes storage inline/object_key. content is never echoed back.
+ */
+export async function createVersion(
+  packageId: string,
+  req: CreateVersionRequest,
+): Promise<AgentVersion> {
+  const response = await fetch(
+    apiUrl(`/api/v1/agent-packages/${packageId}/versions`),
+    {
+      method: "POST",
+      headers: buildMutationHeaders(),
+      body: JSON.stringify(req),
+    },
+  );
+  await ensureOk(response, "Failed to create version");
+  return (await response.json()) as AgentVersion;
 }
 
 // ── Channel fetchers (GET) ────────────────────────────────────────────
