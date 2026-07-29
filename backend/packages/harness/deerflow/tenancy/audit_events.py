@@ -128,6 +128,17 @@ TENANT_EVENT_ACTION_REGISTRY: Mapping[str, str] = {
     # counterpart (pointer moved to a historical Version).
     "agent_channel_promoted": "release.agent.published",
     "agent_channel_rolled_back": "release.agent.rolled_back",
+    # Skill / MCP catalog changes (PR-043, ADR-0005 §5.1 minimal set — these
+    # events allow NO exemption). skills.py and mcp.py persist to
+    # ``extensions_config.json`` (file IO, not a DB transaction), so they
+    # CANNOT satisfy §7.1 Class A same-transaction coupling — these are emitted
+    # best-effort via ``emit_class_b_audit`` (durable pending row, never raises)
+    # after the file write succeeds. A future PR that migrates skill/mcp config
+    # to a DB store will upgrade them to Class A. The single ``catalog.skill.changed``
+    # action covers install/edit/delete/rollback/toggle; the ``verb`` is in the
+    # payload. ``catalog.mcp.changed`` covers MCP server config rewrites.
+    "skill_changed": "catalog.skill.changed",
+    "mcp_changed": "catalog.mcp.changed",
 }
 
 

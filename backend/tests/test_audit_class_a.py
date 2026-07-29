@@ -245,3 +245,39 @@ class TestActionNormalization:
         assert ev.occurred_at.tzinfo is not None
         # It is recent (within the last minute of "now").
         assert (datetime.now(UTC) - ev.occurred_at).total_seconds() < 60
+
+    def test_registry_covers_catalog_release_action_set(self):
+        """ADR-0005 §5.3 lists the complete catalog.*/release.*/connector.*
+        action set. This pins every §5.3 action that has a producer today is
+        present in the registry (or emitted directly with the normalized
+        action); the two connector.* actions stay deferred until a connector
+        router exists (like ``policy.approval.required`` — no producer).
+
+        §5.1 minimal set members (no-exemption) are flagged; the rest are
+        §5.3-only. This test fails if a required action is missing from the
+        registry, making a gap a deliberate change.
+        """
+        # The registry's values() is the set of normalized actions it knows.
+        # §5.3 actions emitted directly (not via the shim registry) must still
+        # appear here so there is a single authoritative map.
+        normalized = set(TENANT_EVENT_ACTION_REGISTRY.values())
+        required = {
+            # Agent package / version lifecycle (PR-052 Class A)
+            "catalog.agent_package.created",
+            "catalog.agent_version.created",
+            "catalog.agent_version.reviewed",
+            "catalog.agent_version.published",
+            "catalog.agent_version.revoked",
+            # Skill / MCP (PR-043 best-effort Class B — file-persisted, §5.1 no-exemption)
+            "catalog.skill.changed",
+            "catalog.mcp.changed",
+            # Release channel CAS (PR-053 Class A, §5.1 no-exemption)
+            "release.agent.published",
+            "release.agent.rolled_back",
+        }
+        missing = required - normalized
+        assert not missing, f"required §5.3 actions missing from registry: {missing}"
+        # connector.* have no code path today (no connector router); they are
+        # §5.3-only and intentionally NOT asserted present until built.
+        for connector_action in ("connector.configuration.changed", "connector.secret_reference.changed"):
+            assert connector_action not in normalized

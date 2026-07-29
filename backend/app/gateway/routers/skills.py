@@ -2,14 +2,18 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.gateway.audit_emit import emit_class_b_audit
 from app.gateway.deps import get_config
 from app.gateway.path_utils import resolve_thread_virtual_path
 from deerflow.agents.lead_agent.prompt import refresh_skills_system_prompt_cache_async
 from deerflow.config.app_config import AppConfig
 from deerflow.config.extensions_config import ExtensionsConfig, SkillStateConfig, get_extensions_config, reload_extensions_config
+from deerflow.contracts.context import get_tenant_context
+from deerflow.contracts.identity import PrincipalRef
+from deerflow.contracts.policy import ResourceRef
 from deerflow.skills import Skill
 from deerflow.skills.installer import SkillAlreadyExistsError
 from deerflow.skills.security_scanner import scan_skill_content
@@ -19,6 +23,63 @@ from deerflow.skills.types import SKILL_MD_FILE, SkillCategory
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["skills"])
+
+
+# ---------------------------------------------------------------------------
+# best-effort audit helpers (PR-043, ADR-0005 §5.1 ``catalog.skill.changed``)
+# ---------------------------------------------------------------------------
+# skills.py persists SKILL.md files / ``extensions_config.json`` (file IO),
+# which is NOT a DB transaction, so it cannot satisfy §7.1 Class A
+# same-transaction coupling. These events are emitted best-effort via
+# ``emit_class_b_audit`` (durable pending row, never raises) AFTER the file
+# write succeeds. A single ``catalog.skill.changed`` action covers all five
+# write endpoints; the ``verb`` distinguishes them in the payload. A future PR
+# that migrates skill config to a DB store + adds RBAC will upgrade them to
+# Class A. Note: skills.py endpoints have NO ``@require_rbac`` gate today
+# (legacy single-user model) — AuthMiddleware still authenticates every
+# request and TenantResolutionMiddleware binds a tenant, so org_id/actor are
+# reliably populated; the ``None`` guards are defensive only.
+
+
+def _skill_audit_actor(request: Request) -> PrincipalRef:
+    """Build the audit ``PrincipalRef`` for the authenticated caller."""
+    user = getattr(request.state, "user", None)
+    user_id = str(getattr(user, "id", None)) if user is not None and getattr(user, "id", None) is not None else None
+    if user_id is not None:
+        return PrincipalRef(type="user", id=user_id, user_id=user_id)
+    return PrincipalRef(type="system", id="system")
+
+
+def _skill_audit_org_id() -> str | None:
+    """Resolve the caller's active ``org_id`` from the bound TenantContext."""
+    ctx = get_tenant_context()
+    return getattr(ctx, "org_id", None) if ctx is not None else None
+
+
+async def _emit_skill_changed_audit(
+    request: Request,
+    *,
+    skill_name: str,
+    verb: str,
+) -> None:
+    """Best-effort emit ``catalog.skill.changed`` (ADR-0005 §5.1 minimal set).
+
+    Called after the skill write succeeds, before the handler returns. Skipped
+    (not raised) when no tenant context is bound. The payload intentionally
+    excludes SKILL.md content (which may carry sensitive prompts/instructions)
+    — only the skill name and verb are recorded.
+    """
+    org_id = _skill_audit_org_id()
+    if org_id is None:
+        return
+    await emit_class_b_audit(
+        "catalog.skill.changed",
+        org_id=org_id,
+        actor=_skill_audit_actor(request),
+        outcome="success",
+        resource=ResourceRef(type="skill", id=skill_name, org_id=org_id),
+        payload={"skill_name": skill_name, "verb": verb},
+    )
 
 
 class SkillResponse(BaseModel):
@@ -106,11 +167,12 @@ async def list_skills(config: AppConfig = Depends(get_config)) -> SkillsListResp
     summary="Install Skill",
     description="Install a skill from a .skill file (ZIP archive) located in the thread's user-data directory.",
 )
-async def install_skill(request: SkillInstallRequest, config: AppConfig = Depends(get_config)) -> SkillInstallResponse:
+async def install_skill(request: Request, body: SkillInstallRequest, config: AppConfig = Depends(get_config)) -> SkillInstallResponse:
     try:
-        skill_file_path = resolve_thread_virtual_path(request.thread_id, request.path)
+        skill_file_path = resolve_thread_virtual_path(body.thread_id, body.path)
         result = await get_or_new_skill_storage(app_config=config).ainstall_skill_from_archive(skill_file_path)
         await refresh_skills_system_prompt_cache_async()
+        await _emit_skill_changed_audit(request, skill_name=result["skill_name"], verb="installed")
         return SkillInstallResponse(**result)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -152,17 +214,17 @@ async def get_custom_skill(skill_name: str, config: AppConfig = Depends(get_conf
 
 
 @router.put("/skills/custom/{skill_name}", response_model=CustomSkillContentResponse, summary="Edit Custom Skill")
-async def update_custom_skill(skill_name: str, request: CustomSkillUpdateRequest, config: AppConfig = Depends(get_config)) -> CustomSkillContentResponse:
+async def update_custom_skill(skill_name: str, request: Request, body: CustomSkillUpdateRequest, config: AppConfig = Depends(get_config)) -> CustomSkillContentResponse:
     try:
         skill_name = skill_name.replace("\r\n", "").replace("\n", "")
         storage = get_or_new_skill_storage(app_config=config)
         storage.ensure_custom_skill_is_editable(skill_name)
-        storage.validate_skill_markdown_content(skill_name, request.content)
-        scan = await scan_skill_content(request.content, executable=False, location=f"{skill_name}/{SKILL_MD_FILE}", app_config=config)
+        storage.validate_skill_markdown_content(skill_name, body.content)
+        scan = await scan_skill_content(body.content, executable=False, location=f"{skill_name}/{SKILL_MD_FILE}", app_config=config)
         if scan.decision == "block":
             raise HTTPException(status_code=400, detail=f"Security scan blocked the edit: {scan.reason}")
         prev_content = storage.read_custom_skill(skill_name)
-        storage.write_custom_skill(skill_name, SKILL_MD_FILE, request.content)
+        storage.write_custom_skill(skill_name, SKILL_MD_FILE, body.content)
         storage.append_history(
             skill_name,
             {
@@ -171,11 +233,12 @@ async def update_custom_skill(skill_name: str, request: CustomSkillUpdateRequest
                 "thread_id": None,
                 "file_path": SKILL_MD_FILE,
                 "prev_content": prev_content,
-                "new_content": request.content,
+                "new_content": body.content,
                 "scanner": {"decision": scan.decision, "reason": scan.reason},
             },
         )
         await refresh_skills_system_prompt_cache_async()
+        await _emit_skill_changed_audit(request, skill_name=skill_name, verb="edited")
         return await get_custom_skill(skill_name, config)
     except HTTPException:
         raise
@@ -189,7 +252,7 @@ async def update_custom_skill(skill_name: str, request: CustomSkillUpdateRequest
 
 
 @router.delete("/skills/custom/{skill_name}", summary="Delete Custom Skill")
-async def delete_custom_skill(skill_name: str, config: AppConfig = Depends(get_config)) -> dict[str, bool]:
+async def delete_custom_skill(skill_name: str, request: Request, config: AppConfig = Depends(get_config)) -> dict[str, bool]:
     try:
         skill_name = skill_name.replace("\r\n", "").replace("\n", "")
         storage = get_or_new_skill_storage(app_config=config)
@@ -206,6 +269,7 @@ async def delete_custom_skill(skill_name: str, config: AppConfig = Depends(get_c
             },
         )
         await refresh_skills_system_prompt_cache_async()
+        await _emit_skill_changed_audit(request, skill_name=skill_name, verb="deleted")
         return {"success": True}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -232,15 +296,16 @@ async def get_custom_skill_history(skill_name: str, config: AppConfig = Depends(
 
 
 @router.post("/skills/custom/{skill_name}/rollback", response_model=CustomSkillContentResponse, summary="Rollback Custom Skill")
-async def rollback_custom_skill(skill_name: str, request: SkillRollbackRequest, config: AppConfig = Depends(get_config)) -> CustomSkillContentResponse:
+async def rollback_custom_skill(skill_name: str, request: Request, body: SkillRollbackRequest, config: AppConfig = Depends(get_config)) -> CustomSkillContentResponse:
     try:
+        skill_name = skill_name.replace("\r\n", "").replace("\n", "")
         storage = get_or_new_skill_storage(app_config=config)
         if not storage.custom_skill_exists(skill_name) and not storage.get_skill_history_file(skill_name).exists():
             raise HTTPException(status_code=404, detail=f"Custom skill '{skill_name}' not found")
         history = storage.read_history(skill_name)
         if not history:
             raise HTTPException(status_code=400, detail=f"Custom skill '{skill_name}' has no history")
-        record = history[request.history_index]
+        record = history[body.history_index]
         target_content = record.get("prev_content")
         if target_content is None:
             raise HTTPException(status_code=400, detail="Selected history entry has no previous content to roll back to")
@@ -264,6 +329,7 @@ async def rollback_custom_skill(skill_name: str, request: SkillRollbackRequest, 
         storage.write_custom_skill(skill_name, SKILL_MD_FILE, target_content)
         storage.append_history(skill_name, history_entry)
         await refresh_skills_system_prompt_cache_async()
+        await _emit_skill_changed_audit(request, skill_name=skill_name, verb="rolled_back")
         return await get_custom_skill(skill_name, config)
     except HTTPException:
         raise
@@ -307,7 +373,7 @@ async def get_skill(skill_name: str, config: AppConfig = Depends(get_config)) ->
     summary="Update Skill",
     description="Update a skill's enabled status by modifying the extensions_config.json file.",
 )
-async def update_skill(skill_name: str, request: SkillUpdateRequest, config: AppConfig = Depends(get_config)) -> SkillResponse:
+async def update_skill(skill_name: str, request: Request, body: SkillUpdateRequest, config: AppConfig = Depends(get_config)) -> SkillResponse:
     try:
         skill_name = skill_name.replace("\r\n", "").replace("\n", "")
         skills = get_or_new_skill_storage(app_config=config).load_skills(enabled_only=False)
@@ -322,7 +388,7 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest, config: App
             logger.info(f"No existing extensions config found. Creating new config at: {config_path}")
 
         extensions_config = get_extensions_config()
-        extensions_config.skills[skill_name] = SkillStateConfig(enabled=request.enabled)
+        extensions_config.skills[skill_name] = SkillStateConfig(enabled=body.enabled)
 
         config_data = {
             "mcpServers": {name: server.model_dump() for name, server in extensions_config.mcp_servers.items()},
@@ -342,7 +408,8 @@ async def update_skill(skill_name: str, request: SkillUpdateRequest, config: App
         if updated_skill is None:
             raise HTTPException(status_code=500, detail=f"Failed to reload skill '{skill_name}' after update")
 
-        logger.info(f"Skill '{skill_name}' enabled status updated to {request.enabled}")
+        logger.info(f"Skill '{skill_name}' enabled status updated to {body.enabled}")
+        await _emit_skill_changed_audit(request, skill_name=skill_name, verb="enabled" if body.enabled else "disabled")
         return _skill_to_response(updated_skill)
 
     except HTTPException:
