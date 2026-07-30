@@ -45,9 +45,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from deerflow.persistence.release.model import ReleaseIdempotencyRecordRow
@@ -194,6 +195,53 @@ async def resolve_idempotency_outcome(
     return ("conflict", None)
 
 
+async def count_idempotency_records(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    older_than: datetime | None = None,
+) -> int:
+    """Count replay records, optionally restricted to those older than ``older_than``.
+
+    Used by the GC sweep for observability/log lines. Opens its own short-lived
+    session (GC is independent of any request).
+    """
+    async with sf() as session:
+        stmt = select(func.count()).select_from(ReleaseIdempotencyRecordRow)
+        if older_than is not None:
+            stmt = stmt.where(ReleaseIdempotencyRecordRow.created_at < older_than)
+        result = await session.execute(stmt)
+        return int(result.scalar() or 0)
+
+
+async def delete_idempotency_records_older_than(
+    sf: async_sessionmaker[AsyncSession],
+    *,
+    cutoff: datetime,
+) -> int:
+    """Delete replay records whose ``created_at`` is strictly before ``cutoff``.
+
+    Implements the §16.56 GC follow-up: replay records are self-contained (no
+    FK) and accumulate indefinitely otherwise. A record older than the
+    retention window is no longer useful — an ``Idempotency-Key`` retry after
+    that long is not a legitimate client replay of the same logical request,
+    so pruning cannot break the replay contract.
+
+    Opens its own session and commits the delete; returns the number of rows
+    removed. Called by the background sweep task in ``release_gc_worker``; also
+    usable as a one-shot maintenance call.
+    """
+    if cutoff.tzinfo is None:
+        raise ValueError("cutoff must be timezone-aware (created_at is stored tz-aware)")
+    async with sf() as session:
+        result = await session.execute(
+            delete(ReleaseIdempotencyRecordRow).where(
+                ReleaseIdempotencyRecordRow.created_at < cutoff,
+            ),
+        )
+        await session.commit()
+        return int(result.rowcount or 0)
+
+
 #: HTTP header name for the client-supplied replay key.
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 
@@ -205,6 +253,8 @@ __all__ = [
     "IDEMPOTENCY_KEY_MAX_LENGTH",
     "IdempotencyConflictError",
     "compute_request_hash",
+    "count_idempotency_records",
+    "delete_idempotency_records_older_than",
     "get_idempotency_record",
     "insert_idempotency_record",
     "resolve_idempotency_outcome",

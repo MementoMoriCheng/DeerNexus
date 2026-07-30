@@ -399,6 +399,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Failed to start audit outbox worker; events fall back to logger")
 
+        # Release Idempotency-Key replay-record GC (PR-055 §16.56 follow-up).
+        # Best-effort daily sweep that prunes stale replay records; a failure
+        # is logged, never fatal (the worker logs and continues next interval).
+        release_gc_task: asyncio.Task[None] | None = None
+        release_gc_stop: asyncio.Event | None = None
+        try:
+            from app.gateway.release_gc_worker import run_release_gc_worker
+
+            if sf is not None:
+                release_gc_stop = asyncio.Event()
+                release_gc_task = asyncio.create_task(
+                    run_release_gc_worker(sf, stop_event=release_gc_stop),
+                    name="release-idempotency-gc",
+                )
+                logger.info("Release idempotency GC worker started")
+            else:
+                logger.warning("No session factory; release idempotency GC worker not started")
+        except Exception:
+            logger.exception("Failed to start release idempotency GC worker")
+
         yield
 
         # Stop the audit outbox worker first (bounded) so it does not race the
@@ -424,6 +444,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 set_tenant_event_sink(None)
             except Exception:
                 logger.debug("clearing audit sink on shutdown failed", exc_info=True)
+
+        # Stop the release idempotency GC worker (bounded), so it does not
+        # race the engine teardown alongside the audit worker above.
+        if release_gc_task is not None:
+            if release_gc_stop is not None:
+                release_gc_stop.set()
+            try:
+                await asyncio.wait_for(release_gc_task, timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+            except TimeoutError:
+                release_gc_task.cancel()
+                logger.warning(
+                    "Release idempotency GC worker shutdown exceeded %.1fs; cancelling.",
+                    _SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                logger.exception("Release idempotency GC worker shutdown raised")
 
         # Stop channel service on shutdown (bounded to prevent worker hang)
         try:
