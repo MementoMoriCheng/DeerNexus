@@ -1872,3 +1872,36 @@ PR-057 原本「不在范围」的第二项 follow-up 已交付。在 Studio Pac
 - **skills.py 加 `@require_rbac`**:探索发现 skills.py 写端点全无授权门控(任何已认证用户可改 skill),是独立授权问题(非审计范畴),本 PR 仅标注不修。
 
 **回滚边界**:无 schema migration。改 2 router(加 Request 参数 + best-effort emit)+ registry 补 2 映射 + ADR 文字修正 + 测试。`git revert` 一次性回滚;skills.py/mcp.py 签名还原即恢复(`Request` 是 FastAPI 自动注入,body 参数名改回即向后兼容)。零 DB 影响。
+
+
+
+### 16.61 安全 Hardening:CodeQL alert 分类处置(skills path-traversal 入口强化 + FP dismiss)
+
+处置 main 上 21 个 CodeQL alert(PR-066 引入 CodeQL SAST 后首次基线扫描暴露的上游 DeerFlow legacy 安全债)。经逐 alert 代码级分析,**绝大多数为 false positive**,真正 hardening 工作有限。
+
+**A. 真正的代码 hardening(1 处,4 个 alert 自动消除)**:
+
+1. **`skills.py` 路径穿越入口强化(7 处)**:7 个端点此前仅做 `skill_name.replace("\r\n","").replace("\n","")`(只剥换行,不防 `..`/`/`),安全实际靠下游 storage 方法内部调 `validate_skill_name` 兜底。改 7 处为显式调 `SkillStorage.validate_skill_name(skill_name)`(已有 `@staticmethod`,严格 allowlist `^[a-z0-9]+(?:-[a-z0-9]+)*$` + 64 char cap,`ValueError` → handler 已有 `except ValueError → 400`)。入口点防御纵深 + 文档化不变量。消除 4 个 `py/path-injection` alert(skills.py:288/303/315)。
+
+> **oauth.py / web-preview.tsx 改动已还原**:初版尝试改 oauth 日志措辞(消 "token" heuristic)+ web-preview iframe scheme 校验,但 CI 验证发现这 2 处改动**无效**——CodeQL 对 PR diff 重新评估反而报新 alert(oauth 改后 "credentials" 仍触发 / web-preview 的 loading ReactNode 被标 XSS)。这 2 个原 alert 是 FP,改用 dismiss 处理(见 B 部分),代码还原避免引入噪声。
+
+**B. False-positive dismiss(17 个,gh api 标注理由,Security tab 留审计痕迹)**:
+
+| 组 | alert # | 规则 | dismiss 理由 |
+|---|---|---|---|
+| 路径穿越 storage/validation 层 | 2-5,10-11 | py/path-injection | `validate_skill_name` 严格 allowlist 已防御;A1 强化入口后纵深完整 |
+| oauth.py 日志 | 21 | py/clear-text-logging-sensitive-data | FP:日志只插值 server_name(MCP 配置名如 "github"),从不含 token 值;"token" 是描述性文字。实际 secret(access_token)仅在 return 语句,从不在日志 |
+| web-preview iframe | 1 | js/xss-through-dom | FP:vendored AI-Elements kit 组件(项目零 import);现代浏览器阻止 iframe src 赋值 javascript: URL;组件是未使用死代码 |
+| api_key HMAC-SHA256 | 12 | py/weak-sensitive-data-hashing | HMAC-SHA256 + pepper 对高熵 key(模块 docstring 论证,设计正确) |
+| password SHA256-into-bcrypt | 13 | py/weak-sensitive-data-hashing | SHA-256 预哈希喂 bcrypt(bcrypt 文档推荐模式,绕过 72 字节截断) |
+| paths.py SHA-1 迁移 | 14 | py/weak-sensitive-data-hashing | SHA-1 `usedforsecurity=False` 复现旧确定性 bucket 名用于迁移定位用户自有目录 |
+| wechat AES-128-ECB | 15-16 | py/weak-cryptographic-algorithm | WeChat iLink 协议强制 `encrypt_type=1` AES-128-ECB,单方面更改破坏互操作 |
+| export_claude_code_oauth print | 19-20 | py/clear-text-logging-sensitive-data | CLI 工具显式 `--print-token`/`--print-export` 目的即输出 token,用户手动调用 |
+| test_doctor_probes URL substring | 17 | py/incomplete-url-substring-sanitization | 测试正向断言(验证 host 出现),非安全控制 |
+| network.py bind 0.0.0.0 | 18 | py/bind-socket-all-network-interfaces | 瞬时端口可用性探测(镜像 Docker 通配 bind),从不 listen/accept,with 块即释放 |
+
+**测试**:backend lint 全绿 + 169 相关测试 passed(3 个 pre-existing Windows 环境 sandbox/symlink 失败在 main 同样存在,零回归);frontend typecheck + lint(0 errors)全绿。A1 不改变运行时行为(更严的等价校验)。
+
+**不在本 PR 范围**:CodeQL 自定义 sanitizer model(QL pack,较重,用 dismiss + 入口 hardening 替代)/ wechat 迁离 AES-ECB(协议强制)/ password/api_key 加密方案重构(当前设计正确)。
+
+**回滚边界**:A1 部分 `git revert`(7 行 skills.py);B 部分 Security tab 可逐个 reopen。零 migration。
