@@ -61,7 +61,7 @@ class OAuthTokenManager:
 
             fresh = await self._fetch_token(oauth)
             self._tokens[server_name] = fresh
-            logger.info(f"Refreshed OAuth credentials for MCP server: {server_name}")
+            logger.info(f"Refreshed OAuth access token for MCP server: {server_name}")
             return f"{fresh.token_type} {fresh.access_token}"
 
     @staticmethod

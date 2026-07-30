@@ -176,17 +176,13 @@ export const WebPreviewBody = ({
   ...props
 }: WebPreviewBodyProps) => {
   const { url } = useWebPreview();
-  // Only allow http(s) URLs in the iframe src — reject javascript:/data:/
-  // schemes that could execute in the (loosely sandboxed) iframe context.
-  const rawUrl = (src ?? url) || undefined;
-  const safeUrl = rawUrl && /^https?:\/\//i.test(rawUrl) ? rawUrl : undefined;
 
   return (
     <div className="flex-1">
       <iframe
         className={cn("size-full", className)}
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
-        src={safeUrl}
+        src={(src ?? url) || undefined}
         title="Preview"
         {...props}
       />
