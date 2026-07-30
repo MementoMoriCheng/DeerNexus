@@ -14,6 +14,7 @@ import {
   type ImgHTMLAttributes,
 } from "react";
 import rehypeKatex from "rehype-katex";
+import type { ExtraProps } from "streamdown";
 
 import { Loader } from "@/components/ai-elements/loader";
 import {
@@ -184,11 +185,15 @@ function MessageImage({
   alt,
   threadId,
   maxWidth = "90%",
+  // streamdown v2 injects a hast `node` prop into custom component overrides;
+  // strip it so it isn't forwarded onto the native <img> (React "unknown prop").
+  node: _node,
   ...props
-}: React.ImgHTMLAttributes<HTMLImageElement> & {
-  threadId: string;
-  maxWidth?: string;
-}) {
+}: React.ImgHTMLAttributes<HTMLImageElement> &
+  ExtraProps & {
+    threadId: string;
+    maxWidth?: string;
+  }) {
   if (!src) return null;
 
   const imgClassName = cn("overflow-hidden rounded-lg", `max-w-[${maxWidth}]`);
@@ -221,10 +226,14 @@ function MessageContent_({
   const isHuman = message.type === "human";
   const components = useMemo(
     () => ({
-      img: (props: ImgHTMLAttributes<HTMLImageElement>) => (
+      img: (props: ImgHTMLAttributes<HTMLImageElement> & ExtraProps) => (
         <MessageImage {...props} threadId={threadId} maxWidth="90%" />
       ),
-      a: ({ href, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) => {
+      a: ({
+        href,
+        node: _node,
+        ...props
+      }: AnchorHTMLAttributes<HTMLAnchorElement> & ExtraProps) => {
         if (href?.startsWith("/mnt/")) {
           const url = resolveArtifactURL(href, threadId);
           return (

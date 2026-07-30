@@ -34,7 +34,12 @@ export default tseslint.config(
       ],
       "@typescript-eslint/no-unused-vars": [
         "warn",
-        { argsIgnorePattern: "^_" },
+        // `_`-prefix marks intentionally-unused bindings. Covers both function
+        // params (argsIgnorePattern) and local bindings such as a destructured
+        // prop that must be stripped before spreading the rest (varsIgnorePattern),
+        // e.g. `const { node: _node, ...rest } = props` to drop streamdown's hast
+        // `node` before forwarding `rest` to a native element.
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
       "@typescript-eslint/require-await": "off",
       "@typescript-eslint/no-empty-object-type": "off",

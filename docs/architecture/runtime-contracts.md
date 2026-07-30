@@ -1905,3 +1905,22 @@ PR-057 原本「不在范围」的第二项 follow-up 已交付。在 Studio Pac
 **不在本 PR 范围**:CodeQL 自定义 sanitizer model(QL pack,较重,用 dismiss + 入口 hardening 替代)/ wechat 迁离 AES-ECB(协议强制)/ password/api_key 加密方案重构(当前设计正确)。
 
 **回滚边界**:A1 部分 `git revert`(7 行 skills.py);B 部分 Security tab 可逐个 reopen。零 migration。
+
+### 16.62 前端技术债:streamdown v1→v2 迁移(companion packages + DiagramPlugin)
+
+streamdown v2 把 **Mermaid 图表渲染** 与 **Shiki 代码高亮** 从 v1 的内置能力拆成 opt-in 的配套包(`@streamdown/mermaid`、`@streamdown/code`)。v1 两者都内置,故迁移须显式补回以保持功能对等。
+
+**核心改动**:
+
+1. **依赖**(`package.json`):`streamdown` `1.4.0`→`^2.5.0`;新增 `@streamdown/mermaid@^1.0.2`(带 `mermaid@^11`)、`@streamdown/code@^1.1.1`(带 `shiki@^3`)。**`shiki@4.3.1` 保持不变**——它是项目自有直接依赖(`src/components/ai-elements/code-block.tsx` 直接用 `codeToHtml/BundledLanguage/ShikiTransformer`,非 streamdown 传递依赖),`@streamdown/code` 的隔离 shiki@3 与项目 4.3.1 在 pnpm isolated node_modules 下共存、互不影响。
+2. **插件接入**(`src/core/streamdown/plugins.ts`):三个 preset(`streamdownPlugins`/`streamdownPluginsWithWordAnimation`/`reasoningPlugins`)新增 `plugins: { mermaid, code }`(`reasoningPlugins` 仅加 `code`,思维链极少含 mermaid 图,避免无谓重渲染)。关键:v2 的 `mermaid` Streamdown prop 只 *配置* 图表(theme/errorComponent),**渲染本身** 必须经 `plugins.mermaid` 传入 `DiagramPlugin` 实例。
+3. **Components 覆盖剥 `node`**(4 处):v2 给自定义组件覆盖注入 hast `node: Element`(via `ExtraProps`),透传到原生 `<a>`/`<img>` 会触发 React "unknown prop `node`"。每处在展开前 destructure 掉 `node`(并补 `& ExtraProps` prop 类型以过 tsc):`citation-link.tsx`/`artifact-link.tsx`(两个可复用覆盖)、`markdown-content.tsx` 的 `a`、`message-list-item.tsx` 的 `a`+`img`(MessageImage)。eslint 规则补 `varsIgnorePattern: "^_"`(覆盖函数体内 destructure 的 `_`-前缀变量,如 `const { node: _node, ...rest }`)。
+4. **MarkdownContent 补 `plugins` 透传**(关键修复):`MarkdownContent` 此前只传 `content`/`isLoading`/`rehypePlugins`/`components`,**不传 `plugins`** → Streamdown 插件 context 的 `mermaid` 为 null → mermaid 代码块降级为纯代码块(e2e `getByLabel("Mermaid chart")` 找不到元素)。加 `plugins?: MessageResponseProps["plugins"]` prop 并默认 `streamdownPlugins.plugins` 后透传给 `<MessageResponse>`。`MessageResponse`/`ClipboardSafeStreamdown` 经 `...props` 自动转发。
+
+**关键诊断过程**:e2e 首次失败后用 debug spec dump DOM,发现 mermaid 块被渲染为 `data-streamdown="code-block"`(纯代码块,非图表),`data-language="mermaid"` 正确。读 v2 chunk 发现 code-block 组件的门控为 `if (m === "mermaid" && d)`(`d = de()` 读插件 context 的 mermaid)。验证 `@streamdown/mermaid` 导出 shape 正确(`type:diagram, language:mermaid`)、`plugins` 对象源码正确,定位到 `MarkdownContent` 渲染路径不传 `plugins`——补上后 e2e 通过。
+
+**测试**:typecheck(0 errors)/ lint(0 errors,1 pre-existing 警告)/ prettier / rstest 单测 348 passed / `next build` / **`thread-history-mermaid` e2e passed**(`getByLabel("Mermaid chart")` 可见 + `Mermaid Error:` 计 0)全绿。
+
+**不在本 PR 范围**:eslint-config-next v15→v16(独立 PR-B)/ `shiki@4.3.1→v4.x` 升级(非 streamdown 相关)/ mermaid 主题深度定制(默认即可)。
+
+**回滚边界**:`git revert` 一次性回滚(依赖 + 6 个 src 文件 + eslint 配置)。零 backend/DB 影响。`pnpm install --frozen-lockfile` 恢复 node_modules。

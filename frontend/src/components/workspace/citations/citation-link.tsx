@@ -1,5 +1,6 @@
 import { ExternalLinkIcon } from "lucide-react";
 import type { ComponentProps } from "react";
+import type { ExtraProps } from "streamdown";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -12,8 +13,11 @@ import { cn } from "@/lib/utils";
 export function CitationLink({
   href,
   children,
+  // streamdown v2 injects a hast `node` prop into custom component overrides;
+  // strip it so it isn't forwarded onto the native <a> (React "unknown prop").
+  node: _node,
   ...props
-}: ComponentProps<"a">) {
+}: ComponentProps<"a"> & ExtraProps) {
   const domain = extractDomain(href ?? "");
 
   // Priority: children > domain

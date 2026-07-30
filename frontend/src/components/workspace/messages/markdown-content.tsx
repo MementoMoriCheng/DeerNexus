@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import type { AnchorHTMLAttributes } from "react";
+import type { ExtraProps } from "streamdown";
 
 import {
   MessageResponse,
@@ -26,6 +27,7 @@ export type MarkdownContentProps = {
   className?: string;
   remarkPlugins?: MessageResponseProps["remarkPlugins"];
   components?: MessageResponseProps["components"];
+  plugins?: MessageResponseProps["plugins"];
 };
 
 /** Renders markdown content. */
@@ -35,6 +37,11 @@ export function MarkdownContent({
   className,
   remarkPlugins = streamdownPlugins.remarkPlugins,
   components: componentsFromProps,
+  // Default to the streamdown v2 companion plugins (Mermaid diagrams + Shiki code
+  // highlighting) so renderers that only customize rehypePlugins/components still
+  // get diagrams + syntax highlighting. v2 unbundled these into opt-in plugins, so
+  // omitting plugins would leave code blocks unhighlighted and mermaid as plain text.
+  plugins = streamdownPlugins.plugins,
 }: MarkdownContentProps) {
   const normalizedContent = useMemo(
     () => preprocessStreamdownMarkdown(content),
@@ -42,7 +49,7 @@ export function MarkdownContent({
   );
   const components = useMemo(() => {
     return {
-      a: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => {
+      a: (props: AnchorHTMLAttributes<HTMLAnchorElement> & ExtraProps) => {
         if (typeof props.children === "string") {
           const match = /^citation:(.+)$/.exec(props.children);
           if (match) {
@@ -50,7 +57,9 @@ export function MarkdownContent({
             return <CitationLink {...props}>{text}</CitationLink>;
           }
         }
-        const { className, target, rel, ...rest } = props;
+        // streamdown v2 injects a hast `node` prop into custom component overrides;
+        // strip it so it isn't forwarded onto the native <a> (React "unknown prop").
+        const { className, target, rel, node: _node, ...rest } = props;
         const external = isExternalUrl(props.href);
         return (
           <a
@@ -76,6 +85,7 @@ export function MarkdownContent({
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       components={components}
+      plugins={plugins}
     >
       {normalizedContent}
     </MessageResponse>
