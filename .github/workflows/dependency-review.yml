@@ -44,8 +44,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # A GET to the snapshot list returns 200 when the graph is on, 404/403 when off.
-          if gh api repos/${{ github.repository }}/dependency-graph/snapshots \
+          # Probe the SBOM endpoint: it returns 200 when the graph has computed the
+          # repo's dependency graph (i.e. the graph is ON), and 404/403 when the graph
+          # is OFF. NOTE: do NOT probe /dependency-graph/snapshots — that lists
+          # Dependabot's submitted snapshots and is 404 whenever Dependabot has never
+          # submitted one, even on a repo whose graph is enabled, which would make the
+          # strict gate spuriously skip. The SBOM endpoint reflects the graph itself.
+          if gh api repos/${{ github.repository }}/dependency-graph/sbom \
              --silent >/dev/null 2>&1; then
             echo "status=on" >> "$GITHUB_OUTPUT"
             echo "Dependency graph is ENABLED — running strict SCA gate."
