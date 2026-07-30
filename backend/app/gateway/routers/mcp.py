@@ -7,13 +7,79 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from app.gateway.audit_emit import emit_class_b_audit
 from app.gateway.rbac import require_rbac
 from deerflow.config.extensions_config import ExtensionsConfig, get_extensions_config, reload_extensions_config
 from deerflow.contracts import Permission
+from deerflow.contracts.context import get_tenant_context
+from deerflow.contracts.identity import PrincipalRef
+from deerflow.contracts.policy import ResourceRef
 from deerflow.mcp.cache import reset_mcp_tools_cache
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["mcp"])
+
+
+# ---------------------------------------------------------------------------
+# best-effort audit helpers (PR-043, ADR-0005 §5.1 ``catalog.mcp.changed``)
+# ---------------------------------------------------------------------------
+# mcp.py persists to ``extensions_config.json`` (file IO), which is NOT a DB
+# transaction, so it cannot satisfy §7.1 Class A same-transaction coupling.
+# These events are emitted best-effort via ``emit_class_b_audit`` (durable
+# pending row, never raises) AFTER the file write succeeds. A future PR that
+# migrates MCP config to a DB store will upgrade them to Class A.
+
+
+def _mcp_audit_actor(request: Request) -> PrincipalRef:
+    """Build the audit ``PrincipalRef`` for the authenticated caller.
+
+    AuthMiddleware stamps ``request.state.user`` for every authenticated
+    request before the handler runs, so this is reliably populated; the
+    ``None`` branch is a defensive guard only.
+    """
+    user = getattr(request.state, "user", None)
+    user_id = str(getattr(user, "id", None)) if user is not None and getattr(user, "id", None) is not None else None
+    if user_id is not None:
+        return PrincipalRef(type="user", id=user_id, user_id=user_id)
+    return PrincipalRef(type="system", id="system")
+
+
+def _mcp_audit_org_id() -> str | None:
+    """Resolve the caller's active ``org_id`` from the bound TenantContext.
+
+    Returns ``None`` when no tenant is bound (graceful — the audit emit is
+    skipped by the caller rather than raising). TenantResolutionMiddleware
+    binds a tenant for every authenticated request, so this is reliably
+    non-None in normal operation.
+    """
+    ctx = get_tenant_context()
+    return getattr(ctx, "org_id", None) if ctx is not None else None
+
+
+async def _emit_mcp_changed_audit(
+    request: Request,
+    *,
+    server_names: list[str],
+) -> None:
+    """Best-effort emit ``catalog.mcp.changed`` (ADR-0005 §5.1 minimal set).
+
+    Called after the MCP config file write succeeds, before the handler
+    returns. Skipped (not raised) when no tenant context is bound. The payload
+    intentionally excludes server config bodies (which may carry secret
+    references) — only the server count and names are recorded (§3.3 / §5.3
+    "do not log Connector Secret values").
+    """
+    org_id = _mcp_audit_org_id()
+    if org_id is None:
+        return
+    await emit_class_b_audit(
+        "catalog.mcp.changed",
+        org_id=org_id,
+        actor=_mcp_audit_actor(request),
+        outcome="success",
+        resource=ResourceRef(type="mcp_config", id="mcp", org_id=org_id),
+        payload={"server_count": len(server_names), "server_names": server_names},
+    )
 
 
 _MCP_STDIO_COMMAND_ALLOWLIST_ENV = "DEER_FLOW_MCP_STDIO_COMMAND_ALLOWLIST"
@@ -374,6 +440,11 @@ async def update_mcp_configuration(request: Request, body: McpConfigUpdateReques
         reloaded_config = reload_extensions_config()
         reset_mcp_tools_cache()
         servers = {name: _mask_server_config(McpServerConfigResponse(**server.model_dump())) for name, server in reloaded_config.mcp_servers.items()}
+        # PR-043: best-effort ``catalog.mcp.changed`` (ADR-0005 §5.1). The file
+        # write above has already succeeded; this durable-enqueues the audit
+        # row and never raises (Class B best-effort, not Class A — file IO is
+        # not in a DB transaction, see module ``_emit_mcp_changed_audit``).
+        await _emit_mcp_changed_audit(request, server_names=list(servers))
         return McpConfigResponse(mcp_servers=servers)
 
     except HTTPException:

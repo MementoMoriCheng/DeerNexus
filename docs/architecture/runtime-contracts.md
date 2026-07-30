@@ -1835,3 +1835,40 @@ PR-057 原本「不在范围」的第二项 follow-up 已交付。在 Studio Pac
 - **trivy Critical/High 首轮撞上游 CVE 的豁免**(`.trivyignore` 初始空;首个 release tag 首次实证,若发现阻断性 CVE 在 PR 内建豁免)。
 
 **回滚边界**:纯 CI/Dockerfile/config PR 无 backend/migration/frontend。`git revert` 一次性回滚(删 3 workflow + dependabot.yml + .trivyignore + Dockerfile 非 root/digest 还原 + actions tag 还原)。零运行时影响。
+
+
+
+### 16.60 PR-043:Catalog / Connector / Release Audit(skill / MCP 审计 + 过时文档修正)
+
+补齐 ADR-0005 §5.1 最小集剩余缺口 + 修正 Track E 已交付后的过时文档。
+
+**探索结论(关键发现)**:Track E(PR-050~057)已用 **Class A 同事务**交付 `catalog.agent_*` + `release.agent.*` 全部事件 —— `agent_artifacts.py` 11 个写端点(Package CRUD + Version create/review/publish/revoke + import-file 双事件 + promote/rollback)全部经 `_emit_class_a_audit` → `enqueue_audit_outbox_in_session` → `session.commit()` 原子提交。ADR-0005 §15 line 552/553 与 PR-042 deferred note 是**过时文字** —— 仍把 `release.agent.published/rolled_back` 列为"缺(Track E)",实际 PR-053 已落地。
+
+**§5.1 最小集真实剩余缺口**(本 PR 补齐):
+- `catalog.skill.changed`(§5.1 不允许豁免)→ skills.py 5 写端点(install/edit/delete/rollback/enable-disable toggle)此前**零审计**。
+- `catalog.mcp.changed`(§5.1 不允许豁免)→ mcp.py `PUT /mcp/config` 此前**零审计**。
+- `release.agent.published` / `release.agent.rolled_back`(§5.1)→ ✅ 已交付(PR-053 Class A)。
+- `policy.approval.required`(§5.1)→ 无生产者(defer,同 PR-044)。
+
+**架构约束(关键边界)**:skills.py / mcp.py 写 `extensions_config.json`(文件 IO),文件写**不在 DB 事务内**,无法满足 §7.1 Class A"业务写与 outbox 同事务、outbox 失败回滚"。故这两个 §5.1 事件走 **PR-044 的 `emit_class_b_audit` best-effort**(durable pending 行,永不 raise):文件写成功后、handler return 前调用。文档诚实标注"非 Class A 同事务",待 skills/mcp 多租户化迁 DB 后升级。这不是降级 —— Class B best-effort 仍满足 §7.2"返回前进入可靠本地 outbox",durable 但非同事务原子。
+
+**mcp.py**(干净路径,已有 `Request` + `@require_rbac(ADMIN_ORG_MANAGE)` + tenant):`PUT /mcp/config` 文件写成功后调 `_emit_mcp_changed_audit` → `emit_class_b_audit("catalog.mcp.changed", ...)`,payload = `{server_count, server_names}`(**仅名称,不含 server 配置明文** —— §3.3 禁键 + §5.3"不记录 Connector Secret 值")。新私有 helper `_mcp_audit_actor(request)` / `_mcp_audit_org_id()`(graceful None-check,不复制 agent_artifacts.py 的 400 硬门控)。
+
+**skills.py**(legacy 单用户模型,5 写端点无 `@require_rbac`/无 `Request`/无 tenant 绑定):统一 emit 单 action `catalog.skill.changed`,verb 在 payload 区分(installed/edited/deleted/rolled_back/enabled/disabled)。每个端点注入 `request: Request`(FastAPI 自动注入)+ body 参数改名 `request`→`body`(避免与 `Request` 冲突)。payload = `{skill_name, verb}`(**不含 SKILL.md 内容** —— 可能含敏感指令)。新私有 `_emit_skill_changed_audit(request, skill_name, verb)`。
+
+**关键事实**:skills.py 虽无 `@require_rbac`,但 AuthMiddleware 全局 401 拦截未认证 + TenantResolutionMiddleware 全局给所有已认证请求 bind tenant,故 handler 执行时 `request.state.user` + `get_tenant_context()` 必存在。graceful None-check 纯防御(覆盖 auth-disabled 边缘 + 未来非 HTTP 调用路径)。
+
+**Registry**(`audit_events.py` TENANT_EVENT_ACTION_REGISTRY):补 2 映射 `"skill_changed"→"catalog.skill.changed"` + `"mcp_changed"→"catalog.mcp.changed"`(虽 skills/mcp 直传 normalized action 走 best-effort,registry 须完整锁定 §5.3 集)。
+
+**测试**(17 新 + 1 扩展,全绿):新 `test_audit_catalog_release.py`(17):`catalog.mcp.changed` 3 测(emit + server_count/names + 无 tenant skip + payload 排除 secret 明文)+ `catalog.skill.changed` 12 测(6 verb × {emit 正确性 + payload 排除 SKILL.md 内容})+ 2 边缘(无 tenant skip + 无 user → system actor fallback)。扩展 `test_audit_class_a.py::TestActionNormalization::test_registry_covers_catalog_release_action_set` —— 锁定 §5.3 完整 9 个有生产者的 catalog.*/release.* action 在 registry 中存在 + connector.* 2 个 action 确认不在(无 router)。验证:lint 全绿 + 相关测试(audit/client)全绿;59 全量回归失败均为 main 上 pre-existing 的 Windows 环境 sandbox/symlink/channel 问题,与本 PR 零相关。
+
+**ADR-0005 §15 修正**(bookkeeping):line 552 最小集计数 5/9→**8/9**(release.agent.* + catalog.skill/mcp.changed 补齐,唯一缺 policy.approval.required);line 553 Release 写路径"待 Track E"→"已全覆盖(PR-052~055 Class A 11 写端点)"+ Skill/MCP best-effort Class B + Connector 仍缺。
+
+**严格不在本 PR 范围**:
+- **`connector.configuration.changed` / `connector.secret_reference.changed`**:无 connector router 存在(同 PR-044 `policy.approval.required` 无生产者模式 defer),§5.3-only 非 §5.1 最小集。
+- **`policy.approval.required`**:无生产者(同 PR-044 defer)。
+- **skills.py/mcp.py 升级 Class A 同事务**:需迁 DB 持久化 + 多租户化 + RBAC,独立大 PR。
+- **`_emit_class_a_audit` dedup**(iam.py + agent_artifacts.py 字节级重复 + `_audit_actor`/`_audit_resource` 重复):独立重构 PR。
+- **skills.py 加 `@require_rbac`**:探索发现 skills.py 写端点全无授权门控(任何已认证用户可改 skill),是独立授权问题(非审计范畴),本 PR 仅标注不修。
+
+**回滚边界**:无 schema migration。改 2 router(加 Request 参数 + best-effort emit)+ registry 补 2 映射 + ADR 文字修正 + 测试。`git revert` 一次性回滚;skills.py/mcp.py 签名还原即恢复(`Request` 是 FastAPI 自动注入,body 参数名改回即向后兼容)。零 DB 影响。
