@@ -56,6 +56,7 @@ class StreamdownFallbackBoundary extends Component<
 
 export function ClipboardSafeStreamdown({
   children,
+  mermaid,
   ...props
 }: ClipboardSafeStreamdownProps) {
   // Fast path for the dominant pathological inputs (deep ">" chains and deeply
@@ -70,7 +71,13 @@ export function ClipboardSafeStreamdown({
   );
   return (
     <StreamdownFallbackBoundary raw={children}>
-      <Streamdown {...props}>{safeChildren}</Streamdown>
+      {/* streamdown v2 defaults mermaid rendering OFF (mermaid config is
+          undefined unless explicitly passed). v1 enabled it by default, so to
+          preserve behavior we default mermaid on here unless the caller
+          overrides it (e.g. to disable or pass a custom MermaidConfig). */}
+      <Streamdown {...props} mermaid={mermaid ?? {}}>
+        {safeChildren}
+      </Streamdown>
     </StreamdownFallbackBoundary>
   );
 }
