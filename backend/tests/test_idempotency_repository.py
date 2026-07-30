@@ -16,6 +16,7 @@ Repository IDs: ``ART-1600`` series (repository layer, PR-055).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,8 @@ from deerflow.persistence.release import (
     IDEMPOTENCY_KEY_MAX_LENGTH,
     IdempotencyConflictError,
     compute_request_hash,
+    count_idempotency_records,
+    delete_idempotency_records_older_than,
     get_idempotency_record,
     insert_idempotency_record,
     resolve_idempotency_outcome,
@@ -295,6 +298,92 @@ class TestResolveOutcome:
         )
         assert outcome == "miss"
         assert record is None
+
+
+# ---------------------------------------------------------------------------
+# GC / TTL prune (ART-1650) — §16.56 follow-up
+# ---------------------------------------------------------------------------
+
+
+async def _insert_record_with_age(
+    sf,
+    *,
+    org_id: str,
+    idempotency_key: str,
+    age_seconds: float,
+    record_id: str,
+) -> None:
+    """Insert a replay record back-dated by ``age_seconds`` from now (for GC tests)."""
+    from deerflow.persistence.release.model import ReleaseIdempotencyRecordRow
+
+    created = datetime.now(UTC) - timedelta(seconds=age_seconds)
+    async with sf() as session:
+        row = ReleaseIdempotencyRecordRow(
+            id=record_id,
+            org_id=org_id,
+            idempotency_key=idempotency_key,
+            request_hash="h",
+            response_payload={},
+            status_code=200,
+            created_at=created,
+        )
+        session.add(row)
+        await session.commit()
+
+
+class TestGC:
+    async def test_count_all_when_empty(self, sf):
+        assert await count_idempotency_records(sf) == 0
+
+    async def test_count_all_after_inserts(self, sf):
+        async with sf() as session:
+            await insert_idempotency_record(
+                session,
+                org_id=ORG_ID,
+                idempotency_key="k-1",
+                request_hash="h",
+                response_payload={},
+                status_code=200,
+                record_id="rec-1",
+            )
+            await session.commit()
+        assert await count_idempotency_records(sf) == 1
+
+    async def test_count_older_than_filters_by_created_at(self, sf):
+        await _insert_record_with_age(sf, org_id=ORG_ID, idempotency_key="old", age_seconds=3600, record_id="rec-old")
+        await _insert_record_with_age(sf, org_id=ORG_ID, idempotency_key="new", age_seconds=10, record_id="rec-new")
+        cutoff = datetime.now(UTC) - timedelta(seconds=1800)  # between old (3600) and new (10)
+        assert await count_idempotency_records(sf, older_than=cutoff) == 1
+
+    async def test_delete_older_than_removes_only_stale(self, sf):
+        await _insert_record_with_age(sf, org_id=ORG_ID, idempotency_key="old", age_seconds=3600, record_id="rec-old")
+        await _insert_record_with_age(sf, org_id=ORG_ID, idempotency_key="new", age_seconds=10, record_id="rec-new")
+        cutoff = datetime.now(UTC) - timedelta(seconds=1800)
+        removed = await delete_idempotency_records_older_than(sf, cutoff=cutoff)
+        assert removed == 1
+        # The fresh record survives; the stale one is gone.
+        assert await count_idempotency_records(sf) == 1
+        async with sf() as session:
+            assert await get_idempotency_record(session, org_id=ORG_ID, idempotency_key="new") is not None
+            assert await get_idempotency_record(session, org_id=ORG_ID, idempotency_key="old") is None
+
+    async def test_delete_older_than_is_org_agnostic(self, sf):
+        """GC prunes across all Orgs (replay records are self-contained; retention is global)."""
+        await _insert_record_with_age(sf, org_id=ORG_ID, idempotency_key="old-a", age_seconds=3600, record_id="rec-a")
+        await _insert_record_with_age(sf, org_id=OTHER_ORG_ID, idempotency_key="old-b", age_seconds=3600, record_id="rec-b")
+        cutoff = datetime.now(UTC) - timedelta(seconds=1800)
+        removed = await delete_idempotency_records_older_than(sf, cutoff=cutoff)
+        assert removed == 2
+
+    async def test_delete_older_than_with_no_stale_returns_zero(self, sf):
+        await _insert_record_with_age(sf, org_id=ORG_ID, idempotency_key="fresh", age_seconds=5, record_id="rec-f")
+        cutoff = datetime.now(UTC) - timedelta(days=30)
+        assert await delete_idempotency_records_older_than(sf, cutoff=cutoff) == 0
+
+    async def test_delete_requires_tz_aware_cutoff(self, sf):
+        naive = datetime.now()  # no tzinfo
+        with pytest.raises(ValueError):
+            await delete_idempotency_records_older_than(sf, cutoff=naive)
 
 
 # ---------------------------------------------------------------------------

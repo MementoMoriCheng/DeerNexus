@@ -1940,3 +1940,22 @@ streamdown v2 把 **Mermaid 图表渲染** 与 **Shiki 代码高亮** 从 v1 的
 **不在本 PR 范围**:React Compiler hooks 规则逐个修复(独立 React 重构)/ eslint 9→latest minor(已是 9.39.2,满足 v16 `eslint>=9` peer)/ 升级其他 ESLint 插件。
 
 **回滚边界**:`git revert` 一次性回滚(3 文件:eslint.config.js + package.json + pnpm-lock.yaml)。零运行时影响。
+
+### 16.64 release_idempotency_records GC/TTL(§16.56 replay-store GC follow-up)
+
+落地 §16.56/PR-055 显式排除的 follow-up:`release_idempotency_records` 表(promote/rollback 全响应重放存储)**无 TTL、记录无限累积**。该表自包含(无 FK),`created_at` 列已存在,§16.56 明确标注"GC keyed on `created_at` 是 follow-up"。
+
+**核心改动**:
+
+1. **repo 函数**(`packages/.../persistence/release/idempotency.py`):新增 `count_idempotency_records(sf, *, older_than=None)`(观测用)+ `delete_idempotency_records_older_than(sf, *, cutoff) -> int`(严格 `< cutoff` 删除,返回删除行数,`cutoff` 必须 tz-aware 否则 `ValueError`)。各开自己的 short-lived session 并 commit。
+2. **后台 sweep worker**(`app/gateway/release_gc_worker.py`,新文件):`sweep_release_idempotency_records(sf, *, retention_days=30, now=None)` 单次幂等清扫(`now` 可注入做确定性测试);`run_release_gc_worker(sf, *, interval=24h, retention_days=30, stop_event=None)` 后台循环,**镜像 `run_audit_worker` 的韧性契约**——单次 sweep 抛异常只记日志继续下一次,绝不杀 worker;`stop_event` 中断 sleep 保证及时关闭。
+3. **lifespan 注册**(`app/gateway/app.py`):在 audit outbox worker 之后注册 release GC worker(`asyncio.create_task`),shutdown 时 `stop_event.set()` + `wait_for(timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)` 有界停止(与 audit worker 同模式)。
+4. **配置**:模块常量(与 `run_audit_worker` 的 `WORKER_INTERVAL_SECONDS` 一致,非 config knob)——`GC_RETENTION_DAYS=30`(合理重试风暴窗口上限,远超合法客户端重试同一逻辑 promote/rollback 的时长)、`SWEEP_INTERVAL_SECONDS=24h`(日扫,低写入量场景保持表有界且零负载)。
+
+**设计依据**:replay 记录超 retention 后**不再有用**——`Idempotency-Key` 隔那么久重试不是同一逻辑请求的合法重放,prune 不破坏重放契约。
+
+**测试**:`test_idempotency_repository.py` 加 `TestGC`(7 测:count 全表/older_than 过滤、delete 只删 stale/跨 Org 无差别/无 stale 返 0/naive cutoff 报错)+ `test_release_gc_worker.py`(新,6 测:sweep 删 stale 留 fresh/边界 `==cutoff` 不删(strict `<`)/幂等二次 no-op/自定义 retention/空表/tz now;worker loop 跑一轮后 stop_event 及时退 + sweep 异常不杀 worker)。回归:channel/idempotency/doctor/audit-worker 148 测全绿 + ruff 0 error。
+
+**不在本 PR 范围**:config knob 化(当前常量足够,与 audit worker 一致)/ 更激进 retention 策略(基于请求量动态调整)/ 其他表的 TTL(audit_events 归档 §10.2 依赖对象存储,不在本 PR)。
+
+**回滚边界**:`git revert` 一次性回滚(repo 函数 + worker + lifespan 注册 + 测试)。零 schema migration(无新列/无新表)。worker 不启动即退化为旧行为(无 GC),无数据丢失风险。
