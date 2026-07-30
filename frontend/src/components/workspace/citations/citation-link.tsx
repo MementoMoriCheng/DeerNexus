@@ -9,11 +9,18 @@ import {
 } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
 
+/**
+ * Props shape compatible with streamdown v2's ``Components['a']`` mapping
+ * (passes ``Record<string, unknown> & ExtraProps``). The extra ``node``
+ * field from streamdown is accepted and ignored.
+ */
+type StreamdownAnchorProps = ComponentProps<"a"> & { node?: unknown };
+
 export function CitationLink({
   href,
   children,
   ...props
-}: ComponentProps<"a">) {
+}: StreamdownAnchorProps) {
   const domain = extractDomain(href ?? "");
 
   // Priority: children > domain
