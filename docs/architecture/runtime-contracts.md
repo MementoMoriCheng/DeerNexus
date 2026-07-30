@@ -1924,3 +1924,19 @@ streamdown v2 把 **Mermaid 图表渲染** 与 **Shiki 代码高亮** 从 v1 的
 **不在本 PR 范围**:eslint-config-next v15→v16(独立 PR-B)/ `shiki@4.3.1→v4.x` 升级(非 streamdown 相关)/ mermaid 主题深度定制(默认即可)。
 
 **回滚边界**:`git revert` 一次性回滚(依赖 + 6 个 src 文件 + eslint 配置)。零 backend/DB 影响。`pnpm install --frozen-lockfile` 恢复 node_modules。
+
+### 16.63 前端工具链:eslint-config-next v15→v16(native flat config)
+
+解锁 v16 原生 flat config,消除 v15 时代 `@eslint/eslintrc` `FlatCompat` 兼容层。兼容层在 v16 下崩溃——`FlatCompat` 序列化 v16 含**循环引用** 的 react plugin 时 `TypeError: Converting circular structure to JSON`(正是此前首次 v16 实验失败的根因)。v16 的 `index.d.ts` 为 `declare const config: Linter.Config[]; export = config;`,可直接展开无需兼容层。
+
+**核心改动**:
+
+1. **依赖**(`package.json`):`eslint-config-next` `^15.2.3`→`^16.2.12`;**移除** `@eslint/eslintrc` devDep(不再需要)。`lint`/`check`/`lint:fix` 脚本去掉 `--ext .ts,.tsx`(flat config 下 `--ext` 非法,改 `eslint .`,靠 config 的 `files: ["**/*.ts","**/*.tsx"]` 匹配)。
+2. **`eslint.config.js` 重写**:删 `FlatCompat` 与 `compat.extends("next/core-web-vitals")`;改为 `import nextCoreWebVitals from "eslint-config-next/core-web-vitals"`(v16 `export =` 数组,default import 取到),`...nextCoreWebVitals` 展开进 `tseslint.config(...)`。保留既有 TS 规则、`import/order`、`ignores` 不变。
+3. **关闭 v16 新增 React Compiler hooks 规则**(行为中性):v16 默认开启 `react-hooks/set-state-in-effect`(20)、`react-hooks/refs`(17)、`react-hooks/immutability`(4),共 41 个 error——全是对**既有合法模式**的标记(effect 内 setState、render 期读 ref、effect 内变量赋值)。逐个修是独立的 React 重构工作,不在 flat-config 迁移范围,故三规则设 `off`。`react-hooks/exhaustive-deps` 保持 `warn`(既有基线)。
+
+**测试**:typecheck(0 errors)/ lint(0 errors,1 pre-existing 警告,与 v15 基线一致)/ `check`(lint+tsc)/ prettier / rstest 348 单测全绿。**行为中性**:lint 输出与 v15 一致(同样 0 error + 1 警告),无运行时影响。
+
+**不在本 PR 范围**:React Compiler hooks 规则逐个修复(独立 React 重构)/ eslint 9→latest minor(已是 9.39.2,满足 v16 `eslint>=9` peer)/ 升级其他 ESLint 插件。
+
+**回滚边界**:`git revert` 一次性回滚(3 文件:eslint.config.js + package.json + pnpm-lock.yaml)。零运行时影响。

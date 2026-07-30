@@ -1,10 +1,9 @@
-import { FlatCompat } from "@eslint/eslintrc";
+import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
 import tseslint from "typescript-eslint";
 
-const compat = new FlatCompat({
-  baseDirectory: import.meta.dirname,
-});
-
+// eslint-config-next v16 ships a native flat config (`export = Linter.Config[]`),
+// so we can spread it directly — no more @eslint/eslintrc FlatCompat compat layer
+// (which crashed on v16's circular-reference react plugin under JSON serialization).
 export default tseslint.config(
   {
     ignores: [
@@ -16,7 +15,7 @@ export default tseslint.config(
       "*.js",
     ],
   },
-  ...compat.extends("next/core-web-vitals"),
+  ...nextCoreWebVitals,
   {
     files: ["**/*.ts", "**/*.tsx"],
     extends: [
@@ -26,6 +25,15 @@ export default tseslint.config(
     ],
     rules: {
       "@next/next/no-img-element": "off",
+      // eslint-config-next v16 turns on React Compiler-derived hooks rules
+      // (`set-state-in-effect`, `refs`, `immutability`). They flag ~40 existing,
+      // intentional patterns (setState in effects, reading refs during render)
+      // across the app. Migrating them is a separate React-refactor effort, not
+      // part of the flat-config migration, so they are disabled here to keep the
+      // v15→v16 upgrade behavior-neutral. `exhaustive-deps` stays on (warn).
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/refs": "off",
+      "react-hooks/immutability": "off",
       "@typescript-eslint/array-type": "off",
       "@typescript-eslint/consistent-type-definitions": "off",
       "@typescript-eslint/consistent-type-imports": [
