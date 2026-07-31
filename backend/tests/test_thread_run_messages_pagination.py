@@ -10,7 +10,7 @@ from _run_message_pagination_helpers import assert_run_message_page
 from fastapi.testclient import TestClient
 
 from app.gateway.routers import thread_runs
-from deerflow.runtime import RunManager
+from deerflow.runtime import MemoryStreamBridge, RunManager
 from deerflow.runtime.runs.store.memory import MemoryRunStore
 
 # ---------------------------------------------------------------------------
@@ -23,6 +23,11 @@ def _make_app(event_store=None, run_manager=None):
     app = make_rbac_test_app(bypass_authorize=True)
     app.include_router(thread_runs.router)
 
+    # The join/stream endpoints read app.state.stream_bridge before the
+    # store_only gate (PR-073 cross-replica gating), so every test app needs a
+    # bridge. Memory is the single-process default; store_only runs still 409
+    # because MemoryStreamBridge.cross_replica is False.
+    app.state.stream_bridge = MemoryStreamBridge()
     if event_store is not None:
         app.state.run_event_store = event_store
     if run_manager is not None:

@@ -292,14 +292,18 @@ async def join_run(thread_id: str, run_id: str, request: Request) -> StreamingRe
     record = await run_mgr.get(run_id)
     if record is None or record.thread_id != thread_id:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-    if record.store_only:
+    bridge = get_stream_bridge(request)
+    if record.store_only and not bridge.cross_replica:
+        # Memory bridge: events live only in the owning worker's process, so a
+        # run that is not active here has no producer and would hang forever.
+        # A cross-replica bridge (Redis) can serve a run executing on another
+        # replica, so the gate is relaxed for those backends (PR-073).
         raise HTTPException(status_code=409, detail=f"Run {run_id} is not active on this worker and cannot be streamed")
 
     # PR-056: legacy resume gate — only resume/continue is blocked; cancel POST
     # below passes ``action`` and is explicitly allowed (ADR §12).
     _gate_legacy_resume(request, run_id, record)
 
-    bridge = get_stream_bridge(request)
     return StreamingResponse(
         sse_consumer(bridge, record, request, run_mgr),
         media_type="text/event-stream",
@@ -336,7 +340,12 @@ async def stream_existing_run(
     record = await run_mgr.get(run_id)
     if record is None or record.thread_id != thread_id:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-    if record.store_only and action is None:
+    bridge = get_stream_bridge(request)
+    if record.store_only and action is None and not bridge.cross_replica:
+        # Memory bridge: no in-process producer for a store_only run → 409 so the
+        # client does not hang. A cross-replica bridge (Redis) can serve it, so
+        # the gate is relaxed for those backends (PR-073). A cancel POST
+        # (``action`` set) is always allowed through, per ADR §12.
         raise HTTPException(status_code=409, detail=f"Run {run_id} is not active on this worker and cannot be streamed")
 
     # PR-056: legacy resume gate. Only the pure-resume path (``action is None``)
@@ -357,7 +366,6 @@ async def stream_existing_run(
                 pass
             return Response(status_code=204)
 
-    bridge = get_stream_bridge(request)
     return StreamingResponse(
         sse_consumer(bridge, record, request, run_mgr),
         media_type="text/event-stream",

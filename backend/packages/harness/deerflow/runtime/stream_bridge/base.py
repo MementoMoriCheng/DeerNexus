@@ -68,5 +68,19 @@ class StreamBridge(abc.ABC):
         giving late subscribers a chance to drain remaining events.
         """
 
+    @property
+    def cross_replica(self) -> bool:
+        """Whether subscribers in a different process/replica can see events.
+
+        ``False`` for in-process backends (events live in this process's
+        memory — a subscriber on another replica would wait forever). ``True``
+        for shared backends such as a Redis Streams bridge, where a subscriber
+        on replica B can read events a worker on replica A produced. The
+        gateway uses this to decide whether a ``store_only`` run (not owned by
+        this worker) may still be streamed (PR-073 cross-replica SSE).
+        """
+
+        return False
+
     async def close(self) -> None:
         """Release backend resources.  Default is a no-op."""

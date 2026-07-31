@@ -272,6 +272,13 @@ def make_rbac_test_app(
     repo.check_access = AsyncMock(return_value=owner_check_passes)
     app.state.thread_store = repo
 
+    # Default stream bridge so join/stream endpoints (which read it before the
+    # store_only gate, PR-073) work out of the box. Tests that need a
+    # cross-replica or stub bridge override app.state.stream_bridge afterwards.
+    from deerflow.runtime import MemoryStreamBridge
+
+    app.state.stream_bridge = MemoryStreamBridge()
+
     if bypass_authorize:
         # No DB touch — return early before rebinding the AuthorizeService.
         return app
