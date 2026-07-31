@@ -2035,3 +2035,39 @@ Track G PR-072 落地 4 件事(`pr-split-guide.md §12`:过期 owner 检测、�
 **不在本 PR 范围**:SSE StreamBridge(跨副本恢复)→ PR-073 / persisted cancel intent(跨 worker)→ PR-073 / Profile H 24h soak/故障注入 → PR-074 / 9 态改名 → follow-up。
 
 **回滚边界**:`git revert`。零 schema migration、零 DB 列。NullLeaseStore→退化为单 worker reconcile(本进程检查);移除 sqlite 守卫只是让 PG 也有 reconcile(之前 PG 完全没有,bug-fix 性质)。
+
+### 16.68 Track G PR-073:Redis StreamBridge(SSE 跨副本恢复)
+
+Track G PR-073 落地**读路径**的跨副本能力(`pr-split-guide.md §12`:StreamBridge、Last-Event-ID、撤权、慢客户端)。这是 PR-070/071/072 之后的最后一块功能性前置——让连接到副本 B 的客户端能消费在副本 A 上执行的 Run 事件流。
+
+**scope 决策(拆分)**:`pr-split-guide.md` 与本文件多处「留 PR-073」note 原把「Redis StreamBridge」与「persisted cancel intent」(ADR-0006 §5.4)两件事都归 PR-073。二者是独立子系统(读路径 vs 控制路径),合在一个 PR 既大又耦合,故**拆分**:本 PR 只做 StreamBridge;persisted cancel intent 作为 **PR-077** 独立后续。
+
+**核心安全规则**:
+- **TM-029(Redis 非权威)**:StreamBridge 只承载瞬时 SSE 事件尾,**不触 Run/terminal 状态**——PG 仍是唯一权威。Redis 丢/错不污染 terminal(本 PR 纯事件转发)。
+- **TM-026(不重复/不乱序)**:Redis Stream 单调 entry ID + XREAD 独占游标天然保证跨副本 at-most-once-per-entry、严格有序。
+- **撤权(PR-037,bridge 无关)**:revocation re-validation 在 `sse_consumer`,跨副本时由**服务该客户端的副本**每 60s/每业务事件前复验——天然 bridge 无关,无需改。
+- **on_disconnect=cancel**:副本 B 镜像订阅者断开时 `run_mgr.cancel()` 对非本地 Run 返回 False(no-op)——副本 B 断开不会杀副本 A 的 Run,是安全语义。
+
+**现有代码的 4 个 gap(本 PR 修)**:① Redis bridge 是 `NotImplementedError` stub(`async_provider.py`);② 跨副本订阅被 `store_only` 409 门挡死(`thread_runs.py` join/stream);③ `StreamBridge` ABC 无「跨副本能力」标识,门控无法区分 memory(应 409)vs redis(应放行);④ Redis URL 双源(`stream_bridge.redis_url` vs `production.redis.url`)未统一。
+
+**核心改动**:
+
+1. **`RedisStreamBridge`**(`runtime/stream_bridge/redis.py`,新,实现 `StreamBridge` ABC):
+   - **key**:`deerflow:run:stream:{run_id}`(run_id 全局唯一 UUID4,无需 org 维度,ABC 签名不改)。
+   - **publish**:`XADD key MAXLEN ~ {queue_maxsize} * event/data`(`MAXLEN ~` 近似裁剪=慢客户端上界,镜像 memory bridge `queue_maxsize`)。
+   - **publish_end**:设**侧 key** `deerflow:run:stream:{run_id}:ended`(非流尾 marker)。理由:`MAXLEN` 会从头裁剪**任何**条目含尾 marker,尾 marker 可能被驱逐→终态信号丢失;侧 key 永不被裁。`subscribe` 先 drain 已保留事件,再(空轮询 + ended flag set)yield `END_SENTINEL`——保序且终态信号可观测。
+   - **subscribe**:非阻塞 `XREAD({key: cursor}, count=100)` + 空→`asyncio.sleep(heartbeat_interval)`(不用 `block`:fakeredis 不遵守 block 超时,轮询节奏等价且不依赖服务端超时行为)。`StreamEvent.id = Redis entry ID`→客户端 `Last-Event-ID` 原样回传,XREAD ID 独占→`subscribe(last_event_id=X)` 严格从 X 之后续读(跨副本恢复原生成立)。游标指向已裁旧条目→从最早保留续读(fell-behind)。
+   - 字节/字符串容忍(`_as_str`/`_field`):redis-py 默认 `bytes`;factory 设 `decode_responses=True`,bridge 仍防御性规范化以便测试注入裸 `FakeAsyncRedis()`。
+2. **`cross_replica` 能力标识**(`runtime/stream_bridge/base.py`):ABC 加非抽象默认属性 `cross_replica -> bool = False`。memory 不改(默认 False);redis override True。
+3. **`make_stream_bridge` redis 分支**(`async_provider.py`):替换 stub。URL 解析 `config.redis_url or production.redis.url`(统一回退,与 lease/reconciler/probe 同源);无 URL→降级 memory + WARNING(单副本安全网,不硬错)。`Redis.from_url(url, decode_responses=True)`。
+4. **跨副本门控**(`app/gateway/routers/thread_runs.py`):`bridge = get_stream_bridge(request)` 上移到门控前;join(L295)/stream GET(L339)改为 `if record.store_only and not bridge.cross_replica: 409`。POST+action 的 cancel 路径本就绕过门(不变)。效果:redis bridge→store_only Run 可跨副本订阅;memory bridge→行为不变(仍 409)。
+5. **指标**(`observability/metrics.py`):`stream_bridge_redis_error_total`(publish/subscribe 异常;Redis 非权威故仅诊断,不告警)。
+6. **配置**(`config.example.yaml`):加注释化 `stream_bridge` 段(`type: memory` 默认,`type: redis` 开启跨副本,`redis_url` 回退 `production.redis.url`)。
+
+**与 PR-070/071/072 集成**:StreamBridge 是**独立第三层**(lease=谁可驱动该 Run 的状态转移;CAS=唯一终态赢家;StreamBridge=事件扇出/回放),互不影响。PG 权威不变(TM-029);Redis 丢→live SSE 断,不复活/覆盖 terminal。
+
+**测试**(`tests/test_redis_stream_bridge.py`,22 测):基本投递/序/Last-Event-ID 恢复/`__end__` 侧 key 抗 MAXLEN 裁剪/heartbeat/MAXLEN 裁剪+fell-behind/cleanup/`cross_replica` 标识(memory=False/redis=True/base 默认 False)/**跨实例投递(跨副本证明:两 RedisStreamBridge 共享 FakeServer,B 收 A 发的事件)**/factory 选择(redis URL→redis bridge、无 URL→memory 回退、production.redis.url 回退)/**网关门控回归(memory+store_only→409、cross_replica bridge→非 409)**。fakeredis 跑 hermetic;`@pytest.mark.real_redis` 对 gnex-redis 跑跨副本集成(skip when 无 Redis)。`_drain` 用 `aclosing` 显式关闭生成器避免轮询循环悬挂 + `max_iters` 防「永不 end」流挂测试。
+
+**不在本 PR 范围**:persisted cancel intent(跨 worker,ADR-0006 §5.4)→ **PR-077** / Profile H 24h soak/故障注入 → PR-074 / Dispatcher → PR-075 / 9 态改名 → follow-up / 前端 Last-Event-ID:后端已原生支持(`bridge.subscribe` 接 header);前端是否自动回传取决于 SSE 客户端实现(原生 EventSource / LangGraph SDK `useStream` 通常自动发),本 PR 验证前端,缺则前端小修或 follow-up,**不阻塞后端交付**。
+
+**回滚边界**:`git revert`。**零 schema migration、零 DB 列**。配置门控(`type: redis` 显式开启);默认 `type: memory` 零行为变化(memory bridge 回归全绿)。

@@ -1202,6 +1202,26 @@ run_events:
   max_trace_content: 10240
   track_token_usage: true
 
+# ----------------------------------------------------------------------------
+# Stream bridge — decouples agent workers (producers) from SSE endpoints
+# (consumers). The default `memory` backend is in-process only: events live in
+# the producing worker's memory, so a subscriber on a different replica cannot
+# see them (a `store_only` run returns 409 on the join/stream endpoints).
+#
+# Set `type: redis` for Profile H (multi-replica): events flow through a Redis
+# Stream per run (`deerflow:run:stream:{run_id}`), so a client connected to
+# replica B can read events a worker on replica A produced (PR-073). The bridge
+# reuses the same Redis URL as the lease/reconciler/doctor wiring when
+# `stream_bridge.redis_url` is unset (it falls back to `production.redis.url`).
+# Redis is non-authoritative for run state (ADR-0006 §4.4): a Redis outage
+# drops live SSE but cannot corrupt a committed terminal run.
+# ----------------------------------------------------------------------------
+stream_bridge:
+  type: memory
+  # type: redis            # PR-073: enable for cross-replica SSE recovery
+  redis_url: null          # falls back to production.redis.url when unset
+  queue_maxsize: 256       # per-run event retention (slow-client / fell-behind bound)
+
 # ============================================================================
 # DeerNexus Production Preflight Declarations
 # ============================================================================

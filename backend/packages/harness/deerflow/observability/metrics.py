@@ -601,6 +601,23 @@ def inc_run_heartbeat_failure(registry: Any = None) -> None:
         logger.debug("inc_run_heartbeat_failure failed", exc_info=True)
 
 
+@lru_cache(maxsize=8)
+def _stream_bridge_redis_error_total(registry: Any) -> Any:
+    return _make_counter(
+        "stream_bridge_redis_error_total",
+        "Redis StreamBridge errors (publish/publish_end/subscribe) — Redis is non-authoritative for run state, so an outage drops live SSE but cannot corrupt a terminal run (PR-073).",
+        (),
+        registry,
+    )
+
+
+def inc_stream_bridge_redis_error(registry: Any = None) -> None:
+    try:
+        _stream_bridge_redis_error_total(_registry_or_default(registry)).labels(**_with_constants({})).inc()
+    except Exception:  # noqa: BLE001
+        logger.debug("inc_stream_bridge_redis_error failed", exc_info=True)
+
+
 # ===========================================================================
 # §4.4 Model / Tool / MCP metrics
 # ===========================================================================
@@ -1088,6 +1105,7 @@ __all__ = [
     "inc_run_reconcile",
     "inc_runs_created",
     "inc_runs_status",
+    "inc_stream_bridge_redis_error",
     "normalize_tool_name",
     "observe_db_query",
     "observe_run_admission_duration",

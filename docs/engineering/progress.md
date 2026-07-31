@@ -130,13 +130,14 @@
 
 | 逻辑 PR | 主题                           | GitHub PR | 状态                 | 备注                       |
 | ------- | ------------------------------ | --------- | -------------------- | -------------------------- |
-| PR-070  | Run 状态 CAS                   | —         | 未开始               | terminal / cancel / resume |
-| PR-071  | Ownership / Lease              | —         | 阻塞 → PR-070        | Redis key                  |
-| PR-072  | Reconciler                     | —         | 阻塞 → PR-071        | 过期 owner                 |
-| PR-073  | SSE 跨副本恢复                 | —         | 阻塞 → PR-071        | StreamBridge               |
+| PR-070  | Run 状态 CAS                   | #112      | 已交付 (d9e87f7b)    | terminal / cancel / resume |
+| PR-071  | Ownership / Lease              | #113      | 已交付 (7150a1e3)    | Redis key                  |
+| PR-072  | Reconciler                     | #114      | 已交付 (087fdf51)    | 过期 owner                 |
+| PR-073  | SSE 跨副本恢复                 | —         | 进行中               | StreamBridge（拆分：cancel intent→PR-077）|
 | PR-074  | Profile H 门禁                 | —         | 阻塞 → PR-073        | 24h soak                   |
 | PR-075  | Dispatcher / Executor Protocol | —         | 未开始               | 同进程接口化               |
 | PR-076+ | 物理 Worker                    | —         | 阻塞 → ADR-0006 触发 | 独立计划                   |
+| PR-077  | persisted cancel intent        | —         | 阻塞 → PR-071/073    | 跨 worker cancel（ADR-0006 §5.4）|
 
 ---
 
