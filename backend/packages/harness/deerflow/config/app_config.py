@@ -15,6 +15,7 @@ from deerflow.config.agents_api_config import AgentsApiConfig, load_agents_api_c
 from deerflow.config.channel_connections_config import ChannelConnectionsConfig
 from deerflow.config.checkpointer_config import CheckpointerConfig, load_checkpointer_config_from_dict
 from deerflow.config.database_config import DatabaseConfig
+from deerflow.config.dispatcher_config import DispatcherConfig
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_config_from_dict
 from deerflow.config.loop_detection_config import LoopDetectionConfig
@@ -171,6 +172,13 @@ class AppConfig(BaseModel):
         description=format_field_description(
             "stream_bridge",
             field_doc="Stream bridge connecting agent workers to SSE endpoints.",
+        ),
+    )
+    dispatcher: DispatcherConfig | None = Field(
+        default=None,
+        description=format_field_description(
+            "dispatcher",
+            field_doc=("Dispatcher / Executor seam (PR-075). 'in-process' (default) schedules the agent in this process; 'remote' is PR-076+."),
         ),
     )
 

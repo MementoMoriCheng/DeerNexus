@@ -549,6 +549,7 @@ def test_inject_authenticated_user_context_skips_internal_role():
 
 
 async def _capture_start_run_graph_input(body):
+    import asyncio
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -557,10 +558,24 @@ async def _capture_start_run_graph_input(body):
 
     from app.gateway.services import start_run
     from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
-    from deerflow.runtime import RunManager
+    from deerflow.runtime import InProcessDispatcher, RunManager
     from deerflow.runtime.runs.store.memory import MemoryRunStore
 
+    async def _noop_coro() -> None:
+        return None
+
     run_manager = RunManager(store=MemoryRunStore())
+    captured: dict[str, object] = {}
+
+    class _CapturingExecutor:
+        """In-process executor stub: records the ExecRequest's graph_input and
+        resolves immediately. Replaces the former run_agent patch (PR-075 moved
+        dispatch behind the Dispatcher/Executor seam)."""
+
+        async def execute(self, request):
+            captured["graph_input"] = request.graph_input
+            return asyncio.create_task(_noop_coro())
+
     state = SimpleNamespace(
         stream_bridge=SimpleNamespace(),
         run_manager=run_manager,
@@ -569,23 +584,18 @@ async def _capture_start_run_graph_input(body):
         run_event_store=SimpleNamespace(),
         run_events_config=None,
         thread_store=MemoryThreadMetaStore(InMemoryStore()),
+        dispatcher=InProcessDispatcher(executor=_CapturingExecutor()),
     )
     request = SimpleNamespace(
         headers={},
         state=SimpleNamespace(),
         app=SimpleNamespace(state=state),
     )
-    captured: dict[str, object] = {}
 
-    async def fake_run_agent(*args, **kwargs):
-        captured["graph_input"] = kwargs["graph_input"]
-
-    with (
-        patch("app.gateway.services.resolve_agent_factory", return_value=object()),
-        patch("app.gateway.services.run_agent", side_effect=fake_run_agent),
-    ):
+    with patch("app.gateway.services.resolve_agent_factory", return_value=object()):
         record = await start_run(body, "thread-command-test", request)
-        await record.task
+        if record.task is not None:
+            await record.task
 
     return captured["graph_input"]
 
@@ -642,7 +652,7 @@ def test_start_run_uses_internal_owner_header_for_persistence(_stub_app_config):
     from app.gateway.internal_auth import INTERNAL_OWNER_USER_ID_HEADER_NAME, INTERNAL_SYSTEM_ROLE
     from app.gateway.services import start_run
     from deerflow.persistence.thread_meta.memory import MemoryThreadMetaStore
-    from deerflow.runtime import RunManager
+    from deerflow.runtime import InProcessDispatcher, RunManager
     from deerflow.runtime.runs.store.memory import MemoryRunStore
     from deerflow.runtime.user_context import get_effective_user_id
 
@@ -651,6 +661,19 @@ def test_start_run_uses_internal_owner_header_for_persistence(_stub_app_config):
         thread_store = MemoryThreadMetaStore(InMemoryStore())
         await thread_store.create("channel-thread", user_id="default", metadata={"legacy": True})
         run_manager = RunManager(store=run_store)
+        task_context: dict[str, str] = {}
+
+        async def _noop_coro() -> None:
+            return None
+
+        class _CapturingExecutor:
+            """Records the effective user id seen by the executor body (replaces
+            the former run_agent patch — PR-075 moved dispatch behind the seam)."""
+
+            async def execute(self, request):
+                task_context["user_id"] = get_effective_user_id()
+                return asyncio.create_task(_noop_coro())
+
         state = SimpleNamespace(
             stream_bridge=SimpleNamespace(),
             run_manager=run_manager,
@@ -659,6 +682,7 @@ def test_start_run_uses_internal_owner_header_for_persistence(_stub_app_config):
             run_event_store=SimpleNamespace(),
             run_events_config=None,
             thread_store=thread_store,
+            dispatcher=InProcessDispatcher(executor=_CapturingExecutor()),
         )
         request = SimpleNamespace(
             headers={INTERNAL_OWNER_USER_ID_HEADER_NAME: "owner-1"},
@@ -678,17 +702,11 @@ def test_start_run_uses_internal_owner_header_for_persistence(_stub_app_config):
             interrupt_before=None,
             interrupt_after=None,
         )
-        task_context: dict[str, str] = {}
 
-        async def fake_run_agent(*args, **kwargs):
-            task_context["user_id"] = get_effective_user_id()
-
-        with (
-            patch("app.gateway.services.resolve_agent_factory", return_value=object()),
-            patch("app.gateway.services.run_agent", side_effect=fake_run_agent),
-        ):
+        with patch("app.gateway.services.resolve_agent_factory", return_value=object()):
             record = await start_run(body, "channel-thread", request)
-            await record.task
+            if record.task is not None:
+                await record.task
 
         owner_run = await run_store.get(record.run_id, user_id="owner-1")
         default_run = await run_store.get(record.run_id, user_id="default")
