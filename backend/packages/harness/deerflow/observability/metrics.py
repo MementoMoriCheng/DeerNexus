@@ -529,6 +529,79 @@ def set_worker_active(count: int, registry: Any = None) -> None:
 
 
 # ===========================================================================
+# §4.3 Run ownership / lease metrics (PR-071, Track G)
+# ===========================================================================
+
+
+@lru_cache(maxsize=8)
+def _run_ownership_acquire_total(registry: Any) -> Any:
+    return _make_counter(
+        "run_ownership_acquire_total",
+        "Runs whose ownership lease was acquired by this worker (observability-and-slo §4.3, PR-071).",
+        (),
+        registry,
+    )
+
+
+@lru_cache(maxsize=8)
+def _run_ownership_conflict_total(registry: Any) -> Any:
+    return _make_counter(
+        "run_ownership_conflict_total",
+        "Runs whose ownership claim was lost to another worker (observability-and-slo §4.3, PR-071, TM-026).",
+        (),
+        registry,
+    )
+
+
+@lru_cache(maxsize=8)
+def _run_lease_expired_total(registry: Any) -> Any:
+    return _make_counter(
+        "run_lease_expired_total",
+        "Run leases that expired (renewal failed) while the run was still executing (PR-071).",
+        (),
+        registry,
+    )
+
+
+@lru_cache(maxsize=8)
+def _run_heartbeat_failure_total(registry: Any) -> Any:
+    return _make_counter(
+        "run_heartbeat_failure_total",
+        "Lease heartbeat renewals that failed (token no longer current or Redis error) (PR-071).",
+        (),
+        registry,
+    )
+
+
+def inc_run_ownership_acquire(registry: Any = None) -> None:
+    try:
+        _run_ownership_acquire_total(_registry_or_default(registry)).labels(**_with_constants({})).inc()
+    except Exception:  # noqa: BLE001
+        logger.debug("inc_run_ownership_acquire failed", exc_info=True)
+
+
+def inc_run_ownership_conflict(registry: Any = None) -> None:
+    try:
+        _run_ownership_conflict_total(_registry_or_default(registry)).labels(**_with_constants({})).inc()
+    except Exception:  # noqa: BLE001
+        logger.debug("inc_run_ownership_conflict failed", exc_info=True)
+
+
+def inc_run_lease_expired(registry: Any = None) -> None:
+    try:
+        _run_lease_expired_total(_registry_or_default(registry)).labels(**_with_constants({})).inc()
+    except Exception:  # noqa: BLE001
+        logger.debug("inc_run_lease_expired failed", exc_info=True)
+
+
+def inc_run_heartbeat_failure(registry: Any = None) -> None:
+    try:
+        _run_heartbeat_failure_total(_registry_or_default(registry)).labels(**_with_constants({})).inc()
+    except Exception:  # noqa: BLE001
+        logger.debug("inc_run_heartbeat_failure failed", exc_info=True)
+
+
+# ===========================================================================
 # §4.4 Model / Tool / MCP metrics
 # ===========================================================================
 
@@ -1008,6 +1081,10 @@ __all__ = [
     "inc_model_tokens",
     "inc_rate_limit",
     "inc_run_cancel",
+    "inc_run_heartbeat_failure",
+    "inc_run_lease_expired",
+    "inc_run_ownership_acquire",
+    "inc_run_ownership_conflict",
     "inc_run_reconcile",
     "inc_runs_created",
     "inc_runs_status",

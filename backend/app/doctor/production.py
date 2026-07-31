@@ -313,14 +313,8 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     # What remains here are checks whose code paths do not exist yet — they
     # stay FAIL with a **Track-specific** remediation (replacing the pre-PR-064
     # generic "Implement in PR-064" placeholder) so an operator knows exactly
-    # what to wait for.
-    (
-        "redis.connectivity",
-        "redis",
-        "Redis connectivity and Stream capability probe is not implemented.",
-        "config.yaml:production.redis",
-        "Blocked on Track G (PR-071/073 Redis stream consumer): no redis client anywhere in the tree. The probe will land alongside the consumer that makes Redis Stream real.",
-    ),
+    # what to wait for. PR-071 promoted redis.connectivity to live; it no
+    # longer appears here.
     (
         "oidc.jwks_validation",
         "identity",
@@ -390,6 +384,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         probe_metrics_presence,
         probe_postgres_connectivity,
         probe_rate_limit_retry_after,
+        probe_redis_connectivity,
         probe_release_ref_enforcement,
     )
 
@@ -402,6 +397,10 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         (probe_audit_outbox, "audit.outbox", "audit", "config.yaml:production.audit"),
         (probe_backup_freshness, "backup.freshness", "backup", "config.yaml:production.backup"),
         (probe_release_ref_enforcement, "agent.release_ref_enforcement", "release", "config.yaml:production.agent_release"),
+        # PR-071: promoted from DEFERRED_LIVE_CHECKS once the Redis client +
+        # ownership/lease layer landed. WARN-skips when no URL is configured
+        # (dev / single-replica); PINGs + verifies Streams when one is.
+        (probe_redis_connectivity, "redis.connectivity", "redis", "config.yaml:production.redis"),
     )
 
 

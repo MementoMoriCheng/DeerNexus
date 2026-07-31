@@ -32,6 +32,7 @@ from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import probe_metrics_presence
 from app.doctor.probes.postgres_probe import probe_postgres_connectivity
 from app.doctor.probes.rate_limit_probe import probe_rate_limit_retry_after
+from app.doctor.probes.redis_probe import probe_redis_connectivity
 
 __all__ = [
     "probe_audit_outbox",
@@ -41,4 +42,5 @@ __all__ = [
     "probe_metrics_presence",
     "probe_postgres_connectivity",
     "probe_rate_limit_retry_after",
+    "probe_redis_connectivity",
 ]

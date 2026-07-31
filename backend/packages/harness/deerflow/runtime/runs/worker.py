@@ -20,6 +20,7 @@ import copy
 import inspect
 import logging
 import os
+import uuid
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -38,9 +39,20 @@ from deerflow.tracing import inject_langfuse_metadata
 
 from .manager import RunManager, RunRecord
 from .naming import resolve_root_run_name
+from .ownership import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    ClaimRecord,
+    LeaseStore,
+    NullLeaseStore,
+)
 from .schemas import RunStatus
 
 logger = logging.getLogger(__name__)
+
+#: Stable per-process worker identity used as the run owner in lease claims
+#: (PR-071). One id per gateway process; written into every ClaimRecord so a
+#: lost lease can be attributed and a reclaiming worker's claim is distinct.
+WORKER_ID: str = f"worker-{uuid.uuid4().hex}"
 
 # Valid stream_mode values for LangGraph's graph.astream()
 _VALID_LG_MODES = {"values", "updates", "checkpoints", "tasks", "debug", "messages", "custom"}
@@ -92,6 +104,12 @@ class RunContext:
     # §5.2 rule 4). When set, run_agent rebinds it defensively so the Worker
     # does not rely solely on ContextVar inheritance across create_task.
     tenant: TenantContext | None = field(default=None)
+    # PR-071 ownership/lease. ``worker_id`` identifies this process as a run
+    # owner; ``lease_store`` is the (possibly Null) lease backend. When the
+    # store is NullLeaseStore (no Redis configured), claim/renew/release are
+    # no-ops and ownership is inert — today's single-worker behaviour.
+    worker_id: str = ""
+    lease_store: Any = field(default=None)
 
 
 def _install_runtime_context(config: dict, runtime_context: dict[str, Any]) -> None:
@@ -116,6 +134,52 @@ def _compute_agent_factory_supports_app_config(agent_factory: Any) -> bool:
 @lru_cache(maxsize=128)
 def _cached_agent_factory_supports_app_config(agent_factory: Any) -> bool:
     return _compute_agent_factory_supports_app_config(agent_factory)
+
+
+async def _run_lease_heartbeat(
+    lease_store: LeaseStore,
+    record: ClaimRecord,
+    *,
+    org_id: str,
+    run_id: str,
+    stop_event: asyncio.Event,
+) -> None:
+    """Background loop that renews the run's lease until ``stop_event`` is set.
+
+    A renewal failure (the token no longer matches — a new owner won, or the
+    lease expired) is logged at WARNING: the in-memory run keeps executing on
+    this worker, but ownership has moved. PG terminal state (PR-070 CAS) is the
+    authoritative fence, so a stale-owner overwrite cannot corrupt a committed
+    terminal run; the heartbeat miss is observable for a Reconciler (PR-072).
+    """
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
+        except TimeoutError:
+            pass  # interval elapsed; renew
+        if stop_event.is_set():
+            break
+        try:
+            renewed = await lease_store.renew(record, org_id=org_id)
+            if not renewed:
+                from deerflow.observability.metrics import (
+                    inc_run_heartbeat_failure,
+                    inc_run_lease_expired,
+                )
+
+                inc_run_lease_expired()
+                inc_run_heartbeat_failure()
+                logger.warning(
+                    "Run %s lease renewal failed (token no longer current); ownership may have moved",
+                    run_id,
+                )
+                break
+        except Exception:  # noqa: BLE001
+            from deerflow.observability.metrics import inc_run_heartbeat_failure
+
+            inc_run_heartbeat_failure()
+            logger.warning("Run %s lease renewal raised", run_id, exc_info=True)
+            break
 
 
 def _agent_factory_supports_app_config(agent_factory: Any) -> bool:
@@ -206,6 +270,48 @@ async def run_agent(
     import time as _time
 
     _run_started_perf = _time.perf_counter()
+
+    # PR-071: claim run ownership before executing. When a lease store is
+    # configured (production Redis) this is an atomic SET NX — exactly one of
+    # two concurrent workers wins (TM-026). When unconfigured (dev / single
+    # replica) the store is NullLeaseStore and claim is a no-op success, so
+    # today's single-worker behaviour is preserved.
+    org_id_for_lease = ctx.tenant.org_id if ctx.tenant is not None else ""
+    lease_store: LeaseStore = ctx.lease_store if ctx.lease_store is not None else NullLeaseStore()
+    worker_id = ctx.worker_id or WORKER_ID
+    claim_result = await lease_store.claim(
+        run_id=run_id,
+        org_id=org_id_for_lease,
+        worker_id=worker_id,
+        worker_version=WORKER_ID,
+    )
+    if not claim_result.acquired:
+        # Another worker owns this run. Record the conflict and bail; PG
+        # terminal state (PR-070 CAS) remains the authoritative fence, so this
+        # worker does not race the owner on the run row.
+        from deerflow.observability.metrics import inc_run_ownership_conflict
+
+        inc_run_ownership_conflict()
+        holder = claim_result.current_holder
+        logger.warning(
+            "Run %s ownership claim lost; held by worker %s",
+            run_id,
+            holder.worker_id if holder else "<unknown>",
+        )
+        return
+
+    from deerflow.observability.metrics import inc_run_ownership_acquire
+
+    inc_run_ownership_acquire()
+    lease_record = claim_result.record
+    # Heartbeat renews the lease while the run executes. Cancelled in finally.
+    _lease_stop = asyncio.Event()
+    _heartbeat_task: asyncio.Task[None] | None = None
+    if not isinstance(lease_store, NullLeaseStore):
+        _heartbeat_task = asyncio.create_task(
+            _run_lease_heartbeat(lease_store, lease_record, org_id=org_id_for_lease, run_id=run_id, stop_event=_lease_stop),
+            name=f"lease-heartbeat-{run_id}",
+        )
 
     try:
         # Initialize RunJournal + write human_message event.
@@ -460,6 +566,22 @@ async def run_agent(
         )
 
     finally:
+        # PR-071: stop the lease heartbeat and release ownership. Release is
+        # best-effort — a failure cannot revive a committed terminal run (PG
+        # terminal state is authoritative, PR-070 CAS), so log and continue.
+        _lease_stop.set()
+        if _heartbeat_task is not None:
+            try:
+                await asyncio.wait_for(_heartbeat_task, timeout=5.0)
+            except TimeoutError:
+                _heartbeat_task.cancel()
+            except Exception:
+                logger.debug("lease heartbeat task cleanup raised for run %s", run_id, exc_info=True)
+        try:
+            await lease_store.release(lease_record, org_id=org_id_for_lease)
+        except Exception:
+            logger.warning("Failed to release lease for run %s (non-fatal)", run_id, exc_info=True)
+
         # Restore the tenant contextvar if the Worker rebound it defensively.
         if tenant_token is not None:
             reset_tenant_context(tenant_token)
