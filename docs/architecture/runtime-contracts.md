@@ -2010,3 +2010,28 @@ Track G PR-071 落地 4 个原语(`pr-split-guide.md §12`:Redis Key、lease tok
 **不在本 PR 范围**:persisted cancel intent → PR-073 / Reconciler → PR-072 / SSE StreamBridge → PR-073 / Profile H 24h soak → PR-074。
 
 **回滚边界**:`git revert` + 移除 redis/fakeredis 依赖。零 schema migration、零 DB 列。无 Redis 配置→NullLeaseStore 退化为单 worker 行为(向后兼容安全网)。
+
+### 16.67 Track G PR-072:Reconciler(lease-aware 非终态 Run 收敛)
+
+Track G PR-072 落地 4 件事(`pr-split-guide.md §12`:过期 owner 检测、非终态 Run 收敛、指标、人工处理)。这是 PR-070(state CAS)+ PR-071(lease)之后的**收敛安全网**。
+
+**核心安全规则(TM-028 Critical)**:**不自动重放副作用**——reconciler 只把检测到的 orphan 驱动到安全终态(`error`),**绝不重试**。runs 无幂等标记,故"人工处理"= 安全终态 + `run.reconcile.result` 可观测事件(让运维决定是否手动跟进),非可检测分支。
+
+**核心架构(PG-first,ADR-0006 §5.3)**:reconciler 先读 PG terminal 状态;过期旧 owner 不得覆盖新 owner 或 terminal(PR-070 CAS 兜底)。
+
+**现有代码的 4 个 gap(本 PR 修)**:原 `reconcile_orphaned_inflight_runs`(manager.py)① 强制 blanket `error`、② 仅启动时、③ **仅 sqlite**(生产 PG 完全无 reconcile)、④ 忽略 lease 层。
+
+**核心改动**:
+
+1. **重构 `reconcile_orphaned_inflight_runs`**(`runtime/runs/manager.py`):加 `lease_store` + `run_event_store` 参数。流程:**PG terminal first**(行已 terminal→skip,`outcome=terminal_already_set`);**lease-aware**(`get_holder` 有活跃 holder(not expired)→skip,`outcome=skipped_live_elsewhere`;holder None/expired→orphan);**本进程活跃检查保留**(NullLeaseStore/单 worker,`outcome=skipped_live`);**安全终态 via CAS**(`expected_row_version`,CAS 失败→`outcome=cas_conflict` 不覆盖);**`run.reconcile.result` 事件**(经 `run_event_store.put`)。
+2. **周期性 reconcile worker**(`app/gateway/reconcile_worker.py`,新):`sweep_inflight_runs`(单次幂等)+ `run_reconcile_worker`(后台循环,镜像 audit/GC worker 韧性契约——sweep 异常不杀)。`RECONCILE_INTERVAL_SECONDS=60s`(略大于 `LEASE_TTL_SECONDS=30`)。lifespan 注册 + 有界 shutdown。
+3. **移除 sqlite-only 守卫**(`app/gateway/deps.py`):启动 reconcile 现在**所有 backend**(含 PG)跑(之前 PG 完全没有,是 bug-fix)。传 `lease_store`(从 `make_lease_store(redis_url)`,NullLeaseStore 退化为单 worker)+ `run_event_store`。
+4. **指标**:复用 `inc_run_reconcile(outcome=...)`,新增 outcome 标签 `expired_lease_reclaimed`/`skipped_live_elsewhere`/`terminal_already_set`/`cas_conflict`(区分现有 `recovered`/`skipped_live`/`persist_failed`/`row_map_failed`)。
+
+**与 PR-070/071 集成**:lease 在 RunManager 之上(reconcile 用 `get_holder`/`is_expired`);CAS 兜底防并发覆盖终态(TM-029);lease 失败不复活 terminal(PG 权威)。
+
+**测试**:`test_run_reconcile.py`(10 测:orphan 收敛/live holder skip/PG terminal first/NullStore 回退/CAS/事件 emit/worker 循环+sweep 异常不杀)+ `test_gateway_run_recovery.py` stub 更新 + Track G 全量回归 92 测全绿。
+
+**不在本 PR 范围**:SSE StreamBridge(跨副本恢复)→ PR-073 / persisted cancel intent(跨 worker)→ PR-073 / Profile H 24h soak/故障注入 → PR-074 / 9 态改名 → follow-up。
+
+**回滚边界**:`git revert`。零 schema migration、零 DB 列。NullLeaseStore→退化为单 worker reconcile(本进程检查);移除 sqlite 守卫只是让 PG 也有 reconcile(之前 PG 完全没有,bug-fix 性质)。

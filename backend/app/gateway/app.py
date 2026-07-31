@@ -419,6 +419,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Failed to start release idempotency GC worker")
 
+        # Run reconciler (PR-072): periodically converges orphaned non-terminal
+        # runs whose owner is gone to a safe terminal, without replaying (TM-028).
+        # Best-effort like the other background workers; a failing pass is logged.
+        reconcile_task: asyncio.Task[None] | None = None
+        reconcile_stop: asyncio.Event | None = None
+        try:
+            from app.gateway.reconcile_worker import run_reconcile_worker
+
+            run_manager = getattr(app.state, "run_manager", None)
+            if run_manager is not None:
+                # Build the lease store from the production Redis URL (Null when
+                # unset — single-worker reconcile falls back to the local-task
+                # check). The run event store feeds run.reconcile.result events.
+                from deerflow.runtime.runs.ownership import make_lease_store
+
+                _cfg = get_app_config()
+                _redis_url = getattr(getattr(_cfg.production, "redis", None), "url", None)
+                reconcile_stop = asyncio.Event()
+                reconcile_task = asyncio.create_task(
+                    run_reconcile_worker(
+                        run_manager,
+                        lease_store=make_lease_store(_redis_url),
+                        run_event_store=getattr(app.state, "run_event_store", None),
+                        stop_event=reconcile_stop,
+                    ),
+                    name="run-reconciler",
+                )
+                logger.info("Run reconciler worker started")
+            else:
+                logger.warning("No run manager; run reconciler worker not started")
+        except Exception:
+            logger.exception("Failed to start run reconciler worker")
+
         yield
 
         # Stop the audit outbox worker first (bounded) so it does not race the
@@ -460,6 +493,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
             except Exception:
                 logger.exception("Release idempotency GC worker shutdown raised")
+
+        # Stop the run reconciler (bounded), so it does not race the engine
+        # teardown alongside the other background workers.
+        if reconcile_task is not None:
+            if reconcile_stop is not None:
+                reconcile_stop.set()
+            try:
+                await asyncio.wait_for(reconcile_task, timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+            except TimeoutError:
+                reconcile_task.cancel()
+                logger.warning(
+                    "Run reconciler shutdown exceeded %.1fs; cancelling.",
+                    _SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                logger.exception("Run reconciler shutdown raised")
 
         # Stop channel service on shutdown (bounded to prevent worker hang)
         try:

@@ -12,8 +12,14 @@ from typing import TYPE_CHECKING, Any
 
 from deerflow.utils.time import now_iso as _now_iso
 
+from .ownership import NullLeaseStore as _NullLeaseStoreType
 from .schemas import DisconnectMode, RunStatus
-from .transitions import assert_run_transition as _assert_run_transition
+from .transitions import (
+    assert_run_transition as _assert_run_transition,
+)
+from .transitions import (
+    is_terminal_run_status,
+)
 
 if TYPE_CHECKING:
     from deerflow.runtime.runs.store.base import RunStore
@@ -777,15 +783,35 @@ class RunManager:
         *,
         error: str,
         before: str | None = None,
+        lease_store: Any = None,
+        run_event_store: Any = None,
     ) -> list[RunRecord]:
-        """Mark persisted active runs as failed when no local task owns them.
+        """Converge non-terminal runs whose owner is gone to a safe terminal.
 
-        Gateway runs are process-local: the asyncio task and abort event live in
-        memory, while the run row is durable.  After a SQLite-backed gateway
-        restart, any persisted ``pending`` or ``running`` row created before
-        startup cannot still have a local worker.  This recovery step turns that
-        ambiguous state into an explicit error instead of letting the UI show an
-        indefinite active run.
+        PR-072 refines the pre-existing blanket-``error`` sweep into a
+        lease-aware, PG-first reconciler (Track G):
+
+        * **PG terminal first** (ADR-0006 §5.3): a row already in a terminal
+          status is skipped — PG terminal state is authoritative and must never
+          be revived by the reconciler (TM-029).
+        * **lease-aware** (PR-071): when a ``lease_store`` is supplied, a run
+          whose lease holder is live (``not is_expired``) is skipped — it is
+          actively owned on another worker and must not be raced
+          (``skipped_live_elsewhere``). A run with no holder or an expired
+          lease is an orphan.
+        * **local-process check** (NullLeaseStore / single-worker path): a run
+          with a live in-memory task is skipped (``skipped_live``).
+        * **safe terminal, no replay** (TM-028): an orphan is driven to
+          ``error`` via the PR-070 CAS (``expected_row_version``). The
+          reconciler NEVER retries/replays the run — it only converges the
+          ambiguous non-terminal state to an explicit terminal one, emitting a
+          ``run.reconcile.result`` event so an operator can decide on any
+          manual follow-up (the "人工处理" half of the PR-072 deliverable).
+        * **CAS conflict** (``cas_conflict`` outcome): if a concurrent writer
+          already moved the row, the CAS misses and the row is left untouched.
+
+        ``list_inflight`` returns rows with ``row_version`` + ``status``, so the
+        CAS token and terminal check are available per row.
         """
         if self._store is None:
             return []
@@ -815,22 +841,82 @@ class RunManager:
                 inc_run_reconcile(outcome="row_map_failed")
                 continue
 
+            # PG terminal first (ADR §5.3 / TM-029): a row that already reached
+            # a terminal state is authoritative — never revive it.
+            if is_terminal_run_status(record.status.value):
+                inc_run_reconcile(outcome="terminal_already_set")
+                continue
+
+            # lease-aware: a live holder means the run is owned elsewhere.
+            if lease_store is not None and not isinstance(lease_store, _NullLeaseStoreType):
+                try:
+                    from .ownership import is_expired
+
+                    holder = await lease_store.get_holder(org_id=record.org_id or "", run_id=record.run_id)
+                    if holder is not None and not is_expired(holder):
+                        inc_run_reconcile(outcome="skipped_live_elsewhere")
+                        continue
+                    outcome_label = "expired_lease_reclaimed" if holder is not None else "recovered"
+                except Exception:
+                    # A lease-store error must not block convergence: fall back to
+                    # the local-process check + safe terminal. Tag the outcome so
+                    # the degradation is observable.
+                    logger.warning(
+                        "lease store check failed for run %s; falling back to local reclaim",
+                        record.run_id,
+                        exc_info=True,
+                    )
+                    outcome_label = "recovered"
+            else:
+                outcome_label = "recovered"
+
+            # local-process check (NullLeaseStore / single-worker): a run with a
+            # live in-memory task is still executing here.
             async with self._lock:
                 live_record = self._runs.get(record.run_id)
                 if live_record is not None and live_record.status in (RunStatus.pending, RunStatus.running):
                     inc_run_reconcile(outcome="skipped_live")
                     continue
 
+            # Safe terminal via PR-070 CAS. Capture the pre-reclaim row_version
+            # so a concurrent writer (the owner, or another reconciler) that
+            # already moved the row wins the CAS.
+            expected_row_version = record.row_version
             record.status = RunStatus.error
             record.error = error
             record.updated_at = now
-            persisted = await self._persist_status(record, RunStatus.error, error=error)
+            persisted = await self._persist_status(record, RunStatus.error, error=error, expected_row_version=expected_row_version)
             if not persisted:
-                logger.warning("Skipped orphaned run %s recovery because error status was not persisted", record.run_id)
-                inc_run_reconcile(outcome="persist_failed")
+                # A CAS miss means a concurrent writer won — do NOT overwrite
+                # (TM-029). Distinguish a genuine conflict from a missing row
+                # (already handled inside _persist_status via snapshot-recreate).
+                logger.info(
+                    "Reconcile CAS miss for run %s (expected row_version=%s); concurrent writer won",
+                    record.run_id,
+                    expected_row_version,
+                )
+                inc_run_reconcile(outcome="cas_conflict")
                 continue
             recovered.append(record)
-            inc_run_reconcile(outcome="recovered")
+            inc_run_reconcile(outcome=outcome_label)
+            # run.reconcile.result event (data-model §12.3): every correction is
+            # observable so an operator can decide on manual follow-up.
+            if run_event_store is not None:
+                try:
+                    await run_event_store.put(
+                        thread_id=record.thread_id,
+                        run_id=record.run_id,
+                        event_type="run.reconcile.result",
+                        category="system",
+                        content={"run_id": record.run_id, "outcome": outcome_label, "reason": error},
+                        metadata={},
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to emit run.reconcile.result event for run %s",
+                        record.run_id,
+                        exc_info=True,
+                    )
 
         if recovered:
             logger.warning("Recovered %d orphaned inflight run(s) as error", len(recovered))
