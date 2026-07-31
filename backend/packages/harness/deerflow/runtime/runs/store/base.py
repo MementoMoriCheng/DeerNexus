@@ -78,11 +78,18 @@ class RunStore(abc.ABC):
         status: str,
         *,
         error: str | None = None,
+        expected_row_version: int | None = None,
     ) -> bool | None:
         """Update a run status.
 
         Returns ``False`` when the store can prove no row was updated. Older or
         lightweight stores may return ``None`` when they cannot report rowcount.
+
+        With ``expected_row_version`` set, the update is a compare-and-set
+        (PR-070): it only matches a row whose ``row_version`` equals the
+        expected value and bumps it on success; a stale expected version yields
+        ``False`` (a concurrent writer won). ``None`` (default) is an
+        unconditional write for backward compatibility.
         """
         pass
 
@@ -117,10 +124,14 @@ class RunStore(abc.ABC):
         last_ai_message: str | None = None,
         first_human_message: str | None = None,
         error: str | None = None,
+        expected_row_version: int | None = None,
     ) -> bool | None:
         """Persist final completion fields.
 
-        Returns ``False`` when the store can prove no row was updated.
+        Returns ``False`` when the store can prove no row was updated, or (with
+        ``expected_row_version`` set) when a concurrent writer won the CAS
+        (PR-070). ``None`` (default) is an unconditional write for backward
+        compatibility.
         """
         pass
 

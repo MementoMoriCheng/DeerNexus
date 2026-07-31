@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from deerflow.persistence.base import Base
@@ -63,6 +63,14 @@ class RunRow(Base):
     # ALTER time and new rows stay legacy until start_run pins them. NOT NULL to
     # match the migration (test_create_all_and_alembic_upgrade_produce_same_schema).
     legacy_unpinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    # Compare-and-set token for status transitions (PR-070 / Track G Run state
+    # CAS). A status write carrying an ``expected_row_version`` appends
+    # ``AND row_version = :expected`` to its WHERE and bumps this on success;
+    # rowcount == 0 means a concurrent writer won (e.g. a terminal completion
+    # racing a cancel — TM-027 mitigation at the store layer). Mirrors
+    # ``release_channels.row_version`` (PR-053). NOT NULL with server_default 1
+    # so existing rows are backfilled to the CAS baseline at ALTER time.
+    row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))

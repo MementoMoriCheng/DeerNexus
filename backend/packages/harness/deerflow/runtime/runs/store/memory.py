@@ -72,6 +72,11 @@ class MemoryRunStore(RunStore):
             "error": error,
             "created_at": created_at or now,
             "updated_at": now,
+            # PR-070 CAS token. Preserved across a retry put (the in-memory store,
+            # like the SQL one, treats row_version as append-only outside a CAS
+            # update_status bump) so the CAS contract holds for tests using the
+            # memory store.
+            "row_version": existing.get("row_version", 1) if existing is not None else 1,
             **release_fields,
         }
 
@@ -95,14 +100,22 @@ class MemoryRunStore(RunStore):
         results.sort(key=lambda r: (r["created_at"], r["run_id"]), reverse=True)
         return results[:limit]
 
-    async def update_status(self, run_id, status, *, error=None):
-        if run_id in self._runs:
-            self._runs[run_id]["status"] = status
-            if error is not None:
-                self._runs[run_id]["error"] = error
-            self._runs[run_id]["updated_at"] = datetime.now(UTC).isoformat()
-            return True
-        return False
+    async def update_status(self, run_id, status, *, error=None, expected_row_version: int | None = None):
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        # PR-070 CAS: when an expected version is supplied, the update only
+        # matches a row whose row_version equals it. A stale expected version
+        # loses the CAS and returns False (mirrors the SQL store's rowcount==0).
+        if expected_row_version is not None and run.get("row_version", 1) != expected_row_version:
+            return False
+        run["status"] = status
+        if error is not None:
+            run["error"] = error
+        run["updated_at"] = datetime.now(UTC).isoformat()
+        if expected_row_version is not None:
+            run["row_version"] = run.get("row_version", 1) + 1
+        return True
 
     async def update_model_name(self, run_id, model_name):
         if run_id in self._runs:
@@ -119,15 +132,21 @@ class MemoryRunStore(RunStore):
             return
         self._runs.pop(run_id, None)
 
-    async def update_run_completion(self, run_id, *, status, **kwargs):
-        if run_id in self._runs:
-            self._runs[run_id]["status"] = status
-            for key, value in kwargs.items():
-                if value is not None:
-                    self._runs[run_id][key] = value
-            self._runs[run_id]["updated_at"] = datetime.now(UTC).isoformat()
-            return True
-        return False
+    async def update_run_completion(self, run_id, *, status, expected_row_version: int | None = None, **kwargs):
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        # PR-070 CAS: a stale expected version loses (mirrors the SQL store).
+        if expected_row_version is not None and run.get("row_version", 1) != expected_row_version:
+            return False
+        run["status"] = status
+        for key, value in kwargs.items():
+            if value is not None:
+                run[key] = value
+        run["updated_at"] = datetime.now(UTC).isoformat()
+        if expected_row_version is not None:
+            run["row_version"] = run.get("row_version", 1) + 1
+        return True
 
     async def update_run_progress(self, run_id, **kwargs):
         if run_id in self._runs and self._runs[run_id].get("status") == "running":
