@@ -35,7 +35,14 @@ class _FakeRunManager:
         self.shutdown_calls: int = 0
         _FakeRunManager.instances.append(self)
 
-    async def reconcile_orphaned_inflight_runs(self, *, error: str, before: str | None = None):
+    async def reconcile_orphaned_inflight_runs(
+        self,
+        *,
+        error: str,
+        before: str | None = None,
+        lease_store=None,
+        run_event_store=None,
+    ):
         self.reconcile_calls.append({"error": error, "before": before})
         return self.recovered_runs
 

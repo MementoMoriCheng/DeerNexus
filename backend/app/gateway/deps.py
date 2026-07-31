@@ -211,16 +211,23 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
 
         # RunManager with store backing for persistence
         app.state.run_manager = RunManager(store=app.state.run_store)
-        if getattr(config.database, "backend", None) == "sqlite":
-            from deerflow.utils.time import now_iso
+        # PR-072: startup reconcile runs for ALL backends (previously sqlite-only,
+        # which left production Postgres with no orphan convergence at all). The
+        # lease-aware path (get_holder / is_expired) skips runs still owned on
+        # another worker; the local-task check skips runs live in this process.
+        from deerflow.runtime.runs.ownership import make_lease_store
+        from deerflow.utils.time import now_iso
 
-            # Startup-only recovery: clean shutdowns return no active rows and
-            # the thread-status update below becomes a no-op.
-            recovered_runs = await app.state.run_manager.reconcile_orphaned_inflight_runs(
-                error="Gateway restarted before this run reached a durable final state.",
-                before=now_iso(),
-            )
-            await _mark_latest_recovered_threads_error(app.state.run_manager, app.state.thread_store, recovered_runs)
+        _prod = getattr(config, "production", None)
+        _redis_cfg = getattr(_prod, "redis", None) if _prod is not None else None
+        _redis_url = getattr(_redis_cfg, "url", None) if _redis_cfg is not None else None
+        recovered_runs = await app.state.run_manager.reconcile_orphaned_inflight_runs(
+            error="Gateway restarted before this run reached a durable final state.",
+            before=now_iso(),
+            lease_store=make_lease_store(_redis_url),
+            run_event_store=app.state.run_event_store,
+        )
+        await _mark_latest_recovered_threads_error(app.state.run_manager, app.state.thread_store, recovered_runs)
 
         try:
             yield
