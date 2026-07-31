@@ -28,7 +28,7 @@ from langgraph.types import Checkpointer
 
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.persistence.feedback import FeedbackRepository
-from deerflow.runtime import RunContext, RunManager, StreamBridge
+from deerflow.runtime import Dispatcher, RunContext, RunManager, StreamBridge
 from deerflow.runtime.events.store.base import RunEventStore
 from deerflow.runtime.runs.store.base import RunStore
 
@@ -211,6 +211,12 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
 
         # RunManager with store backing for persistence
         app.state.run_manager = RunManager(store=app.state.run_store)
+        # PR-075: Dispatcher/Executor seam. In-process by default (a passthrough
+        # to run_agent); a future remote dispatcher (PR-076+) publishes a dispatch
+        # signal instead. Stateless, so built once at lifespan startup.
+        from deerflow.runtime import make_dispatcher
+
+        app.state.dispatcher = make_dispatcher(getattr(config, "dispatcher", None))
         # PR-072: startup reconcile runs for ALL backends (previously sqlite-only,
         # which left production Postgres with no orphan convergence at all). The
         # lease-aware path (get_holder / is_expired) skips runs still owned on
@@ -263,6 +269,7 @@ def _require(attr: str, label: str) -> Callable[[Request], T]:
 
 get_stream_bridge: Callable[[Request], StreamBridge] = _require("stream_bridge", "Stream bridge")
 get_run_manager: Callable[[Request], RunManager] = _require("run_manager", "Run manager")
+get_dispatcher: Callable[[Request], Dispatcher] = _require("dispatcher", "Dispatcher")
 get_checkpointer: Callable[[Request], Checkpointer] = _require("checkpointer", "Checkpointer")
 get_run_event_store: Callable[[Request], RunEventStore] = _require("run_event_store", "Run event store")
 get_feedback_repo: Callable[[Request], FeedbackRepository] = _require("feedback_repo", "Feedback")

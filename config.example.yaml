@@ -1222,6 +1222,16 @@ stream_bridge:
   redis_url: null          # falls back to production.redis.url when unset
   queue_maxsize: 256       # per-run event retention (slow-client / fell-behind bound)
 
+# ----------------------------------------------------------------------------
+# Dispatcher / Executor seam (PR-075, ADR-0006 §8 Phase 0). Hands a Run to an
+# executor via a stable Protocol so embedded and a future remote worker share
+# one contract. `in-process` (default) schedules the agent in this process —
+# today's behaviour, zero change. `remote` (dispatch outbox / physical worker)
+# is PR-076+, gated on the ADR §2.2 physical-split triggers, and not yet built.
+# ----------------------------------------------------------------------------
+dispatcher:
+  type: in-process
+
 # ============================================================================
 # DeerNexus Production Preflight Declarations
 # ============================================================================

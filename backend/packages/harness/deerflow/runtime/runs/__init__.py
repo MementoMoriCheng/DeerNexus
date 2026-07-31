@@ -1,5 +1,13 @@
 """Run lifecycle management for LangGraph Platform API compatibility."""
 
+from .dispatch import (
+    Dispatcher,
+    ExecRequest,
+    Executor,
+    InProcessDispatcher,
+    InProcessExecutor,
+    make_dispatcher,
+)
 from .manager import ConflictError, RunManager, RunRecord, UnsupportedStrategyError
 from .ownership import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -26,7 +34,12 @@ from .worker import RunContext, run_agent
 __all__ = [
     "ConflictError",
     "DisconnectMode",
+    "Dispatcher",
+    "ExecRequest",
+    "Executor",
     "HEARTBEAT_INTERVAL_SECONDS",
+    "InProcessDispatcher",
+    "InProcessExecutor",
     "LEASE_TTL_SECONDS",
     "RunContext",
     "RunManager",
@@ -43,6 +56,7 @@ __all__ = [
     "assert_run_transition",
     "is_expired",
     "is_terminal_run_status",
+    "make_dispatcher",
     "make_lease_store",
     "new_lease_token",
     "ownership_key",

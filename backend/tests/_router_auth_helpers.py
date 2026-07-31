@@ -275,9 +275,12 @@ def make_rbac_test_app(
     # Default stream bridge so join/stream endpoints (which read it before the
     # store_only gate, PR-073) work out of the box. Tests that need a
     # cross-replica or stub bridge override app.state.stream_bridge afterwards.
-    from deerflow.runtime import MemoryStreamBridge
+    from deerflow.runtime import MemoryStreamBridge, make_dispatcher
 
     app.state.stream_bridge = MemoryStreamBridge()
+    # Default dispatcher so start_run (which calls get_dispatcher, PR-075) works
+    # out of the box. Tests that need a stub dispatcher override afterwards.
+    app.state.dispatcher = make_dispatcher()
 
     if bypass_authorize:
         # No DB touch — return early before rebinding the AuthorizeService.

@@ -2071,3 +2071,41 @@ Track G PR-073 落地**读路径**的跨副本能力(`pr-split-guide.md §12`:St
 **不在本 PR 范围**:persisted cancel intent(跨 worker,ADR-0006 §5.4)→ **PR-077** / Profile H 24h soak/故障注入 → PR-074 / Dispatcher → PR-075 / 9 态改名 → follow-up / 前端 Last-Event-ID:后端已原生支持(`bridge.subscribe` 接 header);前端是否自动回传取决于 SSE 客户端实现(原生 EventSource / LangGraph SDK `useStream` 通常自动发),本 PR 验证前端,缺则前端小修或 follow-up,**不阻塞后端交付**。
 
 **回滚边界**:`git revert`。**零 schema migration、零 DB 列**。配置门控(`type: redis` 显式开启);默认 `type: memory` 零行为变化(memory bridge 回归全绿)。
+
+### 16.69 Track G PR-075:Dispatcher / Executor Protocol(同进程接口化)
+
+Track G PR-075 落地 ADR-0006 **§8 Phase 0**(「同进程接口化」):提取 `Dispatcher` / `Executor` Protocol,让**内嵌执行与未来远程 Worker 共用同一 contracts**,不改变部署拓扑、不引入远程 Worker。这是 dispatch seam 的接口化——把今天隐式硬编码的「在本进程跑 run_agent」决策显式化为可替换的 Protocol。
+
+**规范来源**:`pr-split-guide.md §12`(line 536「只做同进程接口化,不立即远程 Worker」)+ ADR-0006 §8 Phase 0(line 272「提取 Dispatcher / Executor Protocol;内嵌执行仍走 RunEnvelope;建立 contracts 和状态机测试;不改变部署拓扑」)+ §11(line 337「内嵌执行使用 RunEnvelope 与稳定 contracts」验收项)。
+
+**硬边界(不做,属 PR-076+)**:dispatch outbox/queue、worker identity、remote claim、cross-worker cancel(PR-077)、shadow、controlled rollout、cleanup。**不触碰 ADR §2.2 物理拆分触发条件**(不引入独立 workload identity / 节点池 / 伸缩)。
+
+**TM 约束**:TM-026(一个 Run 只交给一个 Executor,dispatcher 强制)/ TM-024(同进程 `integrity` 可空,跨边界才必须验证——本 PR 同进程故不强制 envelope integrity)/ TM-025(消费前重校验 Run 仍可执行——in-process 由 `run_agent` 内 lease claim 天然提供)/ TM-028(at-least-once retry 契约文档化给 PR-076+,本 PR 同进程直接调用无独立 publish 故平凡满足,reconciler 兜底,绝不盲重放)。
+
+**层定位**(Track G 正交分层,各层互不影响):状态权威(PR-070 CAS)/ 协调(PR-071 lease)/ 收敛(PR-072 reconcile)/ 读扇出(PR-073 StreamBridge)/ **dispatch seam ← 本 PR**。StreamBridge §16.68 已述其独立第三层;本 PR 是第四层「把 Run 交给 executor」的 handoff。
+
+**greenfield 确认**:仓库内无任何 run 级 Dispatcher/Executor/outbox 代码(`subagents/executor.py` 是 subagent 线程池、`audit/outbox.py` 是审计 outbox、`channels/_dispatch_loop` 是 IM 消息派发——均无关)。
+
+**核心改动**:
+
+1. **`ExecRequest` 值对象 + `Executor`/`Dispatcher` Protocol + `InProcess*` + `make_dispatcher`**(新 `runtime/runs/dispatch.py`),镜像 `ownership.py` 的 `LeaseStore`/`NullLeaseStore`/`make_lease_store` 模式(PR-071 同主题兄弟)。
+   - `ExecRequest`(`@dataclass(frozen=True)`):把 `run_agent` 的 11 个散参数(bridge/run_manager/record/ctx/agent_factory/graph_input/config/stream_modes/stream_subgraphs/interrupt_before/interrupt_after)打包成不可变请求值对象。语义对应 ADR §6 RunEnvelope(executor 的可信任务信封),但本 PR 同进程故**轻量封装**,不强求组装完整 RunEnvelope(release_ref/policy_snapshot/integrity 在 start_run 可选/默认关——完整 envelope + 跨信任边界 integrity 验证留 PR-076+)。
+   - `Executor`(`@runtime_checkable Protocol`):`async def execute(request) -> Task | None`。**异步返回**(不阻塞 dispatch);返回 Task 由 dispatcher 注册到 `record.task`(保留 RunManager cancel/await/drain 语义)。
+   - `InProcessExecutor`:唯一实现。`execute` 内部**逐字搬迁**原 `services.py:457-471` 的 `asyncio.create_task(run_agent(...))`。claim/heartbeat/release 仍在 `run_agent` 内(PR-071),透传。注释:将来 PR-076+ 的 RemoteExecutor/outbox 替换这里。
+   - `Dispatcher`(`@runtime_checkable Protocol`):`async def dispatch(request) -> Task | None`。契约(ADR §5.1):persist Run 先、dispatch 后;**一个 Run 只交给一个 Executor**(TM-026);publish 失败由 dispatcher 重试(TM-028,in-process 直接调用无独立 publish 故平凡满足)。
+   - `InProcessDispatcher`:持有 `executor`;`dispatch` 直接 `return await self._executor.execute(request)`(今天 passthrough)。将来 PR-076+ 在此加 feature-flag 路由 / outbox publish。
+   - `make_dispatcher(config)`:默认返回 `InProcessDispatcher(InProcessExecutor())`;`type=remote` → `NotImplementedError`(PR-076+ surface,同 PR-073 redis stub 思路);`type` 默认 in-process = 零行为变化。
+
+2. **替换 dispatch seam**(`app/gateway/services.py:457`):原 `asyncio.create_task(run_agent(...))` → `record.task = await dispatcher.dispatch(ExecRequest(...))`。`run_agent` import 从 services.py 移除(改由 InProcessExecutor 持有)。行为零变化;`record.task` 语义保留。
+
+3. **依赖注入**(`app/gateway/deps.py`):新增 `app.state.dispatcher`(lifespan 单例,`make_dispatcher(getattr(config,"dispatcher",None))`,像 stream_bridge)+ `get_dispatcher(request)` accessor(镜像 `_require` 系列)。
+
+4. **导出**(`runtime/runs/__init__.py` + `runtime/__init__.py`):`Dispatcher, Executor, ExecRequest, InProcessDispatcher, InProcessExecutor, make_dispatcher`(与 RunManager/RunContext/run_agent 并列)。
+
+5. **配置**(新 `dispatcher_config.py` + `AppConfig.dispatcher` + `reload_boundary.STARTUP_ONLY_FIELDS["dispatcher"]` + `config.example.yaml`):`DispatcherConfig(type: "in-process"|"remote"="in-process")`。`remote` 留 `NotImplementedError`。默认 in-process。
+
+**测试**(`tests/test_dispatch_executor.py`,17 测):ExecRequest frozen + 字段完整;InProcessExecutor.execute 返回 running Task 且注册到 record.task(await 不抛);**InProcessDispatcher TM-026 一次 dispatch 一次 execute**(注入 `_CountingExecutor` 断言调用=1);make_dispatcher 默认/in-process/remote(NotImplementedError)/unknown(ValueError)/None 默认;**Protocol structural-typing**(duck-typed `_CountingExecutor` 经 `@runtime_checkable` 满足 `isinstance(_, Executor/Dispatcher)`);网关 `app.state.dispatcher` 经 `get_dispatcher` 返回 + 缺失 503。**回归**:`test_gateway_services.py` 两处 `patch("app.gateway.services.run_agent")` 改为注入 `_CapturingExecutor`(经 `InProcessDispatcher`)——dispatch seam 不再直接调 `run_agent`,旧 patch 失效,必须更新。
+
+**不在本 PR 范围**:物理 Worker / dispatch outbox / remote claim / worker identity / shadow / controlled rollout → PR-076+(需 ADR §2.2 触发)/ persisted cross-worker cancel intent → PR-077 / 完整 RunEnvelope 组装(release_ref/policy_snapshot/integrity)→ PR-076+ / Profile H 24h soak → PR-074。
+
+**回滚边界**:`git revert`。**零 schema migration、零 DB 列、零 Redis key**。配置门控(`type=in-process` 默认);`InProcessExecutor.execute` 逐字搬迁原 `create_task(run_agent)`;`record.task` 语义/cancel/drain/lease lifecycle 全不变。**回归面**:dispatch seam 是所有 run 必经之路——**必须跑完整后端测试套件**(PR-073 教训)。

@@ -47,6 +47,7 @@ STARTUP_ONLY_FIELDS: dict[str, str] = {
     "checkpointer": ("make_checkpointer() binds the persistent checkpointer once at startup, including SQLite WAL / busy_timeout settings."),
     "run_events": ("make_run_event_store() picks the memory- vs SQL-backed implementation at startup and is frozen onto app.state.run_events_config to stay paired with the underlying event store."),
     "stream_bridge": ("make_stream_bridge() constructs the stream-bridge singleton once during startup."),
+    "dispatcher": ("make_dispatcher() constructs the dispatcher/executor singleton once during startup (PR-075)."),
     "sandbox": ("get_sandbox_provider() caches the provider singleton (``_default_sandbox_provider``); a different ``sandbox.use`` class path only takes effect on next process start."),
     "log_level": (
         "apply_logging_level() runs only during app.py startup; it sets the deerflow/app logger levels and may lower root handler thresholds so configured messages can propagate. A freshly reloaded AppConfig does not retrigger it."

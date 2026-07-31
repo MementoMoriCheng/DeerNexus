@@ -7,7 +7,6 @@ frames, and consuming stream bridge events.  Router modules
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -21,7 +20,13 @@ from langchain_core.messages import BaseMessage
 from langchain_core.messages.utils import convert_to_messages
 from langgraph.types import Command
 
-from app.gateway.deps import get_release_resolver, get_run_context, get_run_manager, get_stream_bridge
+from app.gateway.deps import (
+    get_dispatcher,
+    get_release_resolver,
+    get_run_context,
+    get_run_manager,
+    get_stream_bridge,
+)
 from app.gateway.errors import release_resolution_error_response
 from app.gateway.internal_auth import INTERNAL_SYSTEM_ROLE, get_trusted_internal_owner_user_id
 from app.gateway.utils import sanitize_log_param
@@ -31,12 +36,12 @@ from deerflow.runtime import (
     HEARTBEAT_SENTINEL,
     ConflictError,
     DisconnectMode,
+    ExecRequest,
     RunManager,
     RunRecord,
     RunStatus,
     StreamBridge,
     UnsupportedStrategyError,
-    run_agent,
 )
 from deerflow.runtime.runs.naming import resolve_root_run_name
 from deerflow.runtime.user_context import reset_current_user, set_current_user
@@ -313,6 +318,7 @@ async def start_run(
     bridge = get_stream_bridge(request)
     run_mgr = get_run_manager(request)
     run_ctx = get_run_context(request)
+    dispatcher = get_dispatcher(request)
 
     disconnect = DisconnectMode.cancel if body.on_disconnect == "cancel" else DisconnectMode.continue_
 
@@ -454,11 +460,17 @@ async def start_run(
 
         stream_modes = normalize_stream_modes(body.stream_mode)
 
-        task = asyncio.create_task(
-            run_agent(
-                bridge,
-                run_mgr,
-                record,
+        # Dispatch the run to an executor via the injected Dispatcher (PR-075).
+        # In-process this is a byte-for-byte passthrough of the former
+        # ``asyncio.create_task(run_agent(...))`` — a future remote dispatcher
+        # (PR-076+) publishes a dispatch signal instead, satisfying the same
+        # Protocol. The Run was already persisted by create_or_reject above
+        # (persist-before-dispatch, ADR §5.1); one executor per Run (TM-026).
+        record.task = await dispatcher.dispatch(
+            ExecRequest(
+                bridge=bridge,
+                run_manager=run_mgr,
+                record=record,
                 ctx=run_ctx,
                 agent_factory=agent_factory,
                 graph_input=graph_input,
@@ -469,7 +481,6 @@ async def start_run(
                 interrupt_after=body.interrupt_after,
             )
         )
-        record.task = task
 
         # Title sync is handled by worker.py's finally block which reads the
         # title from the checkpoint and calls thread_store.update_display_name
