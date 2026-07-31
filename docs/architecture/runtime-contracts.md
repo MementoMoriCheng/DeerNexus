@@ -1959,3 +1959,27 @@ streamdown v2 把 **Mermaid 图表渲染** 与 **Shiki 代码高亮** 从 v1 的
 **不在本 PR 范围**:config knob 化(当前常量足够,与 audit worker 一致)/ 更激进 retention 策略(基于请求量动态调整)/ 其他表的 TTL(audit_events 归档 §10.2 依赖对象存储,不在本 PR)。
 
 **回滚边界**:`git revert` 一次性回滚(repo 函数 + worker + lifespan 注册 + 测试)。零 schema migration(无新列/无新表)。worker 不启动即退化为旧行为(无 GC),无数据丢失风险。
+
+### 16.65 Track G PR-070:Run 状态 CAS(冻结 terminal/cancel/resume/reconcile 语义)
+
+Track G 的入口点(pr-split-guide.md §12「PR-070 Run 状态 CAS — 先冻结 terminal、cancel、resume、reconcile 语义」)。在不改变外部 API 行为的前提下,给 Run 状态机加 **CAS 原语 + 终态不可逆守卫**,兑现 ADR-0006 §CAS / data-model §12.3 terminal-immutability / TM-027(cancel-vs-completion 单赢家)。
+
+**范围决定(已确认最小化)**:
+- **状态词表保留现有 6 态**(`pending/running/success/error/timeout/interrupted`),**不做 6→9 改名**(data-model §12.3 的 9 态目标:`interrupted`→`cancelled`、`success`→`succeeded`、`error`→`failed`、加 `cancelling`/`clarification_required`/`approval_required`)。改名是独立大改——状态字符串硬编码在多处 SQL 聚合(`aggregate_tokens`/`aggregate_stats_by_org`/`list_inflight`)、指标标签(PR-063 `runs_status_total`)、Admin Console 过滤器(PR-061)。留 follow-up。
+- **不落 persisted cancel intent**(TM-027 跨 worker 存活)——cancel intent 仍只在内存(`abort_event` + `task.cancel`)。跨 worker 存活是 PR-071(lease)/073(SSE) 的范畴。
+- **HTTP 契约不变**——cancel/runs 端点不引入 `If-Match`/`ETag`(不像 release 那样的客户端参与 CAS)。CAS 是**内部 store 原语**,对客户端不可见(server-authoritative)。
+
+**核心改动**:
+
+1. **schema migration 0017**(`runs.row_version`):expand-only 加 `INTEGER NOT NULL DEFAULT 1` 列(server_default 1 回填现有行作 CAS baseline),镜像 `release_channels.row_version`(PR-053)。无 CHECK 约束(状态值校验在应用层 transition table,与 release 一致)。
+2. **transition table + 守卫**(`runtime/runs/transitions.py`,新):`_LEGAL_RUN_TRANSITIONS` 基于现有 6 态的实际合法边(`pending` → `{running,success,error,timeout,interrupted}`;`running` → `{success,error,timeout,interrupted}`;`interrupted` → `{error}` 回滚重分类;`success`/`error`/`timeout` 空集=不可逆)。`assert_run_transition` 镜像 release `_assert_transition`,**允许 self-transition**(幂等再确认,如 resumed run 重标 running)。**`interrupted → error` 是文档化的终态→终态重分类**(cancel 带 rollback action 时,worker 把 cancelled run 重标 `error`="Rolled back by user" 记录回滚失败结局;两端都是终态,非回 running,不违终态不可逆。9 态词表会建模为 cancelling→failed)。`IllegalRunTransitionError`。
+3. **CAS 化 store 写入**(`persistence/run/sql.py`):`update_status`/`update_run_completion` 加 `expected_row_version: int | None = None`——传了走 `WHERE run_id=:id AND row_version=:expected` + `row_version+1`,`rowcount==0`→`False`(CAS 失败);**不传(None)退化为无条件写**(向后兼容安全网,只有显式传 expected 的路径走 CAS)。`update_run_progress` **不加 CAS**(进度上报,`WHERE status="running"` 守卫已够)。memory store 同步加 CAS(测试可验)。
+4. **manager 接入**(`runtime/runs/manager.py`):`RunRecord` 加 `row_version: int = 1`(`_record_from_store` 从 store dict hydrate);`set_status`/`cancel` 加 transition 守卫 + 捕获 pre-transition `row_version` 传给 `_persist_status` 作 expected。**关键:CAS-miss vs missing-row 区分**——`update_status` 返 `False` 时 re-check 行是否存在:存在=CAS-miss(并发赢家,**不**覆盖终态,只 log warning);不存在=持久化丢失(snapshot-recreate 兜底,保 durability)。
+
+**测试**:`test_run_transitions.py`(28 测,合法/非法边矩阵 + self-transition + 终态不可逆)+ `test_run_store_cas.py`(13 测,memory + SQL 双路径 CAS 匹配/陈旧/无条件/unknown run/retry put 保版本)+ `test_run_manager.py` 5 个 stub 更新签名 + cancel idempotent/legacy gate/gateway recovery 回归全绿。schema parity(`create_all` vs alembic)测过(新列+migration 对齐)。
+
+**设计要点**:CAS-miss 在 manager 层**不 raise**(保 best-effort persist 语义),store 层 CAS 兜底防并发覆盖终态。cancel 幂等契约(`test_cancel_run_idempotent.py`)不变——加 CAS 后仍绿。
+
+**不在本 PR 范围(留 follow-up/后续 Track G PR)**:6→9 状态改名 + cancelling 过渡态 / persisted cancel intent(跨 worker)→ PR-071/073 / resume 原语(interrupted→running,当前仍被 gate 挡) / Reconciler 精细化(非 blanket error)→ PR-072 / HTTP If-Match/ETag / ownership lease → PR-071。
+
+**回滚边界**:`git revert` + migration 0017 downgrade(drop column)。零 API 变化。`expected_row_version=None` 安全网保证未接入 CAS 的调用零行为变化。零数据丢失(expand-only 加列 + 默认值回填)。

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from deerflow.utils.time import now_iso as _now_iso
 
 from .schemas import DisconnectMode, RunStatus
+from .transitions import assert_run_transition as _assert_run_transition
 
 if TYPE_CHECKING:
     from deerflow.runtime.runs.store.base import RunStore
@@ -116,6 +117,11 @@ class RunRecord:
     release_channel: str | None = None
     release_digest: str | None = None
     legacy_unpinned: bool = True
+    # PR-070 CAS token. Mirrors runs.row_version; bumped in lockstep with each
+    # status transition so _persist_status can pass the pre-transition value as
+    # expected_row_version and detect a concurrent writer. Defaults to 1; a
+    # record hydrated from a store row picks up the persisted value.
+    row_version: int = 1
 
 
 class RunManager:
@@ -275,8 +281,25 @@ class RunManager:
             self._store_put_payload(record, error=error),
         )
 
-    async def _persist_status(self, record: RunRecord, status: RunStatus, *, error: str | None = None) -> bool:
-        """Best-effort persist a status transition to the backing store."""
+    async def _persist_status(
+        self,
+        record: RunRecord,
+        status: RunStatus,
+        *,
+        error: str | None = None,
+        expected_row_version: int | None = None,
+    ) -> bool:
+        """Best-effort persist a status transition to the backing store.
+
+        With ``expected_row_version`` (PR-070), the store write is a
+        compare-and-set: a stale expected version means a concurrent writer
+        landed a terminal transition first, and ``update_status`` returns
+        ``False``. In that case we do NOT fall back to the snapshot recovery
+        path (that would overwrite the winner's terminal state, violating
+        terminal immutability) — we log and report the CAS miss so the caller
+        can observe it. The caller has already mutated the in-memory record;
+        the store is the source of truth across workers.
+        """
         if self._store is None:
             return True
         row_recovery_payload = self._store_put_payload(record, error=error)
@@ -284,10 +307,30 @@ class RunManager:
             updated = await self._call_store_with_retry(
                 "update_status",
                 record.run_id,
-                lambda: self._store.update_status(record.run_id, status.value, error=error),
+                lambda: self._store.update_status(record.run_id, status.value, error=error, expected_row_version=expected_row_version),
             )
             if updated is False:
+                if expected_row_version is not None:
+                    # Distinguish a genuine CAS miss (row exists, but a concurrent
+                    # writer already bumped row_version — do NOT overwrite the
+                    # winner's terminal state) from a missing row (initial
+                    # persistence was lost — recreate it for durability). A
+                    # missing row is a durability gap, not a race loss.
+                    existing = await self._store.get(record.run_id)
+                    if existing is None:
+                        return await self._persist_snapshot_to_store(record.run_id, row_recovery_payload)
+                    logger.warning(
+                        "Run %s status CAS miss (expected row_version=%s); a concurrent writer won",
+                        record.run_id,
+                        expected_row_version,
+                    )
+                    return False
                 return await self._persist_snapshot_to_store(record.run_id, row_recovery_payload)
+            if expected_row_version is not None:
+                # CAS succeeded and the store bumped row_version; mirror it in
+                # the in-memory record so the next transition's expected value
+                # is correct.
+                record.row_version = expected_row_version + 1
             return True
         except Exception:
             logger.warning("Failed to persist status update for run %s", record.run_id, exc_info=True)
@@ -335,6 +378,10 @@ class RunManager:
             release_channel=row.get("release_channel"),
             release_digest=row.get("release_digest"),
             legacy_unpinned=row.get("legacy_unpinned", True),
+            # PR-070 CAS token. Rows written before migration 0017 lack the
+            # column → default to 1 (the CAS baseline), same as the column's
+            # server_default.
+            row_version=row.get("row_version", 1),
         )
 
     async def update_run_completion(self, run_id: str, **kwargs) -> None:
@@ -526,11 +573,20 @@ class RunManager:
             if record is None:
                 logger.warning("set_status called for unknown run %s", run_id)
                 return
+            # PR-070: enforce the state machine. assert_run_transition raises
+            # IllegalRunTransitionError on an illegal edge (incl. any transition
+            # out of a terminal state). No-op self-transitions are also rejected
+            # by the guard — the CAS path, not the guard, handles the write.
+            _assert_run_transition(record.status.value, status.value)
+            # Capture the pre-transition row_version so _persist_status can CAS
+            # against it (a concurrent terminal completion must not be silently
+            # overwritten — TM-027).
+            expected_row_version = record.row_version
             record.status = status
             record.updated_at = _now_iso()
             if error is not None:
                 record.error = error
-        await self._persist_status(record, status, error=error)
+        await self._persist_status(record, status, error=error, expected_row_version=expected_row_version)
         # PR-063: bump §4.3 runs_status_total on every transition. The counter
         # is the §6 SLO numerator/denominator source; fail-open (metrics never
         # break the run). Also recompute worker_active (pending+running count)
@@ -589,13 +645,19 @@ class RunManager:
                 return True  # idempotent — already cancelled on this worker
             if record.status not in (RunStatus.pending, RunStatus.running):
                 return False
+            # PR-070: the early-return above already guarantees this is a legal
+            # cancel edge (pending|running → interrupted); assert explicitly so a
+            # future vocabulary change can't silently bypass the state machine.
+            _assert_run_transition(record.status.value, RunStatus.interrupted.value)
+            # Capture the pre-cancel row_version for the CAS persist.
+            expected_row_version = record.row_version
             record.abort_action = action
             record.abort_event.set()
             if record.task is not None and not record.task.done():
                 record.task.cancel()
             record.status = RunStatus.interrupted
             record.updated_at = _now_iso()
-        await self._persist_status(record, RunStatus.interrupted)
+        await self._persist_status(record, RunStatus.interrupted, expected_row_version=expected_row_version)
         logger.info("Run %s cancelled (action=%s)", run_id, action)
         # PR-063: bump §4.3 run_cancel_total when a real cancellation is
         # initiated (not the idempotent already-interrupted path above).

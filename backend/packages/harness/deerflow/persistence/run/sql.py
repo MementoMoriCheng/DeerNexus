@@ -189,12 +189,26 @@ class RunRepository(RunStore):
             result = await session.execute(stmt)
             return [self._row_to_dict(r) for r in result.scalars()]
 
-    async def update_status(self, run_id, status, *, error=None) -> bool:
+    async def update_status(self, run_id, status, *, error=None, expected_row_version: int | None = None) -> bool:
+        """Update a run status, optionally as a compare-and-set (PR-070).
+
+        With ``expected_row_version`` set, the UPDATE appends
+        ``AND row_version = :expected`` and bumps ``row_version``; ``rowcount
+        == 0`` means a concurrent writer won (the expected version was stale)
+        and the caller learns its transition did not land — return ``False``.
+        Without it (``None``, the default) the write is unconditional for
+        backward compatibility: only callers that opt into CAS observe it.
+        """
         values: dict[str, Any] = {"status": status, "updated_at": datetime.now(UTC)}
         if error is not None:
             values["error"] = error
+        conds = [RunRow.run_id == run_id]
+        is_cas = expected_row_version is not None
+        if is_cas:
+            conds.append(RunRow.row_version == expected_row_version)
+            values["row_version"] = RunRow.row_version + 1
         async with self._sf() as session:
-            result = await session.execute(update(RunRow).where(RunRow.run_id == run_id).values(**values))
+            result = await session.execute(update(RunRow).where(*conds).values(**values))
             await session.commit()
             return result.rowcount != 0
 
@@ -272,10 +286,14 @@ class RunRepository(RunStore):
         last_ai_message: str | None = None,
         first_human_message: str | None = None,
         error: str | None = None,
+        expected_row_version: int | None = None,
     ) -> bool:
         """Update status + token usage + convenience fields on run completion.
 
-        Returns ``False`` when no run row matched the requested ``run_id``.
+        Returns ``False`` when no run row matched the requested ``run_id`` (or,
+        with ``expected_row_version`` set, when a concurrent writer won the
+        CAS — see :meth:`update_status`). ``expected_row_version`` defaults to
+        ``None`` (unconditional write) for backward compatibility.
         """
         values: dict[str, Any] = {
             "status": status,
@@ -296,8 +314,12 @@ class RunRepository(RunStore):
             values["first_human_message"] = first_human_message[:2000]
         if error is not None:
             values["error"] = error
+        conds = [RunRow.run_id == run_id]
+        if expected_row_version is not None:
+            conds.append(RunRow.row_version == expected_row_version)
+            values["row_version"] = RunRow.row_version + 1
         async with self._sf() as session:
-            result = await session.execute(update(RunRow).where(RunRow.run_id == run_id).values(**values))
+            result = await session.execute(update(RunRow).where(*conds).values(**values))
             await session.commit()
             return result.rowcount != 0
 
