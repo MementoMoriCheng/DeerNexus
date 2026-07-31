@@ -313,6 +313,11 @@ def get_run_context(request: Request) -> RunContext:
     ContextVar inheritance.
     """
     from deerflow.contracts import get_tenant_context
+    from deerflow.runtime.runs.ownership import make_lease_store
+    from deerflow.runtime.runs.worker import WORKER_ID
+
+    app_config = get_config()
+    redis_url = getattr(getattr(app_config.production, "redis", None), "url", None)
 
     return RunContext(
         checkpointer=get_checkpointer(request),
@@ -320,8 +325,12 @@ def get_run_context(request: Request) -> RunContext:
         event_store=get_run_event_store(request),
         run_events_config=getattr(request.app.state, "run_events_config", None),
         thread_store=get_thread_store(request),
-        app_config=get_config(),
+        app_config=app_config,
         tenant=get_tenant_context(),
+        # PR-071: ownership/lease. NullLeaseStore when no Redis is configured
+        # (dev / single replica) — claim is a no-op success there.
+        worker_id=WORKER_ID,
+        lease_store=make_lease_store(redis_url),
     )
 
 

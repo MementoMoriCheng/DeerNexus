@@ -28,6 +28,7 @@ from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import EXPECTED_METRIC_NAMES, probe_metrics_presence
 from app.doctor.probes.postgres_probe import _parse_major_version, probe_postgres_connectivity
 from app.doctor.probes.rate_limit_probe import probe_rate_limit_retry_after
+from app.doctor.probes.redis_probe import probe_redis_connectivity
 from app.doctor.probes.release_ref_probe import probe_release_ref_enforcement
 from deerflow.config.app_config import AppConfig
 
@@ -157,6 +158,44 @@ class TestPostgresProbeConnectivity:
         blob = json_dump(result)
         # sqlite path does not include the URL but the assertion is defensive.
         assert "hunter2" not in blob
+
+
+class TestRedisProbe:
+    @pytest.mark.anyio
+    async def test_no_url_warns_skip(self):
+        """No production.redis.url → WARN skip (dev / single-replica is valid)."""
+        config = _base_config()
+        result = await probe_redis_connectivity(config)
+        assert result.status is DoctorStatus.WARN
+        assert result.check_id == "redis.connectivity"
+        assert "not set" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_unreachable_redis_fails_without_raising(self):
+        config = _base_config(
+            production={
+                "enabled": True,
+                "environment": "production",
+                "redis": {"url": "redis://user:pass@127.0.0.1:1/0"},
+            }
+        )
+        result = await probe_redis_connectivity(config)
+        assert result.status is DoctorStatus.FAIL
+
+    @pytest.mark.anyio
+    async def test_no_secret_leak_on_failure(self):
+        secret_url = "redis://doctoruser:hunter2@127.0.0.1:1/0"
+        config = _base_config(
+            production={
+                "enabled": True,
+                "environment": "production",
+                "redis": {"url": secret_url},
+            }
+        )
+        result = await probe_redis_connectivity(config)
+        blob = json_dump(result)
+        assert "hunter2" not in blob
+        assert "doctoruser" not in blob
 
 
 # ===========================================================================

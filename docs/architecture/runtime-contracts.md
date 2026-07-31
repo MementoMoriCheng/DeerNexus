@@ -1983,3 +1983,30 @@ Track G 的入口点(pr-split-guide.md §12「PR-070 Run 状态 CAS — 先冻�
 **不在本 PR 范围(留 follow-up/后续 Track G PR)**:6→9 状态改名 + cancelling 过渡态 / persisted cancel intent(跨 worker)→ PR-071/073 / resume 原语(interrupted→running,当前仍被 gate 挡) / Reconciler 精细化(非 blanket error)→ PR-072 / HTTP If-Match/ETag / ownership lease → PR-071。
 
 **回滚边界**:`git revert` + migration 0017 downgrade(drop column)。零 API 变化。`expected_row_version=None` 安全网保证未接入 CAS 的调用零行为变化。零数据丢失(expand-only 加列 + 默认值回填)。
+
+### 16.66 Track G PR-071:Run Ownership / Lease(Redis 协调层)
+
+Track G PR-071 落地 4 个原语(`pr-split-guide.md §12`:Redis Key、lease token、heartbeat、atomic claim)+ `redis.connectivity` doctor probe stub→live + deferred ownership/lease/heartbeat metrics。这是**首个引入分布式状态 + 硬外部依赖(Redis)的 PR**。
+
+**核心架构决定(ADR-0006 §3.1)**:**Redis-only coordination,不加 DB 列**。PG 是 Run/terminal 权威(PR-070 的 `row_version` CAS 已承担终态不可逆),Redis 只承担 lease/ownership。claim record 6 字段(`run_id, worker_id, lease_token, lease_expires_at, worker_version, claimed_at`,ADR §5.2)。
+
+**核心改动**:
+
+1. **依赖**(`pyproject.toml`):harness 加 `redis>=5.0`(`redis.asyncio` 原生 async);backend dev 加 `fakeredis[lua]>=2.20`(in-process fake + Lua `eval` 支持,测试不依赖外部 Redis)。
+2. **lease/ownership 模块**(`runtime/runs/ownership.py`,新):`ClaimRecord` + `LeaseStore` Protocol + `RedisLeaseStore`(prod)+ `NullLeaseStore`(dev/single-replica 安全网)+ `make_lease_store(url)` 工厂。Redis key `deerflow:run:ownership:{org_id}:{run_id}` → JSON ClaimRecord,TTL=lease TTL。**claim**=`SET NX EX`(原子,恰好一个赢家,TM-026);**renew**=Lua CAS(只当前 token 能续);**release**=Lua CAD(只当前 token 能删);**is_expired**=本地判断(lease_expires_at < now)。
+3. **worker 生命周期集成**(`runtime/runs/worker.py`):进程级 `WORKER_ID`;`run_agent` 启动 **claim**(失败记 conflict metric + bail,不与 owner 竞争 PG 行);运行期间起 **heartbeat task**(循环 renew,失败 log warning + metric bail);finally **release**(best-effort,失败不阻塞终态提交——PG CAS 权威)。`RunContext` 加 `worker_id` + `lease_store` 字段。
+4. **metrics**(`observability/metrics.py`):新增 `run_ownership_acquire_total` / `run_ownership_conflict_total` / `run_lease_expired_total` / `run_heartbeat_failure_total`(复用既有 `_X_total` + `inc_X` 模式)。
+5. **doctor probe live**(`app/doctor/probes/redis_probe.py`,新):`redis.connectivity` 从 DEFERRED stub→live 探针(PING + XADD/XDEL 验证 Stream capability);无 URL→WARN-skip(dev/single-replica 安全);有 URL 不可达→FAIL。`production.py` 从 DEFERRED_LIVE_CHECKS 移除该行 + 注册 live probe。
+6. **配置消费**(`app/gateway/deps.py`):`get_run_context` 从 `production.redis.url` 建 `LeaseStore`(无 URL→`NullLeaseStore`,退化为单 worker 行为)。
+
+**与 PR-070 集成**:ownership 是「谁能驱动这个 run 的转换」的门,CAS 是「单终态赢家」。两者正交。lease 在 **RunManager 之上**(claim 守卫 run 启动),不改 RunManager 的 CAS 守卫。lease 失败**不复活 terminal**(PR-070 终态不可逆兜底);Redis 全丢→PG terminal 赢,lease 重建(ADR `0006:180`)。
+
+**范围边界(避免范围蔓延)**:本 PR **不做** persisted cancel intent(跨 worker,ADR §5.4,留 PR-073 与 SSE StreamBridge)/ Reconciler 逻辑(lease 过期→reclaim 扫描器,留 PR-072,本 PR 只提供 `is_expired` 原语)/ SSE StreamBridge(留 PR-073)。
+
+**测试**:`test_run_ownership.py`(25 测,claim 原子性/renew-release token gating/lease 过期/NullStore/工厂/常量 + `@pytest.mark.real_redis` 真实 Redis 集成测)+ `test_run_lease_worker.py`(3 测,heartbeat loop 停止/token-mismatch bail/异常不杀)+ run-lifecycle e2e 回归全绿(NullLeaseStore 路径)。
+
+**风险**:首个分布式状态 PR,split-brain(TM-026)+ stale-lease-overwrite-terminal(TM-029)是核心威胁——由 claim 原子性(SET NX)+ token-gated renew/release(Lua CAS)+ PG 终态权威三层兜底。
+
+**不在本 PR 范围**:persisted cancel intent → PR-073 / Reconciler → PR-072 / SSE StreamBridge → PR-073 / Profile H 24h soak → PR-074。
+
+**回滚边界**:`git revert` + 移除 redis/fakeredis 依赖。零 schema migration、零 DB 列。无 Redis 配置→NullLeaseStore 退化为单 worker 行为(向后兼容安全网)。

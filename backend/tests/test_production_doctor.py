@@ -255,11 +255,12 @@ def test_all_runbook_placeholders_remain_fail_closed():
     # PR-056 promoted agent.release_ref_enforcement to a live probe
     # (probe_release_ref_enforcement); it is tested in test_doctor_probes.py and
     # no longer in DEFERRED_LIVE_CHECKS.
+    # PR-071 promoted redis.connectivity to a live probe (probe_redis_connectivity);
+    # it is tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
     # What remains here are the checks whose code paths do not exist yet;
     # they MUST stay FAIL until their owning Track lands, so an operator
     # never sees a misleading green on an unverified invariant.
     expected = {
-        "redis.connectivity",
         "oidc.jwks_validation",
         "sandbox.provisioner_create",
         "secret_store.access",
