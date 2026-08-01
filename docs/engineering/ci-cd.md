@@ -581,7 +581,7 @@ waivers
 - [ ] Build once，环境晋升同 digest
 - [ ] 生产 Secret 只给受保护部署环境
 - [ ] prod Doctor、Backup、E2E 与 SLO smoke
-- [ ] Profile H 条件门禁
+- [x] Profile H 条件门禁（PR-074：doctor `profile_h.ha_readiness` LIVE probe + `check_deployment_profile` 静态收紧校验 `profile_h_soak_hours>=24` + `profile_h_fault_injection_evidence` + Redis 已配置;fakeredis fault-injection 套件覆盖 5 类 ADR 故障场景;真实 24h soak 执行留 release pipeline/runbook）
 - [ ] 应用、数据库、Agent 三类回滚可区分
 - [ ] 发布证据完整且不含 Secret
 - [ ] 紧急发布仍保留隔离与目标安全测试
