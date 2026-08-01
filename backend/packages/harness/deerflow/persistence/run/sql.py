@@ -364,6 +364,46 @@ class RunRepository(RunStore):
             await session.execute(update(RunRow).where(RunRow.run_id == run_id, RunRow.status == "running").values(**values))
             await session.commit()
 
+    async def request_cancel(self, run_id: str, *, action: str = "interrupt") -> bool:
+        """Persist the durable cancel intent (PR-077 / ADR-0006 §5.4).
+
+        Signal write (no CAS): ``UPDATE runs SET cancel_requested=true ... WHERE
+        run_id=:id AND status IN ('pending','running') AND cancel_requested=false``.
+        ``rowcount > 0`` means the intent landed; ``0`` means the run is already
+        cancelled, terminal, or absent. Idempotent — a second request on an
+        already-cancelled run is a no-op success at the manager layer (this
+        store method returns False for the repeat, but the manager treats
+        already-interrupted as True).
+        """
+        now = datetime.now(UTC)
+        stmt = (
+            update(RunRow)
+            .where(
+                RunRow.run_id == run_id,
+                RunRow.status.in_(("pending", "running")),
+                RunRow.cancel_requested.is_(False),
+            )
+            .values(cancel_requested=True, cancel_action=action, cancel_requested_at=now)
+        )
+        async with self._sf() as session:
+            result = await session.execute(stmt)
+            await session.commit()
+            return result.rowcount > 0
+
+    async def get_cancel_intent(self, run_id: str) -> dict[str, Any] | None:
+        """Lightweight read of the cancel-intent columns (worker heartbeat poll).
+
+        Cheaper than :meth:`get` (only cancel columns; no token / metadata load).
+        Returns ``{"cancel_requested": bool, "cancel_action": str | None}`` or
+        ``None`` if the run row is absent.
+        """
+        stmt = select(RunRow.cancel_requested, RunRow.cancel_action).where(RunRow.run_id == run_id)
+        async with self._sf() as session:
+            row = (await session.execute(stmt)).first()
+        if row is None:
+            return None
+        return {"cancel_requested": bool(row.cancel_requested), "cancel_action": row.cancel_action}
+
     async def aggregate_tokens_by_thread(self, thread_id: str, *, include_active: bool = False) -> dict[str, Any]:
         """Aggregate token usage for a thread.
 

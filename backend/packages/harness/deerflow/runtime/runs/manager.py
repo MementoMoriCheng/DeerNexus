@@ -24,6 +24,11 @@ from .transitions import (
 if TYPE_CHECKING:
     from deerflow.runtime.runs.store.base import RunStore
 
+#: PR-077: async callback that publishes a Redis cancel-notify (acceleration).
+#: Signature: ``(run_id, action) -> None``. Errors are swallowed by the caller
+#: (the notify is best-effort; the PG intent is the durable source of truth).
+CancelNotifier = Callable[[str, str], Awaitable[None]]
+
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_SQLITE_MESSAGES = (
@@ -143,6 +148,7 @@ class RunManager:
         store: RunStore | None = None,
         *,
         persistence_retry_policy: PersistenceRetryPolicy | None = None,
+        cancel_notifier: CancelNotifier | None = None,
     ) -> None:
         self._runs: dict[str, RunRecord] = {}
         # Secondary index: thread_id -> insertion-ordered run_id set (a dict is
@@ -153,6 +159,10 @@ class RunManager:
         self._lock = asyncio.Lock()
         self._store = store
         self._persistence_retry_policy = persistence_retry_policy or PersistenceRetryPolicy()
+        # PR-077: optional async callback that publishes a Redis cancel-notify
+        # when a cancel intent is persisted. ``None`` in dev / single-replica /
+        # Redis-unavailable — the heartbeat PG poll is the durable fallback.
+        self._cancel_notifier = cancel_notifier
 
     def _index_run_locked(self, record: RunRecord) -> None:
         """Register *record* in the thread index. Caller must hold ``self._lock``."""
@@ -631,21 +641,56 @@ class RunManager:
         logger.info("Run %s model_name=%s", run_id, model_name)
 
     async def cancel(self, run_id: str, *, action: str = "interrupt") -> bool:
-        """Request cancellation of a run.
+        """Request cancellation of a run (ADR-0006 §5.4).
 
         Args:
             run_id: The run ID to cancel.
             action: "interrupt" keeps checkpoint, "rollback" reverts to pre-run state.
 
-        Sets the abort event with the action reason and cancels the asyncio task.
+        Two paths:
+
+        * **Local fast-path** — the run is live in this process (``self._runs``).
+          Sets the abort event with the action reason, cancels the asyncio task,
+          and persists the ``interrupted`` terminal status via CAS (PR-070). Also
+          persists the cancel intent in PG (defence-in-depth: if the local CAS
+          loses to a concurrent completion, the intent is still durable).
+        * **Cross-replica path** (PR-077) — the run is NOT in this process (the
+          cancel HTTP landed on a different replica than the lease-holding
+          worker). Persists the cancel intent in PG (the durable source of
+          truth) + publishes a Redis notify (acceleration). The owner polls the
+          intent in its heartbeat loop and stops the run. Returns ``True`` once
+          the intent is durable (the owner will see it within one heartbeat
+          interval); ``False`` if the run is terminal / unknown.
+
         Returns ``True`` if cancellation was initiated **or** the run was already
         interrupted (idempotent — a second cancel is a no-op success).
-        Returns ``False`` only when the run is unknown to this worker or has
-        reached a terminal state other than interrupted (completed, failed, etc.).
+        Returns ``False`` only when the run is unknown / has reached a terminal
+        state other than interrupted (completed, failed, etc.).
         """
+        from deerflow.observability.metrics import inc_run_cancel
+
         async with self._lock:
             record = self._runs.get(run_id)
             if record is None:
+                # Cross-replica: persist the durable intent; the lease-holding
+                # worker's heartbeat poll will see it and set its local
+                # abort_event. The cancel-vs-completion race is arbitrated by
+                # the terminal-status CAS the owner performs when it stops.
+                if self._store is None:
+                    return False
+                persisted = await self._store.request_cancel(run_id, action=action)
+                if persisted:
+                    await self._publish_cancel_notify(run_id, action=action)
+                    inc_run_cancel()
+                    logger.info("Run %s cancel intent persisted (cross-replica, action=%s)", run_id, action)
+                    return True
+                # Already cancelled (idempotent) / terminal / unknown.
+                # Distinguish idempotent-already-cancelled from terminal/unknown
+                # by re-reading the intent: if cancel_requested is already true,
+                # treat as idempotent success (§5.4 — a repeat cancel is a no-op).
+                existing = await self._store.get_cancel_intent(run_id)
+                if existing is not None and existing.get("cancel_requested"):
+                    return True
                 return False
             if record.status == RunStatus.interrupted:
                 return True  # idempotent — already cancelled on this worker
@@ -664,13 +709,36 @@ class RunManager:
             record.status = RunStatus.interrupted
             record.updated_at = _now_iso()
         await self._persist_status(record, RunStatus.interrupted, expected_row_version=expected_row_version)
+        # PR-077: persist the durable intent too (defence-in-depth — if the
+        # local terminal CAS loses to a concurrent completion, the intent is
+        # still durable for observability / a reconciler audit).
+        if self._store is not None:
+            try:
+                await self._store.request_cancel(run_id, action=action)
+            except Exception:  # noqa: BLE001 — intent persist is best-effort
+                logger.debug("Run %s cancel-intent persist failed (terminal CAS already won)", run_id, exc_info=True)
+        await self._publish_cancel_notify(run_id, action=action)
         logger.info("Run %s cancelled (action=%s)", run_id, action)
         # PR-063: bump §4.3 run_cancel_total when a real cancellation is
         # initiated (not the idempotent already-interrupted path above).
-        from deerflow.observability.metrics import inc_run_cancel
-
         inc_run_cancel()
         return True
+
+    async def _publish_cancel_notify(self, run_id: str, *, action: str) -> None:
+        """Best-effort Redis cancel-notify (ADR-0006 §5.4 bullet 2 acceleration).
+
+        The PG intent (``request_cancel``) is the durable source of truth; this
+        notify only accelerates delivery. If no notifier is wired (dev /
+        single-replica / Redis unavailable) this is a no-op — the owner's
+        heartbeat PG poll is the fallback (§5.4 bullet 4).
+        """
+        notifier = getattr(self, "_cancel_notifier", None)
+        if notifier is None:
+            return
+        try:
+            await notifier(run_id, action)
+        except Exception:  # noqa: BLE001 — notify is best-effort
+            logger.debug("Run %s cancel notify failed (PG intent is still durable)", run_id, exc_info=True)
 
     async def create_or_reject(
         self,

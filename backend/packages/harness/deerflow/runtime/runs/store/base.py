@@ -222,3 +222,31 @@ class RunStore(abc.ABC):
         Returns ``(rows, has_more)``. Keyset on ``(created_at DESC, run_id DESC)``.
         """
         pass
+
+    @abc.abstractmethod
+    async def request_cancel(self, run_id: str, *, action: str = "interrupt") -> bool:
+        """Persist a cancel intent for ``run_id`` (PR-077 / ADR-0006 §5.4).
+
+        Writes ``cancel_requested=true`` (the durable intent) for an active run
+        (``pending`` / ``running``). Idempotent: a repeat request on an
+        already-cancelled run returns ``True`` (the intent is present); a
+        request on a terminal or unknown run returns ``False``.
+
+        This is a **signal write**, not a terminal-state transition: it does
+        NOT carry an ``expected_row_version`` (cancel-vs-completion is
+        arbitrated by the terminal-status CAS in :meth:`update_status` /
+        :meth:`update_run_completion`). The lease-holding worker polls this
+        column in its heartbeat loop and stops the run; the cancel request may
+        land on a different replica than the owner (the cross-worker case).
+        """
+        pass
+
+    @abc.abstractmethod
+    async def get_cancel_intent(self, run_id: str) -> dict[str, Any] | None:
+        """Read the persisted cancel intent for ``run_id`` (lightweight poll).
+
+        Returns ``{"cancel_requested": bool, "cancel_action": str | None}`` or
+        ``None`` if the run row is absent. Used by the worker heartbeat poll
+        (cheaper than a full :meth:`get` — only the cancel columns are read).
+        """
+        pass

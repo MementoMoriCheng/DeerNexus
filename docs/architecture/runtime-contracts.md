@@ -2156,3 +2156,43 @@ Track G PR-074 落地 ADR-0006 **§2.1/§3.5/§11** 的 Profile H 准入门禁:�
 - **Helm / PodDisruptionBudget 模板**(ci-cd.md §12.2 Profile H 部署要求:Rolling Update / readiness / draining / PDB / maxUnavailable,独立 ops PR)。
 - **完整 ADR-0006 §11 物理拆分前验收**(Security Review / 拆分灰度回滚演练 → PR-076+)。
 
+
+### 16.72 Track G PR-077:Persisted Cancel Intent(跨 worker cancel,ADR-0006 §5.4)
+
+Track G 的 cancel 控制路径。今天 cancel 是**纯进程内**:`RunManager.cancel` set 本地 `abort_event` + `task.cancel()`,只在 cancel HTTP 命中持有 lease 的同一副本时生效;命中其他副本时 `_runs.get(run_id)` 返回 None → 静默 return False → 409,owner 副本永远看不到 cancel。PR-077 落地 ADR-0006 §5.4:**Gateway 持久化 cancel intent(PG 列,durable)+ 发 Redis notify(加速);worker 心跳循环每 10s 轮询 PG 列,看到 `cancel_requested=True` → set `abort_event` → 正常走既有 `interrupted` 终态 CAS 路径(PR-070);通知丢失时 worker 仍从 PG 列看到 intent(§5.4 bullet 4);cancel-vs-completion 仍由 PR-070 CAS 仲裁(§5.4 bullet 5)**。
+
+**规范来源**:ADR-0006 §5.4(line 226-233:Gateway 持久化 cancel intent + Redis/Queue 通知加速 + worker 每安全点检查 + 通知丢失仍从持久化看到 + CAS 仲裁 + 不可中断副作用)+ §4.4(line 177 Redis 持有 cancel 通知 / line 180 Redis 丢失后 PG reconcile)+ TM-027(threat-model:cancel 与 completion 竞争破坏终态;控制:terminal 不可逆 + CAS + 持久化 cancel intent——本 PR 交付第三个控制)。四个 Track G 兄弟 PR(070/071/072/073/075)的「不在范围」段一致把「persisted cancel intent → PR-077」作为延期接收方;本 PR 是那个接收方。
+
+**已确认 3 决策**:PG 列(durable)+ Redis notify(加速)/ 复用 `_run_lease_heartbeat` 每 10s 轮询 / 本地 fast-path(record 在本进程直接 set abort_event + task.cancel,零延迟)+ 跨副本 PG intent(record 不在本进程写 PG 列 + 发 Redis notify,owner 轮询处理)。
+
+**Schema**(migration `0018_run_cancel_intent`,链自 0017,expand-only):`runs` 加 3 列(mirrors `0017_run_row_version` 的 additive NOT NULL + server_default 模式):`cancel_requested BOOLEAN NOT NULL DEFAULT FALSE`(`server_default=sa.text("false")`,既有行回填 false)+ `cancel_action VARCHAR(16) NULL`(`interrupt`/`rollback`)+ `cancel_requested_at DateTime(timezone=True) NULL`。**无 CHECK**(状态值校验在应用层,同 `status` 列惯例)。`row_version` **不动**——cancel intent 写是独立的 `UPDATE runs SET cancel_requested=true WHERE run_id=:id AND status IN ('pending','running')`(非 CAS;intent 是信号不是终态,cancel-vs-completion 终态 CAS 仍由 PR-070 仲裁)。ORM `RunRow` 加对应 3 列。
+
+**RunStore 接口**(`runtime/runs/store/base.py` + `memory.py` + `persistence/run/sql.py`)新 2 方法:`request_cancel(run_id, *, action="interrupt") -> bool`(写 durable intent;active run → True + 写 3 列;terminal/unknown/repeat → False;非 CAS 信号写)+ `get_cancel_intent(run_id) -> {"cancel_requested": bool, "cancel_action": str|None} | None`(轻量读,worker 心跳轮询用,避免读整行)。
+
+**RunManager.cancel 改造**(`runtime/runs/manager.py:cancel`):本地 fast-path + 跨副本 PG intent。record 在本进程 → 既有行为不变(set abort_event + task.cancel + CAS `interrupted` 终态)+ **额外** `request_cancel`(防御:若本地 CAS 输给并发 completion,intent 仍 durable 供观测/reconciler 审计)。record 不在本进程(跨副本)→ `request_cancel` 持久化 PG intent + `_publish_cancel_notify` 发 Redis notify + `inc_run_cancel` + return True;已 terminal/unknown → 重读 `get_cancel_intent` 判断幂等(已 cancelled → True)/ 真 terminal → False。构造器加 `cancel_notifier: CancelNotifier | None = None`(`Callable[[str, str], Awaitable[None]]`;Redis notify publish 回调;None = dev/single-replica/Redis 不可用 → 靠 PG 轮询兜底)。
+
+**Redis notify publish**(`app/gateway/deps.py:_make_cancel_notifier`):`SET deerflow:run:cancel:{run_id} {action} EX 60`(60s TTL ≈ 2× 心跳间隔);lazily 连接 Redis(best-effort,失败 swallow——PG intent 是 durable 真相)。lifespan 在解析 Redis URL 后 wire `run_manager._cancel_notifier`。
+
+**Worker 心跳轮询**(`runtime/runs/worker.py:_run_lease_heartbeat`):既有心跳循环(每 `HEARTBEAT_INTERVAL_SECONDS`=10s renew lease)的 renew 成功后,加一次 PG cancel-intent 轮询(`run_store.get_cancel_intent(run_id)`);看到 `cancel_requested=True` → set `run_record.abort_event` + `run_record.abort_action`(从 PG 列)+ `run_record.task.cancel()` + break(心跳退出;astream safe-point 看到 abort_event 停止)。`NullLeaseStore` 场景心跳不启动 → 无轮询(dev/single-replica 无跨副本问题)。签名加 `run_record` + `run_store` 两可选参数;`run_agent` 调用处传 `run_record=record, run_store=getattr(run_manager, "_store", None)`。
+
+**延迟** ≤ 10s(心跳间隔)——ADR §5.4「Redis/Queue 通知作为加速」(bullet 2,软约束):Redis notify 命中时更快(worker listener 端,留 follow-up);丢通知时 ≤ 10s 由 PG 轮询兜底(bullet 4,硬约束)。本 PR 先交付 durable PG 轮询(满足 bullet 3+4 硬约束)+ notify publish 端;notify **listener 端**(worker 订阅 cancel key 即时 set abort_event,延迟 ≤1s)留 follow-up(bullet 2 软优化)。
+
+**测试**(18 新,全绿):store `TestStoreRequestCancel` 6(request_cancel active/pending/terminal/unknown/idempotent/rollback + get_cancel_intent)+ `TestCrossReplicaCancel` 5(跨副本 persist intent + return True / terminal False / unknown False / idempotent True / no-store False)+ `TestLocalFastPathCancel` 1(本地 fast-path abort_event + interrupted 终态)+ `TestHeartbeatCancelPoll` 2(PG seed cancel_requested → 心跳 tick set abort_event + action 传播 / NullLeaseStore 跳过)+ `TestCancelCompletionRace` 1(intent 不阻塞终态 completion;CAS 仲裁)+ `TestCancelNotifier` 3(notifier fires / failing notifier swallowed / no-notifier noop)。
+
+**ADR-0006 §5.4 验收**:bullet 1(Gateway 持久化 cancel intent——`request_cancel` PG 列)+ bullet 2(Redis/Queue 通知加速——`_publish_cancel_notify` publish;listener 留 follow-up)+ bullet 3(worker 每安全点检查——心跳轮询 + astream abort_event 既有 safe-point)+ bullet 4(通知丢失仍从持久化看到——PG 列 durable,PG 轮询兜底)+ bullet 5(cancel 与 completion 竞争 CAS——PR-070 终态 CAS 仲裁,intent 是信号不参与 CAS)。bullet 6(不可中断外部副作用)留 follow-up(语义边界独立设计)。
+
+
+### 16.73 Track G PR-077 不包含
+
+**严格不在本 PR 范围**:
+
+- **Redis cancel notify listener 端**(worker 订阅 `deerflow:run:cancel:{run_id}` key 即时 set abort_event,延迟 ≤1s;本 PR 只发 notify publish + PG 轮询兜底 ≤10s,满足 §5.4 bullet 3+4 硬约束;listener 是 bullet 2 软优化,follow-up)。
+- **9 态 rename**(`interrupted`→`cancelled` + 加 `cancelling` 瞬态;PR-070 §16.65:1968 显式 deferred——状态字符串硬编码在 SQL 聚合 + metric 标签 + Admin Console 过滤器;本 PR 保持 `interrupted` 终态 + intent 列)。
+- **resume 跨进程传播**(ADR §3.4 提及 resume;本 PR 只做 cancel,resume 是独立控制路径)。
+- **物理 Worker 拆分**(PR-076+,ADR §5.4 是 split 的 §3.4 control 前置条件之一;本 PR 的 persisted intent 是物理拆分前置)。
+- **不可中断外部副作用的人工处理**(§5.4 bullet 6;本 PR 的 abort_event 仍只控制 astream 循环,外部副作用语义边界独立设计)。
+- **cancel intent GC / TTL**(PG 列无限期保留;GC 留 follow-up)。
+
+**回滚边界**:`git revert` + `alembic downgrade 0017`。**3 列 expand-only**(server_default 保证既有行不崩);cancel 本地 fast-path 是 PR-070 既有行为(不变);跨副本 intent 是新增能力(删除零破坏);RunStore 2 新方法是 additive;心跳轮询是 `run_store=None` 时的 no-op。RunManager.cancel 退化到 PR-070 既有行为(record 不在本进程 → return False)。
+
+

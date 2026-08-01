@@ -141,6 +141,35 @@ def get_config() -> AppConfig:
         raise HTTPException(status_code=503, detail="Configuration not available") from exc
 
 
+def _make_cancel_notifier(redis_url: str | None):
+    """Build a Redis cancel-notify publisher (PR-077, ADR-0006 §5.4 bullet 2).
+
+    Returns ``None`` when there is no Redis URL (dev / single-replica). The
+    publisher lazily connects on first use and is best-effort — the durable PG
+    intent (``RunStore.request_cancel``) is the source of truth, so a publish
+    failure or Redis outage is swallowed (the owner's heartbeat PG poll
+    recovers within one interval).
+    """
+    if not redis_url:
+        return None
+
+    async def _notify(run_id: str, action: str) -> None:
+        try:
+            from redis.asyncio import Redis  # type: ignore[import-not-found]
+
+            client = Redis.from_url(redis_url)
+            try:
+                # 60s TTL ≈ 2× heartbeat interval (LEASE_TTL 30s) — the notify
+                # only needs to survive until the owner's next poll.
+                await client.set(f"deerflow:run:cancel:{run_id}", action, ex=60)
+            finally:
+                await client.aclose()
+        except Exception:  # noqa: BLE001 — best-effort acceleration
+            logger.debug("cancel notify publish failed for run %s (PG intent is durable)", run_id, exc_info=True)
+
+    return _notify
+
+
 @asynccontextmanager
 async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGenerator[None, None]:
     """Bootstrap and tear down all LangGraph runtime singletons.
@@ -209,7 +238,9 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
         app.state.run_events_config = run_events_config
         app.state.run_event_store = make_run_event_store(run_events_config)
 
-        # RunManager with store backing for persistence
+        # RunManager with store backing for persistence. The cancel_notifier
+        # (PR-077 Redis acceleration) is wired below once the Redis URL is
+        # resolved; it defaults to None here (dev / single-replica / no Redis).
         app.state.run_manager = RunManager(store=app.state.run_store)
         # PR-075: Dispatcher/Executor seam. In-process by default (a passthrough
         # to run_agent); a future remote dispatcher (PR-076+) publishes a dispatch
@@ -227,6 +258,9 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
         _prod = getattr(config, "production", None)
         _redis_cfg = getattr(_prod, "redis", None) if _prod is not None else None
         _redis_url = getattr(_redis_cfg, "url", None) if _redis_cfg is not None else None
+        # PR-077: wire the cancel-notify publisher now that the Redis URL is
+        # resolved. Best-effort acceleration on top of the durable PG intent.
+        app.state.run_manager._cancel_notifier = _make_cancel_notifier(_redis_url)  # noqa: SLF001
         recovered_runs = await app.state.run_manager.reconcile_orphaned_inflight_runs(
             error="Gateway restarted before this run reached a durable final state.",
             before=now_iso(),
