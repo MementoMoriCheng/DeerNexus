@@ -335,14 +335,14 @@ Lease 释放失败不能把已提交 terminal Run 重新执行。Reconciler 先�
 
 - [ ] Router 不直接调用 Agent 内部对象
 - [ ] 内嵌执行使用 RunEnvelope 与稳定 contracts
-- [ ] Profile S / H 声明和生产配置一致
+- [x] Profile S / H 声明和生产配置一致（PR-074：`check_deployment_profile` 静态校验 Profile H 准入需 `profile_h_evidence` + `profile_h_soak_hours>=24` + `profile_h_fault_injection_evidence`;`probe_profile_h_readiness` LIVE 校验 Redis 已配置 + 声明完备;Profile S/H/W 三分支 + replica 声明一致性全覆盖）
 - [ ] 拆分触发指标可从容量和观测文档追踪
 
 ### 物理拆分前
 
 - [ ] §3 全部前置条件满足
-- [ ] 至少一次生产等价故障注入
-- [ ] 24 小时目标负载 Soak 通过
+- [ ] 至少一次生产等价故障注入（PR-074：门禁机制 + fakeredis fault-injection 套件已就位——5 类 ADR 故障场景可回归;**真实生产等价执行**留 release pipeline / runbook）
+- [ ] 24 小时目标负载 Soak 通过（PR-074：`profile_h_soak_hours>=24` 声明门禁已就位;**真实 24h soak 执行**留 release pipeline）
 - [ ] Security Review 覆盖身份、网络、Secret 和 Queue
 - [ ] 数据库与消息投递事务间隙可恢复
 - [ ] 至少一次拆分灰度回滚演练

@@ -18,6 +18,13 @@ class DeploymentProfileConfig(BaseModel):
     worker_replicas: int = Field(default=0, ge=0)
     ha_waiver_id: str | None = None
     profile_h_evidence: str | None = None
+    #: PR-074 (ADR-0006 §3.5/§11): operator-declared completed HA soak hours.
+    #: Profile H admission requires >= 24h; the real soak runs in the release
+    #: pipeline / runbook — the doctor only verifies the declaration is complete.
+    profile_h_soak_hours: int = Field(default=0, ge=0)
+    #: PR-074 (ADR-0006 §11): link to the production-equivalent fault-injection
+    #: drill record (runbook URL / fault-test report). Required for Profile H.
+    profile_h_fault_injection_evidence: str | None = None
     profile_w_evidence: str | None = None
     profile_w_rollback_evidence: str | None = None
     profile_w_soak_hours: int = Field(default=0, ge=0)

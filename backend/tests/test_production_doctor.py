@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.doctor.models import DoctorCheckResult, DoctorReport, DoctorStatus
-from app.doctor.production import DEFERRED_LIVE_CHECKS, STATIC_CHECKS, run_production_checks
+from app.doctor.production import DEFERRED_LIVE_CHECKS, STATIC_CHECKS, _live_probe_registry, run_production_checks
 from deerflow.config.app_config import AppConfig
 from deerflow.config.production_config import ProductionConfig
 
@@ -38,6 +38,9 @@ def _production_data() -> dict:
                 "profile": "H",
                 "gateway_replicas": 2,
                 "profile_h_evidence": "evidence://profile-h-validation",
+                # PR-074: Profile H admission requires soak + fault-injection evidence.
+                "profile_h_soak_hours": 24,
+                "profile_h_fault_injection_evidence": "runbook://profile-h-fault-drill",
             },
             "oidc": {
                 "issuer": "https://identity.example.com",
@@ -133,6 +136,56 @@ def test_deferred_live_checks_have_track_specific_remediation():
         # "Blocked on" — the marker that distinguishes PR-064's specific
         # blocker from a generic stub.
         assert "Blocked on" in check.remediation, f"{check_id} remediation must explain the specific blocker (expected 'Blocked on …')"
+
+
+def test_live_probe_registry_includes_profile_h_readiness():
+    """PR-074: profile_h.ha_readiness must be a registered live probe so the
+    doctor enforces Profile H runtime HA readiness (Redis configured + soak +
+    fault-injection evidence declarations complete) alongside the other probes.
+    """
+    registry = _live_probe_registry()
+    check_ids = {entry[1] for entry in registry}
+    assert "profile_h.ha_readiness" in check_ids
+    # Sanity: the release_ref + redis probes (the Track G + E predecessors)
+    # are still registered — no accidental removal.
+    assert "agent.release_ref_enforcement" in check_ids
+    assert "redis.connectivity" in check_ids
+
+
+def test_deployment_profile_h_tightened_admission():
+    """PR-074 (ADR-0006 §3.5/§11): Profile H PASS now requires soak_hours>=24
+    AND fault-injection evidence, not just profile_h_evidence. Each missing
+    field must surface a FAIL naming exactly what is missing.
+    """
+
+    def _h_config(**deployment_overrides):
+        base = {
+            "profile": "H",
+            "gateway_replicas": 2,
+            "profile_h_evidence": "doc://h",
+            "profile_h_soak_hours": 24,
+            "profile_h_fault_injection_evidence": "runbook://drill",
+        }
+        base.update(deployment_overrides)
+        return _config(lambda data: data["production"].update({"deployment": base}))
+
+    # Complete → the static check passes (deferred probes still FAIL, but the
+    # deployment.profile_consistency check itself is PASS).
+    report = _run_checks(_h_config())
+    profile_check = next(c for c in report.checks if c.check_id == "deployment.profile_consistency")
+    assert profile_check.status is DoctorStatus.PASS
+
+    # Missing soak → FAIL names soak.
+    report = _run_checks(_h_config(profile_h_soak_hours=12))
+    profile_check = next(c for c in report.checks if c.check_id == "deployment.profile_consistency")
+    assert profile_check.status is DoctorStatus.FAIL
+    assert "soak" in profile_check.message.lower()
+
+    # Missing fault evidence → FAIL names fault-injection.
+    report = _run_checks(_h_config(profile_h_fault_injection_evidence=None))
+    profile_check = next(c for c in report.checks if c.check_id == "deployment.profile_consistency")
+    assert profile_check.status is DoctorStatus.FAIL
+    assert "fault" in profile_check.message.lower()
 
 
 def test_host_bash_blocks_production():

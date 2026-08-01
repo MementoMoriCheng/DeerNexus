@@ -206,10 +206,29 @@ def check_deployment_profile(config: AppConfig) -> DoctorCheckResult:
             status = DoctorStatus.WARN
             message = "Profile S is explicit; the registered non-HA waiver must remain valid."
             remediation = "Keep the waiver current and do not claim high availability."
-    elif deployment.profile == "H" and deployment.gateway_profile is None and deployment.gateway_replicas >= 2 and deployment.worker_replicas == 0 and deployment.profile_h_evidence:
-        status = DoctorStatus.PASS
-        message = "Profile H replicas and validation evidence are declared."
-        remediation = None
+    elif deployment.profile == "H" and deployment.gateway_profile is None and deployment.gateway_replicas >= 2 and deployment.worker_replicas == 0:
+        # PR-074 (ADR-0006 §3.5/§11): Profile H admission requires the HA
+        # topology evidence + a completed >=24h soak declaration + a
+        # production-equivalent fault-injection drill record. The real soak
+        # runs in the release pipeline; this check only verifies the operator
+        # declaration is complete. Any missing field → FAIL (stay Profile S).
+        missing: list[str] = []
+        if not deployment.profile_h_evidence:
+            missing.append("profile_h_evidence")
+        if deployment.profile_h_soak_hours < 24:
+            missing.append("profile_h_soak_hours (>=24)")
+        if not deployment.profile_h_fault_injection_evidence:
+            missing.append("profile_h_fault_injection_evidence")
+        if missing:
+            status = DoctorStatus.FAIL
+            message = f"Profile H declared but missing admission evidence: {', '.join(missing)}."
+            remediation = (
+                "Complete the 24h HA soak + production-equivalent fault-injection drill, then set the missing fields under production.deployment in config.yaml. Profile H cannot enter production admission without them (ADR-0006 §3.5/§11)."
+            )
+        else:
+            status = DoctorStatus.PASS
+            message = "Profile H replicas, HA evidence, soak hours, and fault-injection evidence are all declared."
+            remediation = None
     elif deployment.profile == "W":
         gateway_s_valid = deployment.gateway_profile == "S" and deployment.gateway_replicas == 1 and bool(deployment.ha_waiver_id)
         gateway_h_valid = deployment.gateway_profile == "H" and deployment.gateway_replicas >= 2 and bool(deployment.profile_h_evidence)
@@ -383,6 +402,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         probe_gateway_security,
         probe_metrics_presence,
         probe_postgres_connectivity,
+        probe_profile_h_readiness,
         probe_rate_limit_retry_after,
         probe_redis_connectivity,
         probe_release_ref_enforcement,
@@ -401,6 +421,11 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         # ownership/lease layer landed. WARN-skips when no URL is configured
         # (dev / single-replica); PINGs + verifies Streams when one is.
         (probe_redis_connectivity, "redis.connectivity", "redis", "config.yaml:production.redis"),
+        # PR-074: Profile H runtime HA-readiness. WARN-skips for non-H
+        # profiles; for profile=H verifies Redis is configured (the
+        # ownership/lease + SSE-recovery + reconciler hard dependency) and
+        # the soak + fault-injection evidence declarations are complete.
+        (probe_profile_h_readiness, "profile_h.ha_readiness", "deployment", "config.yaml:production.deployment"),
     )
 
 

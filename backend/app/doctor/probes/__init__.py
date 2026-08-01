@@ -31,8 +31,10 @@ from app.doctor.probes.deployment_evidence_probe import probe_deployment_evidenc
 from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import probe_metrics_presence
 from app.doctor.probes.postgres_probe import probe_postgres_connectivity
+from app.doctor.probes.profile_h_probe import probe_profile_h_readiness
 from app.doctor.probes.rate_limit_probe import probe_rate_limit_retry_after
 from app.doctor.probes.redis_probe import probe_redis_connectivity
+from app.doctor.probes.release_ref_probe import probe_release_ref_enforcement
 
 __all__ = [
     "probe_audit_outbox",
@@ -41,6 +43,8 @@ __all__ = [
     "probe_gateway_security",
     "probe_metrics_presence",
     "probe_postgres_connectivity",
+    "probe_profile_h_readiness",
     "probe_rate_limit_retry_after",
     "probe_redis_connectivity",
+    "probe_release_ref_enforcement",
 ]

@@ -27,6 +27,7 @@ from app.doctor.probes.deployment_evidence_probe import probe_deployment_evidenc
 from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import EXPECTED_METRIC_NAMES, probe_metrics_presence
 from app.doctor.probes.postgres_probe import _parse_major_version, probe_postgres_connectivity
+from app.doctor.probes.profile_h_probe import probe_profile_h_readiness
 from app.doctor.probes.rate_limit_probe import probe_rate_limit_retry_after
 from app.doctor.probes.redis_probe import probe_redis_connectivity
 from app.doctor.probes.release_ref_probe import probe_release_ref_enforcement
@@ -847,3 +848,109 @@ class TestReleaseRefProbe:
         result = await probe_release_ref_enforcement(config)
         assert result.status is DoctorStatus.FAIL
         assert "could not query" in result.message.lower() or "could not reach" in result.message.lower()
+
+
+# ===========================================================================
+# profile_h_probe (PR-074)
+# ===========================================================================
+
+#: The 5 PR-071/073 lease/ownership/StreamBridge metrics PR-074 added to the
+#: EXPECTED_METRIC_NAMES registry — these are the HA signals an operator
+#: watches during the 24h soak.
+_PROFILE_H_METRICS = (
+    "run_ownership_acquire_total",
+    "run_ownership_conflict_total",
+    "run_lease_expired_total",
+    "run_heartbeat_failure_total",
+    "stream_bridge_redis_error_total",
+)
+
+
+class TestProfileHMetricsRegistration:
+    def test_profile_h_metrics_in_expected_registry(self):
+        """The 5 lease/stream metrics must be in EXPECTED_METRIC_NAMES so the
+        metrics.presence probe verifies they are wired in production."""
+        for name in _PROFILE_H_METRICS:
+            assert name in EXPECTED_METRIC_NAMES, f"{name} missing from EXPECTED_METRIC_NAMES"
+
+
+class TestProfileHReadinessProbe:
+    @pytest.mark.anyio
+    async def test_non_h_profile_warns_skip(self):
+        config = _base_config()  # default profile=S
+        result = await probe_profile_h_readiness(config)
+        assert result.status is DoctorStatus.WARN
+        assert "skipped" in result.message.lower()
+        assert result.check_id == "profile_h.ha_readiness"
+
+    @pytest.mark.anyio
+    async def test_profile_h_without_redis_fails(self):
+        config = _base_config(
+            production={
+                "deployment": {
+                    "profile": "H",
+                    "gateway_replicas": 2,
+                    "profile_h_evidence": "doc://h",
+                    "profile_h_soak_hours": 24,
+                    "profile_h_fault_injection_evidence": "runbook://drill",
+                },
+            },
+        )
+        # No production.redis.url configured.
+        result = await probe_profile_h_readiness(config)
+        assert result.status is DoctorStatus.FAIL
+        assert "redis.url" in result.message.lower() or "redis" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_profile_h_with_redis_but_soak_below_24_fails(self):
+        config = _base_config(
+            production={
+                "deployment": {
+                    "profile": "H",
+                    "gateway_replicas": 2,
+                    "profile_h_evidence": "doc://h",
+                    "profile_h_soak_hours": 12,
+                    "profile_h_fault_injection_evidence": "runbook://drill",
+                },
+                "redis": {"url": "redis://localhost:6379/0"},
+            },
+        )
+        result = await probe_profile_h_readiness(config)
+        assert result.status is DoctorStatus.FAIL
+        assert "soak" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_profile_h_with_redis_but_no_fault_evidence_fails(self):
+        config = _base_config(
+            production={
+                "deployment": {
+                    "profile": "H",
+                    "gateway_replicas": 2,
+                    "profile_h_evidence": "doc://h",
+                    "profile_h_soak_hours": 24,
+                    "profile_h_fault_injection_evidence": None,
+                },
+                "redis": {"url": "redis://localhost:6379/0"},
+            },
+        )
+        result = await probe_profile_h_readiness(config)
+        assert result.status is DoctorStatus.FAIL
+        assert "fault" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_profile_h_complete_passes(self):
+        config = _base_config(
+            production={
+                "deployment": {
+                    "profile": "H",
+                    "gateway_replicas": 2,
+                    "profile_h_evidence": "doc://h",
+                    "profile_h_soak_hours": 24,
+                    "profile_h_fault_injection_evidence": "runbook://drill",
+                },
+                "redis": {"url": "redis://localhost:6379/0"},
+            },
+        )
+        result = await probe_profile_h_readiness(config)
+        assert result.status is DoctorStatus.PASS
+        assert "redis configured" in result.message.lower()

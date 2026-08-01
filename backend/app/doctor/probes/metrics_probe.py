@@ -66,6 +66,14 @@ EXPECTED_METRIC_NAMES: tuple[str, ...] = (
     "run_reconcile_total",
     "run_reconcile_backlog",
     "worker_active",
+    # PR-071/073 ownership/lease/StreamBridge (Profile H HA observability —
+    # these are the signals an operator watches during the 24h soak to confirm
+    # single-owner correctness + lease renewal + cross-replica SSE health).
+    "run_ownership_acquire_total",
+    "run_ownership_conflict_total",
+    "run_lease_expired_total",
+    "run_heartbeat_failure_total",
+    "stream_bridge_redis_error_total",
     # §4.4 Model / Tool / MCP
     "model_calls_total",
     "model_call_duration_seconds",

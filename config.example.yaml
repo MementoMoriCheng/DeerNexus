@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 22
+config_version: 23
 
 # ============================================================================
 # Logging
@@ -1250,6 +1250,12 @@ production:
     worker_replicas: 0
     ha_waiver_id: null
     profile_h_evidence: null
+    # Profile H (HA gateway, replicas>=2) admission requires a completed 24h
+    # HA soak + a production-equivalent fault-injection drill record (ADR-0006
+    # §3.5/§11). The real soak runs in the release pipeline; the doctor only
+    # verifies the operator declaration is complete. Leave 0/null for Profile S.
+    profile_h_soak_hours: 0
+    profile_h_fault_injection_evidence: null
     profile_w_evidence: null
     profile_w_rollback_evidence: null
     profile_w_soak_hours: 0

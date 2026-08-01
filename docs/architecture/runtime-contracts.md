@@ -2109,3 +2109,50 @@ Track G PR-075 落地 ADR-0006 **§8 Phase 0**(「同进程接口化」):提取 
 **不在本 PR 范围**:物理 Worker / dispatch outbox / remote claim / worker identity / shadow / controlled rollout → PR-076+(需 ADR §2.2 触发)/ persisted cross-worker cancel intent → PR-077 / 完整 RunEnvelope 组装(release_ref/policy_snapshot/integrity)→ PR-076+ / Profile H 24h soak → PR-074。
 
 **回滚边界**:`git revert`。**零 schema migration、零 DB 列、零 Redis key**。配置门控(`type=in-process` 默认);`InProcessExecutor.execute` 逐字搬迁原 `create_task(run_agent)`;`record.task` 语义/cancel/drain/lease lifecycle 全不变。**回归面**:dispatch seam 是所有 run 必经之路——**必须跑完整后端测试套件**(PR-073 教训)。
+
+
+### 16.70 Track G PR-074:Profile H 门禁(24h soak 门禁机制 + fault-injection 测试套件)
+
+Track G PR-074 落地 ADR-0006 **§2.1/§3.5/§11** 的 Profile H 准入门禁:让 doctor 在声明 `profile: H`(HA gateway,`replicas>=2`)时强制校验「24h soak 已声明 + 生产等价故障注入证据已记录 + Redis 已配置 + HA 关键 metric 已接线」,并把 ADR §11「至少一次生产等价故障注入」降级为**可回归的 fakeredis 故障注入测试套件**。**真实 24h soak 由 release pipeline 执行**(ci-cd.md:584 已预留 checklist);PR 交付门禁机制 + 可重复证据;失败保持 Profile S(ADR §2.1)。
+
+**规范来源**:`pr-split-guide.md §12`(line 531「Doctor、部署配置、故障注入和 24 小时 Soak;失败保持 Profile S」)+ ADR-0006 §2.1(line 51 Profile H = 已通过 lease/cancel/reconcile/rolling 验收)+ §3.5(line 126 完成至少 24 小时目标负载 Soak)+ §11(line 344/345 至少一次生产等价故障注入 + 24 小时目标负载 Soak 通过)。四个 Track G 兄弟 PR(PR-070/071/072/073)的「不在范围」段一致把「Profile H 24h soak/故障注入 → PR-074」作为延期接收方;本 PR 是那个接收方。
+
+**已确认 2 决策**:soak 落点 = 门禁机制(config + doctor + fault-injection 测试套件,真实 24h 留 release pipeline)/ metrics = 纳入 5 个 lease/stream metrics 到 `EXPECTED_METRIC_NAMES`。
+
+**Config**(`production_config.py:DeploymentProfileConfig`)加 2 字段(mirrors `profile_w_soak_hours` 模式):`profile_h_soak_hours: int = Field(default=0, ge=0)`(运维声明的已完成 soak 时数)+ `profile_h_fault_injection_evidence: str | None = None`(故障注入演练记录链接);`config.example.yaml` `config_version` 22→23 + deployment 块补两字段 + 注释。默认值保证旧配置加载不崩。
+
+**Doctor 静态检查收紧**(`production.py:check_deployment_profile`):Profile H PASS 条件从 `gateway_replicas>=2 and worker_replicas==0 and profile_h_evidence` 收紧为再加 `profile_h_soak_hours>=24 and profile_h_fault_injection_evidence`;缺任一项 → FAIL(message 列出具体缺失字段 + remediation 指向 ADR §3.5/§11)。Profile S/W 分支不变。
+
+**Doctor LIVE probe**(新 `app/doctor/probes/profile_h_probe.py`):`probe_profile_h_readiness(config)` —— `profile != "H"` → **WARN-skip**(mirrors `redis_probe` WARN-skip 惯例);`profile == "H"` → 校验 `production.redis.url` 已配置(ownership/lease/SSE 的硬依赖,无 Redis 的 Profile H 是误导性声明 → FAIL)+ `profile_h_soak_hours>=24` + `profile_h_fault_injection_evidence` 非空(声明完备性,与静态检查冗余但 LIVE 报告更 actionable);完备 → PASS。`_CHECK_ID = "profile_h.ha_readiness"`,注册到 `_live_probe_registry()`(第 10 个 probe)。**顺带修复**:`__init__.py` 补 `probe_release_ref_enforcement` 导出(此前 `_live_probe_registry` 导入它在干净 HEAD 上 ImportError——潜在 bug,本 PR 一并修)。
+
+**Metrics 注册**(`metrics_probe.py:EXPECTED_METRIC_NAMES`):§4.3 Run core 段补 5 个 PR-071/073 已定义但未注册的 metric(`run_ownership_acquire_total`/`run_ownership_conflict_total`/`run_lease_expired_total`/`run_heartbeat_failure_total`/`stream_bridge_redis_error_total`)。这些是 Profile H soak 期间判定 HA 健康的关键信号;纳入后 `metrics.presence` probe 在生产校验它们已接线。
+
+**Fault-injection 测试套件**(新 `tests/test_profile_h_fault_injection.py`,8 测 / 1 real_redis skip):用 fakeredis 编排 5 类 ADR-0006 故障场景(每场景一个 TestXxx 类,镜像 `test_run_ownership.py` 的 fakeredis fixture 模式):
+1. **TM-026 单一 owner**:两个 RedisLeaseStore 实例(共享 FakeServer = 两副本)对同 (org, run) 并发 claim → 恰一个 `acquired=True`(三竞争者 gather)
+2. **Lease 过期 reclaim**:claim → 构造过期 ClaimRecord 断言 `is_expired` True → release 后第二 worker reclaim(token 不同)
+3. **TM-029 Redis 丢失后 PG 终态权威**:Redis flushdb 后 reconciler 不 revive PG-terminal run(error 状态跳过);正向 case:non-terminal orphan 被 reclaim 到 error
+4. **跨副本 SSE Last-Event-ID resume**:两 RedisStreamBridge(共享 server)publish 3 事件 → drain 捕获 last_event_id → 再 publish 1 + end → resume 严格在其后(只收 m2/m3/m4 + END)
+5. **Reconciler 收敛孤儿 run**:non-terminal run holder lease 过期(flushdb)→ reconciler 驱动到 error(TM-028 不重放)→ 新 worker 可重新 claim lease key
+
++ 1 `@pytest.mark.real_redis` 类:跨副本 SSE 对真实 Redis(mirrors PR-073 real_redis marker,gnex-redis,无 Redis 时 skip)。helper `_drain` 逐字镜像 `test_redis_stream_bridge._drain`(heartbeats 排除,END 停止,agen.aclose 清理)。
+
+**Doctor 测试扩展**:`test_doctor_probes.py` 加 `TestProfileHMetricsRegistration`(5 metric 在 EXPECTED_METRIC_NAMES)+ `TestProfileHReadinessProbe`(profile=S WARN-skip / profile=H 无 Redis FAIL / soak<24 FAIL / 无 fault evidence FAIL / 完备 PASS);`test_production_doctor.py` 加 `test_live_probe_registry_includes_profile_h_readiness` + `test_deployment_profile_h_tightened_admission`(缺 soak→FAIL / 缺 fault→FAIL / 完备→PASS)+ `_config()` fixture 补两新字段(否则收紧的静态检查 FAIL)。
+
+**ADR-0006 §11 验收**:勾「Profile S / H 声明和生产配置一致」(doctor 静态+LIVE 双校验锁定);§11 物理拆分前的 24h soak + 故障注入两行注明「门禁机制 PR-074 交付,执行留 release pipeline」。ci-cd.md:584「Profile H 条件门禁」注明门禁已就位。
+
+**不在本 PR 范围**:真实 24h soak 执行(release pipeline / runbook)/ persisted cancel intent(PR-077)/ 物理 Worker 拆分 + Profile W 准入(PR-076+,Profile W 已有 `profile_w_soak_hours`)/ soak 自动化 CI workflow(nightly-HA job 独立 infra PR)/ Helm + PodDisruptionBudget 模板(ci-cd.md §12.2 部署要求独立 ops PR)。
+
+**回滚边界**:`git revert`。**零 schema migration、零 DB 列、零 Redis key**。config 加 2 字段(默认值 `profile_h_soak_hours=0`/`profile_h_fault_injection_evidence=None` 保证旧 `profile: H` 配置加载不崩,只是 doctor 重新 FAIL 直到回填证据);1 新 LIVE probe + EXPECTED_METRIC_NAMES 加 5 名 + 1 fault-injection 测试文件 + doctor 测试扩展。
+
+
+### 16.71 Track G PR-074 不包含
+
+**严格不在本 PR 范围**:
+
+- **真实 24h soak 执行**(release pipeline / runbook 执行;PR 交付门禁机制 + fakeredis 故障证据,真实 soak 需目标负载环境 + 24h 观测窗口)。
+- **persisted cancel intent**(PR-077,ADR-0006 §5.4 跨 worker cancel;依赖 PR-071/073 已就位)。
+- **物理 Worker 拆分 / Profile W 准入**(PR-076+,ADR-0006 §8 Phase 1-3;Profile W 已有 `profile_w_soak_hours` 模式,本 PR 不动)。
+- **soak 自动化 CI workflow**(nightly-HA job 是独立 infra PR;本 PR 的 fault-injection 套件是 hermetic 子集)。
+- **Helm / PodDisruptionBudget 模板**(ci-cd.md §12.2 Profile H 部署要求:Rolling Update / readiness / draining / PDB / maxUnavailable,独立 ops PR)。
+- **完整 ADR-0006 §11 物理拆分前验收**(Security Review / 拆分灰度回滚演练 → PR-076+)。
+
