@@ -225,12 +225,12 @@ Lease 释放失败不能把已提交 terminal Run 重新执行。Reconciler 先�
 
 ### 5.4 Cancel
 
-- Gateway 持久化 cancel intent；
-- 发送 Redis / Queue 通知作为加速；
-- Worker 每个安全点检查 cancel；
-- 通知丢失时 Worker 仍从持久化状态看到 intent；
-- cancel 与 completion 竞争由 CAS 决定；
-- 不可中断外部副作用必须进入明确结果或人工处理。
+- Gateway 持久化 cancel intent；（PR-077：`runs` 表 `cancel_requested`/`cancel_action`/`cancel_requested_at` 三列;`RunStore.request_cancel` 写 durable intent）
+- 发送 Redis / Queue 通知作为加速；（PR-077：`_publish_cancel_notify` → `SET deerflow:run:cancel:{run_id} EX 60`;**publish 端已交付,listener 端留 follow-up**）
+- Worker 每个安全点检查 cancel；（PR-077：`_run_lease_heartbeat` 每 `HEARTBEAT_INTERVAL_SECONDS`(10s)轮询 PG `get_cancel_intent` + astream 循环既有 `abort_event` safe-point）
+- 通知丢失时 Worker 仍从持久化状态看到 intent；（PR-077：PG 列 durable,心跳轮询兜底 ≤10s）
+- cancel 与 completion 竞争由 CAS 决定；（PR-070：终态 `update_status`/`update_run_completion` CAS;intent 是信号不参与 CAS——`request_cancel` 是非 CAS 写）
+- 不可中断外部副作用必须进入明确结果或人工处理。（留 follow-up:语义边界独立设计）
 
 ---
 

@@ -143,6 +143,8 @@ async def _run_lease_heartbeat(
     org_id: str,
     run_id: str,
     stop_event: asyncio.Event,
+    run_record: Any = None,
+    run_store: Any = None,
 ) -> None:
     """Background loop that renews the run's lease until ``stop_event`` is set.
 
@@ -151,6 +153,13 @@ async def _run_lease_heartbeat(
     this worker, but ownership has moved. PG terminal state (PR-070 CAS) is the
     authoritative fence, so a stale-owner overwrite cannot corrupt a committed
     terminal run; the heartbeat miss is observable for a Reconciler (PR-072).
+
+    PR-077: when ``run_record`` + ``run_store`` are supplied, each tick also
+    polls the persisted cancel intent (ADR-0006 §5.4 bullet 3+4). If a cancel
+    was requested on another replica, the durable PG column is the fallback
+    when the Redis notify is lost; this poll sets the local ``abort_event`` so
+    the astream safe-point loop notices and stops the run within one heartbeat
+    interval (≤ ``HEARTBEAT_INTERVAL_SECONDS``).
     """
     while not stop_event.is_set():
         try:
@@ -180,6 +189,22 @@ async def _run_lease_heartbeat(
             inc_run_heartbeat_failure()
             logger.warning("Run %s lease renewal raised", run_id, exc_info=True)
             break
+        # PR-077: poll the persisted cancel intent (durable fallback when the
+        # Redis notify is lost). Only meaningful when a run_store is wired
+        # (multi-replica / Profile H); the NullLeaseStore path passes None.
+        if run_store is not None and run_record is not None and not run_record.abort_event.is_set():
+            try:
+                cancel_intent = await run_store.get_cancel_intent(run_id)
+            except Exception:  # noqa: BLE001 — PG read failure is best-effort
+                logger.debug("Run %s cancel-intent poll failed", run_id, exc_info=True)
+                cancel_intent = None
+            if cancel_intent is not None and cancel_intent.get("cancel_requested"):
+                run_record.abort_action = cancel_intent.get("cancel_action") or "interrupt"
+                run_record.abort_event.set()
+                if run_record.task is not None and not run_record.task.done():
+                    run_record.task.cancel()
+                logger.info("Run %s cancel intent detected via PG poll (action=%s)", run_id, run_record.abort_action)
+                break  # heartbeat done; the astream safe-point sees abort_event
 
 
 def _agent_factory_supports_app_config(agent_factory: Any) -> bool:
@@ -309,7 +334,17 @@ async def run_agent(
     _heartbeat_task: asyncio.Task[None] | None = None
     if not isinstance(lease_store, NullLeaseStore):
         _heartbeat_task = asyncio.create_task(
-            _run_lease_heartbeat(lease_store, lease_record, org_id=org_id_for_lease, run_id=run_id, stop_event=_lease_stop),
+            _run_lease_heartbeat(
+                lease_store,
+                lease_record,
+                org_id=org_id_for_lease,
+                run_id=run_id,
+                stop_event=_lease_stop,
+                # PR-077: pass the in-memory RunRecord (so the poll can set
+                # abort_event) + the run_store (the durable PG intent source).
+                run_record=record,
+                run_store=getattr(run_manager, "_store", None),
+            ),
             name=f"lease-heartbeat-{run_id}",
         )
 

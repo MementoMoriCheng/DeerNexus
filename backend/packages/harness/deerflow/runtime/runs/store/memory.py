@@ -77,6 +77,10 @@ class MemoryRunStore(RunStore):
             # update_status bump) so the CAS contract holds for tests using the
             # memory store.
             "row_version": existing.get("row_version", 1) if existing is not None else 1,
+            # PR-077 persisted cancel intent defaults. Preserved across retry put.
+            "cancel_requested": existing.get("cancel_requested", False) if existing is not None else False,
+            "cancel_action": existing.get("cancel_action") if existing is not None else None,
+            "cancel_requested_at": existing.get("cancel_requested_at") if existing is not None else None,
             **release_fields,
         }
 
@@ -154,6 +158,34 @@ class MemoryRunStore(RunStore):
                 if value is not None:
                     self._runs[run_id][key] = value
             self._runs[run_id]["updated_at"] = datetime.now(UTC).isoformat()
+
+    async def request_cancel(self, run_id, *, action: str = "interrupt") -> bool:
+        # PR-077: persist the durable cancel intent. Idempotent on an active run;
+        # False for terminal / unknown. Signal write (no CAS — terminal-state
+        # CAS in update_status / update_run_completion arbitrates the race).
+        # Returns False for a repeat on an already-cancelled run (mirrors the
+        # SQL store's rowcount==0 on ``WHERE cancel_requested=false``); the
+        # manager treats already-cancelled as an idempotent True via get_cancel_intent.
+        run = self._runs.get(run_id)
+        if run is None:
+            return False
+        if run["status"] not in ("pending", "running"):
+            return False
+        if run.get("cancel_requested"):
+            return False  # already cancelled — no row changed (matches SQL store)
+        run["cancel_requested"] = True
+        run["cancel_action"] = action
+        run["cancel_requested_at"] = datetime.now(UTC).isoformat()
+        return True
+
+    async def get_cancel_intent(self, run_id) -> dict[str, Any] | None:
+        run = self._runs.get(run_id)
+        if run is None:
+            return None
+        return {
+            "cancel_requested": run.get("cancel_requested", False),
+            "cancel_action": run.get("cancel_action"),
+        }
 
     async def list_pending(self, *, before=None):
         now = before or datetime.now(UTC).isoformat()

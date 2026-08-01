@@ -68,6 +68,12 @@ class _CustomRunStoreWithoutProgress(RunStore):
     async def list_runs_by_org(self, *args, **kwargs):
         return [], False
 
+    async def request_cancel(self, *args, **kwargs):  # PR-077
+        return False
+
+    async def get_cancel_intent(self, *args, **kwargs):  # PR-077
+        return None
+
 
 @pytest.mark.anyio
 async def test_update_run_progress_defaults_to_noop_for_custom_store():

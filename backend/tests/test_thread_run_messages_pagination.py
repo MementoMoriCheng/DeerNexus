@@ -208,14 +208,22 @@ def test_get_run_hydrates_store_only_run():
     assert body["status"] == "running"
 
 
-def test_cancel_store_only_run_returns_409():
-    """Store-only runs are readable but not cancellable by this worker."""
-    app = _make_app(run_manager=_make_store_only_run_manager())
+def test_cancel_store_only_run_persists_intent():
+    """PR-077: a store-only run (owned on another replica) is now cancellable
+    via the persisted cancel intent. The cancel HTTP returns 202 (accepted) and
+    the durable intent is written so the owning worker's heartbeat poll sees it.
+    Pre-PR-077 this returned 409 (cancel was purely in-process); cross-replica
+    cancel now persists the intent in PG (ADR-0006 §5.4)."""
+    mgr = _make_store_only_run_manager()
+    app = _make_app(run_manager=mgr)
     with TestClient(app) as client:
         response = client.post("/api/threads/thread-store/runs/store-only-run/cancel")
 
-    assert response.status_code == 409
-    assert "not active on this worker" in response.json()["detail"]
+    assert response.status_code == 202
+    # The durable intent was persisted for the owning worker to poll.
+    intent = asyncio.run(mgr._store.get_cancel_intent("store-only-run"))  # noqa: SLF001
+    assert intent is not None
+    assert intent["cancel_requested"] is True
 
 
 def test_join_store_only_run_returns_409():

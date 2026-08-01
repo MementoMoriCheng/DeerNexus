@@ -28,7 +28,7 @@ from deerflow.persistence.bootstrap import bootstrap_schema
 pytestmark = pytest.mark.asyncio
 
 
-HEAD = "0017_run_row_version"
+HEAD = "0018_run_cancel_intent"
 
 
 def _url(tmp_path: Path) -> str:

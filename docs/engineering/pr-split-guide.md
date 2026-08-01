@@ -535,6 +535,10 @@ Doctor、部署配置、故障注入和 24 小时 Soak；失败保持 Profile S�
 
 只做同进程接口化，不立即远程 Worker。
 
+#### PR-077 Persisted Cancel Intent
+
+ADR-0006 §5.4 跨 worker cancel：Gateway 持久化 cancel intent（PG 列，durable）+ Redis notify（加速）；worker 心跳轮询 PG 列，看到 intent → set abort_event → 走既有 `interrupted` 终态 CAS（PR-070）。拆分自 PR-073（StreamBridge 是读路径，cancel 是控制路径——独立子系统）。
+
 #### PR-076+ 物理 Worker
 
 只有 ADR-0006 触发和前置条件满足后创建独立计划：
@@ -542,7 +546,7 @@ Doctor、部署配置、故障注入和 24 小时 Soak；失败保持 Profile S�
 - Dispatch outbox / queue；
 - Worker identity；
 - remote claim；
-- cancel；
+- ~~cancel~~（→ PR-077，已拆出）；
 - observability；
 - shadow；
 - controlled rollout；

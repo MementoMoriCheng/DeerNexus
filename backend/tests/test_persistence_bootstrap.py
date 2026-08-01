@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0017_run_row_version"
+HEAD = "0018_run_cancel_intent"
 BASELINE = "0001_baseline"
 
 

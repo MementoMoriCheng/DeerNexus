@@ -71,6 +71,15 @@ class RunRow(Base):
     # ``release_channels.row_version`` (PR-053). NOT NULL with server_default 1
     # so existing rows are backfilled to the CAS baseline at ALTER time.
     row_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
+    # Persisted cancel intent (PR-077 / ADR-0006 §5.4 cross-worker cancel). A
+    # Gateway replica receiving a cancel writes cancel_requested=true to PG
+    # (durable intent); the lease-holding worker polls it in its heartbeat and
+    # stops the run. NOT NULL server_default false so existing rows are
+    # backfilled to "not cancelled". cancel_action/cancel_requested_at are
+    # nullable (unset until a cancel is requested).
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    cancel_action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
