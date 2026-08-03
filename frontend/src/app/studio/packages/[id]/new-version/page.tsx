@@ -220,7 +220,9 @@ export default function NewVersionPage({
               </div>
             </div>
             <div className="space-y-2">
-              <label htmlFor="soul-prompt">{t.studio.newVersion.soulPrompt}</label>
+              <label htmlFor="soul-prompt">
+                {t.studio.newVersion.soulPrompt}
+              </label>
               <Textarea
                 id="soul-prompt"
                 value={soulOrPromptRef}
@@ -253,7 +255,9 @@ export default function NewVersionPage({
         {/* ── Skills ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">{t.studio.newVersion.skills}</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.skills}
+            </CardTitle>
             <CardDescription>
               {t.studio.newVersion.skillsDescription}
             </CardDescription>
@@ -276,7 +280,9 @@ export default function NewVersionPage({
         {/* ── Tools ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">{t.studio.newVersion.tools}</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.tools}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <DynamicListRow<string>
@@ -397,7 +403,9 @@ export default function NewVersionPage({
           <CardContent>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
-                <label htmlFor="max-steps">{t.studio.newVersion.maxSteps}</label>
+                <label htmlFor="max-steps">
+                  {t.studio.newVersion.maxSteps}
+                </label>
                 <Input
                   id="max-steps"
                   type="number"
@@ -407,7 +415,9 @@ export default function NewVersionPage({
                 />
               </div>
               <div className="space-y-2">
-                <label htmlFor="max-tokens">{t.studio.newVersion.maxTokens}</label>
+                <label htmlFor="max-tokens">
+                  {t.studio.newVersion.maxTokens}
+                </label>
                 <Input
                   id="max-tokens"
                   type="number"

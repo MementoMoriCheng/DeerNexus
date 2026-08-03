@@ -599,8 +599,7 @@ export const enUS: Translations = {
       },
       charts: {
         tokensByModel: "Tokens by model",
-        tokensByModelDescription:
-          'Top 5 models; remaining grouped as "other".',
+        tokensByModelDescription: 'Top 5 models; remaining grouped as "other".',
         tokensByCaller: "Tokens by caller",
         tokensByCallerDescription:
           "Lead agent vs subagent vs middleware breakdown.",
@@ -695,8 +694,7 @@ export const enUS: Translations = {
       systemActor: "system",
       promotePermTitle: (perm: string) =>
         `Requires ${perm} permission (admin only)`,
-      promotePermTitleDev: (perm: string) =>
-        `Requires ${perm} permission`,
+      promotePermTitleDev: (perm: string) => `Requires ${perm} permission`,
       rollbackPermTitle: (perm: string) =>
         `Requires ${perm} permission (admin only)`,
       metaTitle: "Package metadata",
@@ -764,7 +762,8 @@ export const enUS: Translations = {
       contentPlaceholder:
         "Raw artifact payload — the agent definition / config / prompt.",
       manifestCore: "Manifest core",
-      manifestCoreDescription: "Entry point and soul/prompt reference (ADR §3.3).",
+      manifestCoreDescription:
+        "Entry point and soul/prompt reference (ADR §3.3).",
       schemaVersion: "Schema version *",
       agentEntry: "Agent entry *",
       agentEntryPlaceholder: "e.g. soul",

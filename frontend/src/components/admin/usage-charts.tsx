@@ -70,7 +70,9 @@ export function UsageCharts({ since }: { since?: string }) {
           </EmptyMedia>
           <EmptyTitle>{t.admin.usage.loadError}</EmptyTitle>
           <EmptyDescription>
-            {error instanceof Error ? error.message : t.admin.usage.unknownError}
+            {error instanceof Error
+              ? error.message
+              : t.admin.usage.unknownError}
           </EmptyDescription>
         </EmptyHeader>
       </Empty>

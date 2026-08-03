@@ -92,7 +92,9 @@ function PackageHeader({ packageId }: { packageId: string }) {
   if (isError || !pkg) {
     return (
       <p className="text-destructive text-sm">
-        {error instanceof Error ? error.message : t.studio.detail.loadErrorPackage}
+        {error instanceof Error
+          ? error.message
+          : t.studio.detail.loadErrorPackage}
       </p>
     );
   }
@@ -531,7 +533,9 @@ function OverviewTab({ packageId }: { packageId: string }) {
   if (isError || !pkg) {
     return (
       <p className="text-destructive text-sm">
-        {error instanceof Error ? error.message : t.studio.detail.loadErrorPackage}
+        {error instanceof Error
+          ? error.message
+          : t.studio.detail.loadErrorPackage}
       </p>
     );
   }

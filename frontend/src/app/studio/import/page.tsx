@@ -73,7 +73,9 @@ export default function StudioImportPage() {
           )}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <label htmlFor="name">{t.studio.importPage.labels.agentDirName}</label>
+              <label htmlFor="name">
+                {t.studio.importPage.labels.agentDirName}
+              </label>
               <Input
                 id="name"
                 value={name}
@@ -105,7 +107,9 @@ export default function StudioImportPage() {
                   id="display-name"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder={t.studio.importPage.labels.displayNamePlaceholder}
+                  placeholder={
+                    t.studio.importPage.labels.displayNamePlaceholder
+                  }
                 />
               </div>
               <div className="space-y-2">
@@ -163,10 +167,26 @@ function ImportReportCard({ report }: { report: ImportReport }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-1.5">
-        <MetaRow label={t.studio.importPage.meta.package} value={report.package.name} mono />
-        <MetaRow label={t.studio.importPage.meta.version} value={report.version.version} mono />
-        <MetaRow label={t.studio.importPage.meta.status} value={report.version.status} mono />
-        <MetaRow label={t.studio.importPage.meta.digest} value={report.digest} mono />
+        <MetaRow
+          label={t.studio.importPage.meta.package}
+          value={report.package.name}
+          mono
+        />
+        <MetaRow
+          label={t.studio.importPage.meta.version}
+          value={report.version.version}
+          mono
+        />
+        <MetaRow
+          label={t.studio.importPage.meta.status}
+          value={report.version.status}
+          mono
+        />
+        <MetaRow
+          label={t.studio.importPage.meta.digest}
+          value={report.digest}
+          mono
+        />
       </CardContent>
     </Card>
   );

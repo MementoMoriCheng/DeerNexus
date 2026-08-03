@@ -543,8 +543,7 @@ export const zhCN: Translations = {
     },
     runs: {
       title: "运行记录",
-      description:
-        "当前组织内的全部运行记录。可按状态或时间窗口筛选。",
+      description: "当前组织内的全部运行记录。可按状态或时间窗口筛选。",
       loadError: "加载运行记录失败",
       unknownError: "未知错误",
       loading: "加载中…",
@@ -737,7 +736,8 @@ export const zhCN: Translations = {
       agentEntry: "Agent 入口 *",
       agentEntryPlaceholder: "如 soul",
       soulPrompt: "Soul / prompt 引用",
-      soulPromptPlaceholder: "Agent 的 soul/prompt 的稳定引用（切勿明文密钥）。",
+      soulPromptPlaceholder:
+        "Agent 的 soul/prompt 的稳定引用（切勿明文密钥）。",
       modelRequirements: "模型要求",
       skills: "技能",
       skillsDescription: "稳定名称 + 可选版本/摘要（ADR §3.3）。",
@@ -749,7 +749,8 @@ export const zhCN: Translations = {
       networkRequirements: "网络要求",
       networkRequirementsDescription: "显式网络出口声明（ADR §3.3）。",
       secretRequirements: "密钥要求",
-      secretRequirementsDescription: "密钥引用——仅 name + ref，切勿明文（ADR §3.3）。",
+      secretRequirementsDescription:
+        "密钥引用——仅 name + ref，切勿明文（ADR §3.3）。",
       runtimeLimits: "运行时限制",
       maxSteps: "最大步数",
       maxTokens: "最大 Token",

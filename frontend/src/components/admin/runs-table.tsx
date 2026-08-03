@@ -101,7 +101,9 @@ export function RunsTable({
               <TableHead>{t.admin.runs.columns.runId}</TableHead>
               <TableHead>{t.admin.runs.columns.status}</TableHead>
               <TableHead>{t.admin.runs.columns.model}</TableHead>
-              <TableHead className="text-right">{t.admin.runs.columns.tokens}</TableHead>
+              <TableHead className="text-right">
+                {t.admin.runs.columns.tokens}
+              </TableHead>
               <TableHead>{t.admin.runs.columns.user}</TableHead>
               <TableHead>{t.admin.runs.columns.created}</TableHead>
               <TableHead>{t.admin.runs.columns.error}</TableHead>
