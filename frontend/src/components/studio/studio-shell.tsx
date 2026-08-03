@@ -4,11 +4,12 @@ import { ArrowLeftIcon, PackageIcon, UploadIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useI18n } from "@/core/i18n/hooks";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
   href: string;
-  label: string;
+  labelKey: "packages" | "import";
   icon: React.ComponentType<{ className?: string }>;
   /** Match prefix for active-state detection. */
   matchPrefix: string;
@@ -17,19 +18,20 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   {
     href: "/studio/packages",
-    label: "Packages",
+    labelKey: "packages",
     icon: PackageIcon,
     matchPrefix: "/studio/packages",
   },
   {
     href: "/studio/import",
-    label: "Import",
+    labelKey: "import",
     icon: UploadIcon,
     matchPrefix: "/studio/import",
   },
 ];
 
 export function StudioShell({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
   const pathname = usePathname();
   return (
     <div className="bg-background text-foreground flex min-h-svh flex-col">
@@ -40,7 +42,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
             className="flex items-center gap-2 font-semibold"
           >
             <PackageIcon className="text-primary size-5" />
-            <span>Studio</span>
+            <span>{t.studio.title}</span>
           </Link>
           <nav className="flex items-center gap-1">
             {NAV_ITEMS.map((item) => {
@@ -58,7 +60,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
                   )}
                 >
                   <Icon className="size-4" />
-                  {item.label}
+                  {t.studio.nav[item.labelKey]}
                 </Link>
               );
             })}
@@ -69,7 +71,7 @@ export function StudioShell({ children }: { children: React.ReactNode }) {
               className="text-muted-foreground hover:bg-accent hover:text-accent-foreground inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
             >
               <ArrowLeftIcon className="size-4" />
-              Back to Workspace
+              {t.studio.backToWorkspace}
             </Link>
           </div>
         </div>

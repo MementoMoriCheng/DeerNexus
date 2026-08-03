@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAdminStats } from "@/core/admin";
+import { useI18n } from "@/core/i18n/hooks";
 
 // The audit page's status filter is pinned to the failure set.
 // PR-060's `/runs` endpoint accepts a single status at a time, so the
@@ -31,6 +32,7 @@ import { useAdminStats } from "@/core/admin";
 const FAILURE_STATUSES = ["error", "timeout", "interrupted"] as const;
 
 export default function AdminAuditPage() {
+  const { t } = useI18n();
   const [filter, setFilter] = useState<RunsFilter>({
     status: "error",
     window: "7d",
@@ -41,12 +43,9 @@ export default function AdminAuditPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold">Failure / Audit</h1>
+        <h1 className="text-xl font-semibold">{t.admin.audit.title}</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Failures are derived from run status (<code>error</code>,{" "}
-          <code>timeout</code>, <code>interrupted</code>). Structured audit
-          events require PR-041 (Audit outbox) — until then this view is the
-          operational failure surface.
+          {t.admin.audit.description}
         </p>
       </div>
 
@@ -65,7 +64,7 @@ export default function AdminAuditPage() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
           <Card>
             <CardHeader>
-              <CardDescription>Failures (last 24h)</CardDescription>
+              <CardDescription>{t.admin.audit.failures24h}</CardDescription>
               <CardTitle className="text-destructive text-2xl tabular-nums">
                 {stats.recent_failures_24h.toLocaleString()}
               </CardTitle>
@@ -73,7 +72,7 @@ export default function AdminAuditPage() {
           </Card>
           <Card>
             <CardHeader>
-              <CardDescription>Failure rate (window)</CardDescription>
+              <CardDescription>{t.admin.audit.failureRate}</CardDescription>
               <CardTitle className="text-2xl tabular-nums">
                 {(stats.failure_rate * 100).toFixed(1)}%
               </CardTitle>
@@ -81,7 +80,7 @@ export default function AdminAuditPage() {
           </Card>
           <Card>
             <CardHeader>
-              <CardDescription>Total runs (last 24h)</CardDescription>
+              <CardDescription>{t.admin.audit.totalRuns24h}</CardDescription>
               <CardTitle className="text-2xl tabular-nums">
                 {stats.recent_runs_24h.toLocaleString()}
               </CardTitle>
@@ -91,7 +90,7 @@ export default function AdminAuditPage() {
       ) : (
         <div className="text-muted-foreground flex items-center gap-2 text-sm">
           <AlertCircleIcon className="size-4" />
-          Stats unavailable.
+          {t.admin.audit.statsUnavailable}
         </div>
       )}
 
@@ -122,8 +121,8 @@ export default function AdminAuditPage() {
           status: filter.status,
           since,
         }}
-        emptyTitle={`No ${filter.status ?? "failure"} runs in this window`}
-        emptyDescription="Adjust the time window above or pick another failure status."
+        emptyTitle={t.admin.audit.emptyTitle(filter.status ?? "failure")}
+        emptyDescription={t.admin.audit.emptyDescription}
       />
     </div>
   );

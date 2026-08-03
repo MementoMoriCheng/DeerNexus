@@ -60,13 +60,13 @@ export const zhCN: Translations = {
 
   // Welcome
   welcome: {
-    greeting: "你好，欢迎回来！",
+    greeting: "欢迎进入 DeerNexus",
     description:
-      "欢迎使用 🦌 DeerFlow，一个完全开源的超级智能体。通过内置和自定义的 Skills，\nDeerFlow 可以帮你搜索网络、分析数据，还能为你生成幻灯片、\n图片、视频、播客及网页等，几乎可以做任何事情。",
+      "企业级多租户 Agent 操作系统。组织隔离 · 操作可审计 · 版本可发布。安全编排每一个 Agent 生产场景。",
 
-    createYourOwnSkill: "创建你自己的 Agent SKill",
+    createYourOwnSkill: "创建你自己的 Agent Skill",
     createYourOwnSkillDescription:
-      "创建你的 Agent Skill 来释放 DeerFlow 的潜力。通过自定义技能，DeerFlow\n可以帮你搜索网络、分析数据，还能为你生成幻灯片、\n网页等作品，几乎可以做任何事情。",
+      "创建你的 Agent Skill 来释放 DeerNexus 的潜力。通过自定义技能，\nDeerNexus 可以帮你搜索网络、分析数据，还能为你生成幻灯片、\n网页等作品，几乎可以做任何事情。",
   },
 
   // Clipboard
@@ -201,13 +201,13 @@ export const zhCN: Translations = {
     save: "保存智能体",
     saving: "正在保存智能体...",
     saveRequested:
-      "已提交保存请求，DeerFlow 正在根据当前对话生成并保存初版智能体。",
+      "已提交保存请求，DeerNexus 正在根据当前对话生成并保存初版智能体。",
     saveHint:
       "你可以在右上角的菜单里随时保存这个智能体，就算目前还只是初稿也可以。",
     saveCommandMessage:
       "请现在根据我们目前已经讨论的全部内容保存这个自定义智能体。这就是我明确的保存确认。如果仍有少量细节缺失，请根据上下文做出合理假设，生成一份简洁的英文初始 SOUL.md，并直接调用 setup_agent，不要再向我索要额外确认。",
     agentCreatedPendingRefresh:
-      "智能体已创建，但 DeerFlow 暂时还无法读取到它。请稍后刷新当前页面。",
+      "智能体已创建，但 DeerNexus 暂时还无法读取到它。请稍后刷新当前页面。",
     more: "更多操作",
     agentCreated: "智能体已创建！",
     startChatting: "开始对话",
@@ -222,14 +222,16 @@ export const zhCN: Translations = {
 
   // Workspace
   workspace: {
-    officialWebsite: "访问 DeerFlow 官方网站",
-    githubTooltip: "访问 DeerFlow 的 Github 仓库",
+    officialWebsite: "访问 DeerNexus 官方网站",
+    githubTooltip: "访问 DeerNexus 的 Github 仓库",
     settingsAndMore: "设置和更多",
-    visitGithub: "在 Github 上查看 DeerFlow",
+    visitGithub: "在 Github 上查看 DeerNexus",
     reportIssue: "报告问题",
     contactUs: "联系我们",
-    about: "关于 DeerFlow",
+    about: "关于 DeerNexus",
     logout: "退出登录",
+    adminConsole: "管理控制台",
+    studio: "Studio",
     gatewayUnavailable: "网关暂时不可用。",
     gatewayUnavailableRetrying: "正在后台重试…",
   },
@@ -270,20 +272,20 @@ export const zhCN: Translations = {
     saveAndConnect: "保存并连接",
     saveChanges: "保存修改",
     descriptions: {
-      telegram: "通过 DeerFlow Bot 接收 Telegram 私聊消息。",
+      telegram: "通过 DeerNexus Bot 接收 Telegram 私聊消息。",
       slack: "接收 Slack 工作区消息和提及。",
-      discord: "通过 DeerFlow Bot 接收 Discord 服务器消息。",
-      feishu: "通过 DeerFlow 应用接收飞书和 Lark 消息。",
-      dingtalk: "通过 DeerFlow Bot 接收钉钉 Stream Push 消息。",
-      wechat: "通过 DeerFlow Bot 接收微信 iLink 消息。",
-      wecom: "通过 DeerFlow AI Bot 接收企业微信消息。",
+      discord: "通过 DeerNexus Bot 接收 Discord 服务器消息。",
+      feishu: "通过 DeerNexus 应用接收飞书和 Lark 消息。",
+      dingtalk: "通过 DeerNexus Bot 接收钉钉 Stream Push 消息。",
+      wechat: "通过 DeerNexus Bot 接收微信 iLink 消息。",
+      wecom: "通过 DeerNexus AI Bot 接收企业微信消息。",
     },
     connectedAs: (name: string) => `已连接为 ${name}。`,
   },
 
   // Page titles (document title)
   pages: {
-    appName: "DeerFlow",
+    appName: "DeerNexus",
     chats: "对话",
     newChat: "新对话",
     untitled: "未命名",
@@ -308,7 +310,7 @@ export const zhCN: Translations = {
     writeFile: "写入文件",
     clickToViewContent: "点击查看文件内容",
     writeTodos: "更新 To-do 列表",
-    skillInstallTooltip: "安装技能并使其可在 DeerFlow 中使用",
+    skillInstallTooltip: "安装技能并使其可在 DeerNexus 中使用",
   },
 
   uploads: {
@@ -365,7 +367,7 @@ export const zhCN: Translations = {
     noResults: "未找到结果。",
     actions: "操作",
     keyboardShortcuts: "键盘快捷键",
-    keyboardShortcutsDescription: "使用键盘快捷键更快地操作 DeerFlow。",
+    keyboardShortcutsDescription: "使用键盘快捷键更快地操作 DeerNexus。",
     openCommandPalette: "打开命令面板",
     toggleSidebar: "切换侧边栏",
   },
@@ -373,7 +375,7 @@ export const zhCN: Translations = {
   // Settings
   settings: {
     title: "设置",
-    description: "根据你的偏好调整 DeerFlow 的界面和行为。",
+    description: "根据你的偏好调整 DeerNexus 的界面和行为。",
     sections: {
       account: "账号",
       appearance: "外观",
@@ -387,7 +389,7 @@ export const zhCN: Translations = {
     memory: {
       title: "记忆",
       description:
-        "DeerFlow 会在后台不断从你的对话中自动学习。这些记忆能帮助 DeerFlow 更好地理解你，并提供更个性化的体验。",
+        "DeerNexus 会在后台不断从你的对话中自动学习。这些记忆能帮助 DeerNexus 更好地理解你，并提供更个性化的体验。",
       empty: "暂无可展示的记忆数据。",
       rawJson: "原始 JSON",
       exportButton: "导出记忆",
@@ -481,7 +483,7 @@ export const zhCN: Translations = {
     },
     channels: {
       title: "渠道",
-      description: "连接可在浏览器外向 DeerFlow 发送消息的即时通讯账号。",
+      description: "连接可在浏览器外向 DeerNexus 发送消息的即时通讯账号。",
       disabled:
         "当前服务器未启用渠道连接。请联系管理员开启 channel_connections。",
     },
@@ -491,18 +493,18 @@ export const zhCN: Translations = {
       createSkill: "新建技能",
       emptyTitle: "还没有技能",
       emptyDescription:
-        "将你的 Agent Skill 文件夹放在 DeerFlow 根目录下的 `/skills/custom` 文件夹中。",
+        "将你的 Agent Skill 文件夹放在 DeerNexus 根目录下的 `/skills/custom` 文件夹中。",
       emptyButton: "创建你的第一个技能",
     },
     notification: {
       title: "通知",
       description:
-        "DeerFlow 只会在窗口不活跃时发送完成通知，特别适合长时间任务：你可以先去做别的事，完成后会收到提醒。",
+        "DeerNexus 只会在窗口不活跃时发送完成通知，特别适合长时间任务：你可以先去做别的事，完成后会收到提醒。",
       requestPermission: "请求通知权限",
       deniedHint:
         "通知权限已被拒绝。可在浏览器的网站设置中重新开启，以接收完成提醒。",
       testButton: "发送测试通知",
-      testTitle: "DeerFlow",
+      testTitle: "DeerNexus",
       testBody: "这是一条测试通知。",
       notSupported: "当前浏览器不支持通知功能。",
       disableNotification: "关闭通知",
@@ -527,6 +529,246 @@ export const zhCN: Translations = {
     acknowledge: {
       emptyTitle: "致谢",
       emptyDescription: "相关的致谢信息会展示在这里。",
+    },
+  },
+
+  // Admin Console（管理控制台）
+  admin: {
+    title: "管理控制台",
+    backToWorkspace: "返回工作区",
+    nav: {
+      runs: "运行记录",
+      usage: "用量",
+      audit: "故障 / 审计",
+    },
+    runs: {
+      title: "运行记录",
+      description:
+        "当前组织内的全部运行记录。可按状态或时间窗口筛选。",
+      loadError: "加载运行记录失败",
+      unknownError: "未知错误",
+      loading: "加载中…",
+      loadMore: "加载更多",
+      emptyTitle: "当前时间窗口内没有运行记录",
+      emptyDescription: "请调整上方筛选条件或扩大时间窗口。",
+      columns: {
+        runId: "运行 ID",
+        status: "状态",
+        model: "模型",
+        tokens: "Token",
+        user: "用户",
+        created: "创建时间",
+        error: "错误",
+      },
+    },
+    usage: {
+      title: "用量",
+      description: "当前组织内所有运行记录的 Token 消耗汇总。",
+      loadError: "加载用量数据失败",
+      unknownError: "未知错误",
+      noCompletedRuns: "当前时间窗口内没有已完成的运行记录。",
+      tooltipFormatter: (tokens: string, runs: number) =>
+        `${tokens} token · ${runs} 次运行`,
+      kpi: {
+        totalTokens: "Token 总量",
+        totalRuns: "运行总数",
+        avgTokens: "平均 token / 次",
+        outputInputRatio: "输出 : 输入",
+      },
+      charts: {
+        tokensByModel: "按模型的 Token 分布",
+        tokensByModelDescription: "前 5 个模型，其余归入「其他」。",
+        tokensByCaller: "按调用方的 Token 分布",
+        tokensByCallerDescription: "主智能体 vs 子智能体 vs 中间件的拆分。",
+      },
+      breakdown: {
+        leadAgent: "主智能体",
+        subagent: "子智能体",
+        middleware: "中间件",
+      },
+    },
+    audit: {
+      title: "故障 / 审计",
+      description:
+        "故障来自运行状态（error、timeout、interrupted）。结构化审计事件依赖 PR-041（审计 outbox）——在此之前此视图作为运维故障面。",
+      failures24h: "故障数（近 24 小时）",
+      failureRate: "故障率（窗口内）",
+      totalRuns24h: "运行总数（近 24 小时）",
+      statsUnavailable: "统计暂不可用。",
+      emptyTitle: (status: string) => `当前窗口内没有 ${status} 运行记录`,
+      emptyDescription: "请调整上方时间窗口或选择其他故障状态。",
+    },
+    filter: {
+      all: "全部",
+      status: "状态",
+      allStatuses: "全部状态",
+    },
+  },
+
+  // Studio（Agent 产物与发布控制台）
+  studio: {
+    title: "Studio",
+    backToWorkspace: "返回工作区",
+    nav: {
+      packages: "包",
+      import: "导入",
+    },
+    packages: {
+      title: "Agent 包",
+      description: "管理 Agent 产物、版本和发布渠道。",
+      importAgent: "导入 Agent",
+      loadError: "加载包失败",
+      loadErrorFallback: "网关可能不可达，或你可能缺少 studio 权限。",
+      emptyTitle: "还没有 Agent 包",
+      emptyDescription:
+        "从文件态布局导入一个 Agent，即可创建它的第一个包和版本。",
+      columns: {
+        name: "名称",
+        displayName: "显示名",
+        status: "状态",
+        created: "创建时间",
+      },
+    },
+    detail: {
+      loadErrorPackage: "加载包失败。",
+      loadErrorVersions: "加载版本失败。",
+      loadErrorChannels: "加载渠道失败。",
+      tabs: {
+        versions: "版本",
+        channels: "渠道",
+        overview: "概览",
+      },
+      newVersion: "新建版本",
+      versionEmptyTitle: "还没有版本",
+      versionEmptyDescription:
+        "从文件态布局导入该 Agent，或使用完整清单编辑器手动创建一个新版本。",
+      versionColumns: {
+        version: "版本",
+        digest: "摘要",
+        status: "状态",
+        size: "大小",
+        created: "创建时间",
+        actions: "操作",
+      },
+      actions: {
+        reviewing: "审核中…",
+        review: "审核",
+        publishing: "发布中…",
+        publish: "发布",
+        revoking: "撤销中…",
+        revoke: "撤销",
+      },
+      currentLabel: "当前：",
+      emptyPointer: "空",
+      promoteLabel: "提升",
+      rollbackLabel: "回滚",
+      selectVersionPlaceholder: "选择版本…",
+      toLabel: " 到",
+      historyLabel: "历史",
+      byLabel: "操作者",
+      systemActor: "系统",
+      promotePermTitle: (perm: string) => `需要 ${perm} 权限（仅管理员）`,
+      promotePermTitleDev: (perm: string) => `需要 ${perm} 权限`,
+      rollbackPermTitle: (perm: string) => `需要 ${perm} 权限（仅管理员）`,
+      metaTitle: "包元数据",
+      reconcile: "对账库存",
+      reconciling: "对账中…",
+      archive: "归档包",
+      archiving: "归档中…",
+      meta: {
+        id: "ID",
+        name: "名称",
+        displayName: "显示名",
+        description: "描述",
+        status: "状态",
+        workspace: "工作区",
+        createdBy: "创建者",
+        createdAt: "创建时间",
+        updatedAt: "更新时间",
+      },
+    },
+    importPage: {
+      title: "导入 Agent",
+      description:
+        "从文件态布局（SOUL / config）导入 Agent。导入器会计算摘要且幂等：重复导入相同内容会返回已有版本而非复制。",
+      methodTitle: "文件态导入",
+      methodDescription:
+        "从服务端 Agent 目录读取 agents/{name}/。需要 studio:package:write 权限。",
+      permissionHint:
+        "你需要 studio:package:write 权限（org:admin 或 org:developer）才能导入 Agent。下方表单已禁用。",
+      successImported: "已导入",
+      successIdempotent: "幂等重复导入",
+      successImportedDesc: "已创建新的包和版本。",
+      successIdempotentDesc: "相同内容已导入——返回已有版本。",
+      labels: {
+        agentDirName: "Agent 目录名 *",
+        agentDirNameTitle: "仅允许字母、数字和连字符",
+        version: "版本（SemVer）*",
+        displayName: "显示名",
+        displayNamePlaceholder: "默认为名称",
+        userId: "用户 ID（可选）",
+        userIdPlaceholder: "按用户区分的 Agent 目录",
+        description: "描述",
+        descriptionPlaceholder: "默认使用 Agent 配置中的描述",
+      },
+      importing: "导入中…",
+      submit: "导入 Agent",
+      meta: {
+        package: "包",
+        version: "版本",
+        status: "状态",
+        digest: "摘要",
+      },
+    },
+    newVersion: {
+      title: "新建版本",
+      back: "← 返回",
+      permissionHint:
+        "你需要 studio:package:write 权限（org:admin 或 org:developer）才能创建版本。",
+      basics: "基础信息",
+      basicsDescription:
+        "版本（SemVer 2.0）和产物内容。后端会根据内容的 UTF-8 字节计算摘要。",
+      semverError: "必须是合法的 SemVer 2.0.0 字符串（如 1.0.0、1.0.0-beta）。",
+      contentLabel: "产物内容（UTF-8）*",
+      contentPlaceholder: "原始产物载荷——Agent 定义 / 配置 / 提示词。",
+      manifestCore: "清单核心",
+      manifestCoreDescription: "入口和 soul/prompt 引用（ADR §3.3）。",
+      schemaVersion: "Schema 版本 *",
+      agentEntry: "Agent 入口 *",
+      agentEntryPlaceholder: "如 soul",
+      soulPrompt: "Soul / prompt 引用",
+      soulPromptPlaceholder: "Agent 的 soul/prompt 的稳定引用（切勿明文密钥）。",
+      modelRequirements: "模型要求",
+      skills: "技能",
+      skillsDescription: "稳定名称 + 可选版本/摘要（ADR §3.3）。",
+      tools: "工具",
+      mcpServers: "MCP 服务",
+      mcpServersDescription: "稳定 id + 可选版本（ADR §3.3）。",
+      dependencies: "依赖",
+      dependenciesDescription: "显式依赖锁定（ADR §3.3）。",
+      networkRequirements: "网络要求",
+      networkRequirementsDescription: "显式网络出口声明（ADR §3.3）。",
+      secretRequirements: "密钥要求",
+      secretRequirementsDescription: "密钥引用——仅 name + ref，切勿明文（ADR §3.3）。",
+      runtimeLimits: "运行时限制",
+      maxSteps: "最大步数",
+      maxTokens: "最大 Token",
+      timeout: "超时（秒）",
+      cancel: "取消",
+      creating: "创建中…",
+      submit: "创建版本",
+      addLabels: {
+        model: "添加模型",
+        skill: "添加技能",
+        tool: "添加工具",
+        mcp: "添加 MCP 服务",
+        dependency: "添加依赖",
+        network: "添加网络要求",
+        secret: "添加密钥引用",
+      },
+    },
+    dynamicList: {
+      removeRow: "删除行",
     },
   },
 };

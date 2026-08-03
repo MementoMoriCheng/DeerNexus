@@ -12,11 +12,13 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useI18n } from "@/core/i18n/hooks";
 import { useImportAgent, useStudioPermission } from "@/core/studio";
 import { STUDIO_PERM } from "@/core/studio";
 import type { ImportReport } from "@/core/studio";
 
 export default function StudioImportPage() {
+  const { t } = useI18n();
   const importMutation = useImportAgent();
   const canWrite = useStudioPermission(STUDIO_PERM.packageWrite);
   const [name, setName] = useState("");
@@ -46,51 +48,46 @@ export default function StudioImportPage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Import agent</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {t.studio.importPage.title}
+        </h1>
         <p className="text-muted-foreground text-sm">
-          Import an agent from the file-state layout (SOUL / config). The
-          importer computes a digest and is idempotent: re-importing identical
-          content returns the existing version instead of duplicating.
+          {t.studio.importPage.description}
         </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">File-state import</CardTitle>
+          <CardTitle className="text-base">
+            {t.studio.importPage.methodTitle}
+          </CardTitle>
           <CardDescription>
-            Reads{" "}
-            <code className="font-mono text-xs">
-              agents/&lbrace;name&rbrace;/
-            </code>{" "}
-            from the server-side agent directory. Requires the{" "}
-            <code className="font-mono text-xs">studio:package:write</code>{" "}
-            permission.
+            {t.studio.importPage.methodDescription}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {!canWrite && (
             <p className="text-muted-foreground mb-4 rounded-md border border-dashed px-3 py-2 text-xs">
-              You need the{" "}
-              <code className="font-mono">studio:package:write</code> permission
-              (org:admin or org:developer) to import agents. The form below is
-              disabled.
+              {t.studio.importPage.permissionHint}
             </p>
           )}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <label htmlFor="name">Agent directory name *</label>
+              <label htmlFor="name">{t.studio.importPage.labels.agentDirName}</label>
               <Input
                 id="name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="my-agent"
                 pattern="[A-Za-z0-9-]+"
-                title="Letters, digits, and hyphens only"
+                title={t.studio.importPage.labels.agentDirNameTitle}
                 required
               />
             </div>
             <div className="space-y-2">
-              <label htmlFor="version">Version (SemVer) *</label>
+              <label htmlFor="version">
+                {t.studio.importPage.labels.version}
+              </label>
               <Input
                 id="version"
                 value={version}
@@ -101,36 +98,44 @@ export default function StudioImportPage() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label htmlFor="display-name">Display name</label>
+                <label htmlFor="display-name">
+                  {t.studio.importPage.labels.displayName}
+                </label>
                 <Input
                   id="display-name"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="defaults to name"
+                  placeholder={t.studio.importPage.labels.displayNamePlaceholder}
                 />
               </div>
               <div className="space-y-2">
-                <label htmlFor="user-id">User ID (optional)</label>
+                <label htmlFor="user-id">
+                  {t.studio.importPage.labels.userId}
+                </label>
                 <Input
                   id="user-id"
                   value={userId}
                   onChange={(e) => setUserId(e.target.value)}
-                  placeholder="per-user agent dir"
+                  placeholder={t.studio.importPage.labels.userIdPlaceholder}
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <label htmlFor="description">Description</label>
+              <label htmlFor="description">
+                {t.studio.importPage.labels.description}
+              </label>
               <Textarea
                 id="description"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="defaults to the agent config description"
+                placeholder={t.studio.importPage.labels.descriptionPlaceholder}
                 rows={3}
               />
             </div>
             <Button type="submit" disabled={!canSubmit}>
-              {importMutation.isPending ? "Importing…" : "Import agent"}
+              {importMutation.isPending
+                ? t.studio.importPage.importing
+                : t.studio.importPage.submit}
             </Button>
           </form>
         </CardContent>
@@ -142,23 +147,26 @@ export default function StudioImportPage() {
 }
 
 function ImportReportCard({ report }: { report: ImportReport }) {
+  const { t } = useI18n();
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">
-          {report.imported ? "Imported" : "Idempotent re-import"}
+          {report.imported
+            ? t.studio.importPage.successImported
+            : t.studio.importPage.successIdempotent}
         </CardTitle>
         <CardDescription>
           {report.imported
-            ? "A new package + version were created."
-            : "Identical content already imported — existing version returned."}
+            ? t.studio.importPage.successImportedDesc
+            : t.studio.importPage.successIdempotentDesc}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-1.5">
-        <MetaRow label="Package" value={report.package.name} mono />
-        <MetaRow label="Version" value={report.version.version} mono />
-        <MetaRow label="Status" value={report.version.status} mono />
-        <MetaRow label="Digest" value={report.digest} mono />
+        <MetaRow label={t.studio.importPage.meta.package} value={report.package.name} mono />
+        <MetaRow label={t.studio.importPage.meta.version} value={report.version.version} mono />
+        <MetaRow label={t.studio.importPage.meta.status} value={report.version.status} mono />
+        <MetaRow label={t.studio.importPage.meta.digest} value={report.digest} mono />
       </CardContent>
     </Card>
   );

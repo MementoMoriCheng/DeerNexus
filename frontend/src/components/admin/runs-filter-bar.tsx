@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useI18n } from "@/core/i18n/hooks";
 
 /**
  * Admin time-window preset. "all" → no `since` filter (server returns the
@@ -87,6 +88,15 @@ export function RunsFilterBar({
   hideStatus?: boolean;
   extraControls?: ReactNode;
 }) {
+  const { t } = useI18n();
+  // Translate the "All" preset label at render time (other presets are
+  // bare durations like "24h" / "7d" / "30d" and stay locale-neutral).
+  const windowLabels: Record<TimeWindow, string> = {
+    "24h": "24h",
+    "7d": "7d",
+    "30d": "30d",
+    all: t.admin.filter.all,
+  };
   return (
     <div className="flex flex-wrap items-center gap-3">
       {!hideStatus && (
@@ -100,10 +110,10 @@ export function RunsFilterBar({
           }
         >
           <SelectTrigger className="w-[140px]" size="sm">
-            <SelectValue placeholder="Status" />
+            <SelectValue placeholder={t.admin.filter.status} />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All statuses</SelectItem>
+            <SelectItem value="all">{t.admin.filter.allStatuses}</SelectItem>
             {RUN_STATUSES.map((status) => (
               <SelectItem key={status} value={status}>
                 {status}
@@ -121,7 +131,7 @@ export function RunsFilterBar({
         <TabsList>
           {TIME_WINDOWS.map((w) => (
             <TabsTrigger key={w.value} value={w.value}>
-              {w.label}
+              {windowLabels[w.value]}
             </TabsTrigger>
           ))}
         </TabsList>

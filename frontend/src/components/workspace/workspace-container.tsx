@@ -92,10 +92,10 @@ export function WorkspaceHeader({
           </BreadcrumbList>
         </Breadcrumb>
       </div>
-      <div className="pr-4">
+      <div className="flex items-center gap-3 pr-4">
         <Tooltip content={t.workspace.githubTooltip}>
           <a
-            href="https://github.com/bytedance/deer-flow"
+            href="https://github.com/MementoMoriCheng/DeerNexus"
             target="_blank"
             rel="noopener noreferrer"
             className="opacity-75 transition hover:opacity-100"

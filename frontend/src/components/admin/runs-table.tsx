@@ -20,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAdminRuns, type AdminRunsInfiniteParams } from "@/core/admin";
+import { useI18n } from "@/core/i18n/hooks";
 import { formatTokenCount } from "@/core/messages/usage";
 import { formatTimeAgo } from "@/core/utils/datetime";
 
@@ -44,6 +45,7 @@ export function RunsTable({
   emptyTitle?: string;
   emptyDescription?: string;
 }) {
+  const { t } = useI18n();
   const {
     data,
     isLoading,
@@ -65,9 +67,9 @@ export function RunsTable({
           <EmptyMedia>
             <AlertCircleIcon className="text-destructive size-8" />
           </EmptyMedia>
-          <EmptyTitle>Failed to load runs</EmptyTitle>
+          <EmptyTitle>{t.admin.runs.loadError}</EmptyTitle>
           <EmptyDescription>
-            {error instanceof Error ? error.message : "Unknown error"}
+            {error instanceof Error ? error.message : t.admin.runs.unknownError}
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -96,13 +98,13 @@ export function RunsTable({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Run ID</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Model</TableHead>
-              <TableHead className="text-right">Tokens</TableHead>
-              <TableHead>User</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead>Error</TableHead>
+              <TableHead>{t.admin.runs.columns.runId}</TableHead>
+              <TableHead>{t.admin.runs.columns.status}</TableHead>
+              <TableHead>{t.admin.runs.columns.model}</TableHead>
+              <TableHead className="text-right">{t.admin.runs.columns.tokens}</TableHead>
+              <TableHead>{t.admin.runs.columns.user}</TableHead>
+              <TableHead>{t.admin.runs.columns.created}</TableHead>
+              <TableHead>{t.admin.runs.columns.error}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -150,7 +152,7 @@ export function RunsTable({
             onClick={() => fetchNextPage()}
             disabled={isFetchingNextPage}
           >
-            {isFetchingNextPage ? "Loading…" : "Load more"}
+            {isFetchingNextPage ? t.admin.runs.loading : t.admin.runs.loadMore}
           </Button>
         </div>
       )}

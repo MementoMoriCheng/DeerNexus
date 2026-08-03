@@ -27,11 +27,11 @@ export async function Header({ className, homeURL, locale }: HeaderProps) {
     >
       <div className="flex items-center gap-6">
         <a
-          href={homeURL ?? "https://github.com/bytedance/deer-flow"}
+          href={homeURL ?? "https://github.com/MementoMoriCheng/DeerNexus"}
           target={isExternalHome ? "_blank" : "_self"}
           rel={isExternalHome ? "noopener noreferrer" : undefined}
         >
-          <h1 className="font-serif text-xl">DeerFlow</h1>
+          <h1 className="font-serif text-xl">DeerNexus</h1>
         </a>
       </div>
       <nav className="mr-8 ml-auto flex items-center gap-8 text-sm font-medium">
@@ -63,7 +63,7 @@ export async function Header({ className, homeURL, locale }: HeaderProps) {
           className="group relative z-10"
         >
           <a
-            href="https://github.com/bytedance/deer-flow"
+            href="https://github.com/MementoMoriCheng/DeerNexus"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -84,7 +84,7 @@ async function StarCounter() {
 
   try {
     const response = await fetch(
-      "https://api.github.com/repos/bytedance/deer-flow",
+      "https://api.github.com/repos/MementoMoriCheng/DeerNexus",
       {
         headers: env.GITHUB_OAUTH_TOKEN
           ? {

@@ -3,9 +3,7 @@
 import {
   BugIcon,
   ChevronsUpDown,
-  GlobeIcon,
   InfoIcon,
-  MailIcon,
   PackageIcon,
   Settings2Icon,
   SettingsIcon,
@@ -109,7 +107,7 @@ export function WorkspaceNavMenu() {
                       <DropdownMenuItem asChild>
                         <Link href="/admin/runs">
                           <ShieldCheckIcon />
-                          Admin Console
+                          {t.workspace.adminConsole}
                         </Link>
                       </DropdownMenuItem>
                     </>
@@ -117,22 +115,12 @@ export function WorkspaceNavMenu() {
                   <DropdownMenuItem asChild>
                     <Link href="/studio/packages">
                       <PackageIcon />
-                      Studio
+                      {t.workspace.studio}
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <a
-                    href="https://deerflow.tech/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <DropdownMenuItem>
-                      <GlobeIcon />
-                      {t.workspace.officialWebsite}
-                    </DropdownMenuItem>
-                  </a>
-                  <a
-                    href="https://github.com/bytedance/deer-flow"
+                    href="https://github.com/MementoMoriCheng/DeerNexus"
                     target="_blank"
                     rel="noopener noreferrer"
                   >
@@ -143,19 +131,13 @@ export function WorkspaceNavMenu() {
                   </a>
                   <DropdownMenuSeparator />
                   <a
-                    href="https://github.com/bytedance/deer-flow/issues"
+                    href="https://github.com/MementoMoriCheng/DeerNexus/issues"
                     target="_blank"
                     rel="noopener noreferrer"
                   >
                     <DropdownMenuItem>
                       <BugIcon />
                       {t.workspace.reportIssue}
-                    </DropdownMenuItem>
-                  </a>
-                  <a href="mailto:support@deerflow.tech">
-                    <DropdownMenuItem>
-                      <MailIcon />
-                      {t.workspace.contactUs}
                     </DropdownMenuItem>
                   </a>
                 </DropdownMenuGroup>

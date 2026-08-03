@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useI18n } from "@/core/i18n/hooks";
 import { useCreateVersion, useStudioPermission } from "@/core/studio";
 import { STUDIO_PERM } from "@/core/studio";
 import type {
@@ -38,6 +39,7 @@ export default function NewVersionPage({
 }) {
   const { id: packageId } = use(params);
   const router = useRouter();
+  const { t } = useI18n();
   const createVersion = useCreateVersion();
   const canWrite = useStudioPermission(STUDIO_PERM.packageWrite);
 
@@ -112,10 +114,11 @@ export default function NewVersionPage({
   if (!canWrite) {
     return (
       <div className="mx-auto max-w-2xl space-y-6">
-        <h1 className="text-2xl font-semibold tracking-tight">New version</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {t.studio.newVersion.title}
+        </h1>
         <p className="text-muted-foreground rounded-md border border-dashed px-3 py-2 text-xs">
-          You need the <code className="font-mono">studio:package:write</code>{" "}
-          permission (org:admin or org:developer) to create versions.
+          {t.studio.newVersion.permissionHint}
         </p>
       </div>
     );
@@ -124,13 +127,15 @@ export default function NewVersionPage({
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">New version</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {t.studio.newVersion.title}
+        </h1>
         <Button
           variant="ghost"
           size="sm"
           onClick={() => router.push(`/studio/packages/${packageId}`)}
         >
-          ← Back
+          ← {t.studio.newVersion.back}
         </Button>
       </div>
 
@@ -138,15 +143,18 @@ export default function NewVersionPage({
         {/* ── Basics (required) ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Basics</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.basics}
+            </CardTitle>
             <CardDescription>
-              Version (SemVer 2.0) and artifact content. The backend computes
-              the digest over the content&apos;s UTF-8 bytes.
+              {t.studio.newVersion.basicsDescription}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <label htmlFor="version">Version (SemVer) *</label>
+              <label htmlFor="version">
+                {t.studio.importPage.labels.version}
+              </label>
               <Input
                 id="version"
                 value={version}
@@ -156,17 +164,19 @@ export default function NewVersionPage({
               />
               {version && !versionValid && (
                 <p className="text-destructive text-xs">
-                  Must be a valid SemVer 2.0.0 string (e.g. 1.0.0, 1.0.0-beta).
+                  {t.studio.newVersion.semverError}
                 </p>
               )}
             </div>
             <div className="space-y-2">
-              <label htmlFor="content">Artifact content (UTF-8) *</label>
+              <label htmlFor="content">
+                {t.studio.newVersion.contentLabel}
+              </label>
               <Textarea
                 id="content"
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
-                placeholder="Raw artifact payload — the agent definition / config / prompt."
+                placeholder={t.studio.newVersion.contentPlaceholder}
                 rows={8}
                 required
               />
@@ -177,15 +187,19 @@ export default function NewVersionPage({
         {/* ── Manifest core (required) ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Manifest core</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.manifestCore}
+            </CardTitle>
             <CardDescription>
-              Entry point and soul/prompt reference (ADR §3.3).
+              {t.studio.newVersion.manifestCoreDescription}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label htmlFor="schema-version">Schema version *</label>
+                <label htmlFor="schema-version">
+                  {t.studio.newVersion.schemaVersion}
+                </label>
                 <Input
                   id="schema-version"
                   value={schemaVersion}
@@ -193,23 +207,25 @@ export default function NewVersionPage({
                 />
               </div>
               <div className="space-y-2">
-                <label htmlFor="agent-entry">Agent entry *</label>
+                <label htmlFor="agent-entry">
+                  {t.studio.newVersion.agentEntry}
+                </label>
                 <Input
                   id="agent-entry"
                   value={agentEntry}
                   onChange={(e) => setAgentEntry(e.target.value)}
-                  placeholder="e.g. soul"
+                  placeholder={t.studio.newVersion.agentEntryPlaceholder}
                   required
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <label htmlFor="soul-prompt">Soul / prompt ref</label>
+              <label htmlFor="soul-prompt">{t.studio.newVersion.soulPrompt}</label>
               <Textarea
                 id="soul-prompt"
                 value={soulOrPromptRef}
                 onChange={(e) => setSoulOrPromptRef(e.target.value)}
-                placeholder="Stable reference to the agent's soul/prompt (never plaintext secrets)."
+                placeholder={t.studio.newVersion.soulPromptPlaceholder}
                 rows={3}
               />
             </div>
@@ -219,14 +235,16 @@ export default function NewVersionPage({
         {/* ── Model requirements ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Model requirements</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.modelRequirements}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <DynamicListRow<ModelRequirement>
               fields={[{ key: "name", label: "model name", required: true }]}
               value={modelRequirements}
               onChange={setModelRequirements}
-              addLabel="Add model"
+              addLabel={t.studio.newVersion.addLabels.model}
               createRow={() => ({ name: "" })}
             />
           </CardContent>
@@ -235,9 +253,9 @@ export default function NewVersionPage({
         {/* ── Skills ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Skills</CardTitle>
+            <CardTitle className="text-base">{t.studio.newVersion.skills}</CardTitle>
             <CardDescription>
-              Stable name + optional version/digest (ADR §3.3).
+              {t.studio.newVersion.skillsDescription}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -249,7 +267,7 @@ export default function NewVersionPage({
               ]}
               value={skills}
               onChange={setSkills}
-              addLabel="Add skill"
+              addLabel={t.studio.newVersion.addLabels.skill}
               createRow={() => ({ name: "" })}
             />
           </CardContent>
@@ -258,14 +276,14 @@ export default function NewVersionPage({
         {/* ── Tools ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Tools</CardTitle>
+            <CardTitle className="text-base">{t.studio.newVersion.tools}</CardTitle>
           </CardHeader>
           <CardContent>
             <DynamicListRow<string>
               fields={[]}
               value={tools}
               onChange={setTools}
-              addLabel="Add tool"
+              addLabel={t.studio.newVersion.addLabels.tool}
               createRow={() => ""}
             />
           </CardContent>
@@ -274,9 +292,11 @@ export default function NewVersionPage({
         {/* ── MCP servers ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">MCP servers</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.mcpServers}
+            </CardTitle>
             <CardDescription>
-              Stable id + optional version (ADR §3.3).
+              {t.studio.newVersion.mcpServersDescription}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -287,7 +307,7 @@ export default function NewVersionPage({
               ]}
               value={mcpServers}
               onChange={setMcpServers}
-              addLabel="Add MCP server"
+              addLabel={t.studio.newVersion.addLabels.mcp}
               createRow={() => ({ name: "" })}
             />
           </CardContent>
@@ -296,9 +316,11 @@ export default function NewVersionPage({
         {/* ── Dependencies ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Dependencies</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.dependencies}
+            </CardTitle>
             <CardDescription>
-              Explicit dependency locks (ADR §3.3).
+              {t.studio.newVersion.dependenciesDescription}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -310,7 +332,7 @@ export default function NewVersionPage({
               ]}
               value={dependencies}
               onChange={setDependencies}
-              addLabel="Add dependency"
+              addLabel={t.studio.newVersion.addLabels.dependency}
               createRow={() => ({ name: "" })}
             />
           </CardContent>
@@ -319,9 +341,11 @@ export default function NewVersionPage({
         {/* ── Network requirements ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Network requirements</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.networkRequirements}
+            </CardTitle>
             <CardDescription>
-              Explicit network egress declarations (ADR §3.3).
+              {t.studio.newVersion.networkRequirementsDescription}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -333,7 +357,7 @@ export default function NewVersionPage({
               ]}
               value={networkRequirements}
               onChange={setNetworkRequirements}
-              addLabel="Add network requirement"
+              addLabel={t.studio.newVersion.addLabels.network}
               createRow={() => ({ host: "" })}
             />
           </CardContent>
@@ -342,9 +366,11 @@ export default function NewVersionPage({
         {/* ── Secret requirements ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Secret requirements</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.secretRequirements}
+            </CardTitle>
             <CardDescription>
-              Secret references — name + ref only, never plaintext (ADR §3.3).
+              {t.studio.newVersion.secretRequirementsDescription}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -355,7 +381,7 @@ export default function NewVersionPage({
               ]}
               value={secretRequirements}
               onChange={setSecretRequirements}
-              addLabel="Add secret ref"
+              addLabel={t.studio.newVersion.addLabels.secret}
               createRow={() => ({ name: "", ref: "" })}
             />
           </CardContent>
@@ -364,12 +390,14 @@ export default function NewVersionPage({
         {/* ── Runtime limits ── */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Runtime limits</CardTitle>
+            <CardTitle className="text-base">
+              {t.studio.newVersion.runtimeLimits}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-3 gap-4">
               <div className="space-y-2">
-                <label htmlFor="max-steps">Max steps</label>
+                <label htmlFor="max-steps">{t.studio.newVersion.maxSteps}</label>
                 <Input
                   id="max-steps"
                   type="number"
@@ -379,7 +407,7 @@ export default function NewVersionPage({
                 />
               </div>
               <div className="space-y-2">
-                <label htmlFor="max-tokens">Max tokens</label>
+                <label htmlFor="max-tokens">{t.studio.newVersion.maxTokens}</label>
                 <Input
                   id="max-tokens"
                   type="number"
@@ -389,7 +417,7 @@ export default function NewVersionPage({
                 />
               </div>
               <div className="space-y-2">
-                <label htmlFor="timeout">Timeout (s)</label>
+                <label htmlFor="timeout">{t.studio.newVersion.timeout}</label>
                 <Input
                   id="timeout"
                   type="number"
@@ -408,10 +436,12 @@ export default function NewVersionPage({
             variant="outline"
             onClick={() => router.push(`/studio/packages/${packageId}`)}
           >
-            Cancel
+            {t.studio.newVersion.cancel}
           </Button>
           <Button type="submit" disabled={!canSubmit}>
-            {createVersion.isPending ? "Creating…" : "Create version"}
+            {createVersion.isPending
+              ? t.studio.newVersion.creating
+              : t.studio.newVersion.submit}
           </Button>
         </div>
       </form>

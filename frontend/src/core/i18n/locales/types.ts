@@ -173,6 +173,8 @@ export interface Translations {
     contactUs: string;
     about: string;
     logout: string;
+    adminConsole: string;
+    studio: string;
     gatewayUnavailable: string;
     gatewayUnavailableRetrying: string;
   };
@@ -453,6 +455,236 @@ export interface Translations {
     acknowledge: {
       emptyTitle: string;
       emptyDescription: string;
+    };
+  };
+
+  // Admin Console
+  admin: {
+    title: string;
+    backToWorkspace: string;
+    nav: {
+      runs: string;
+      usage: string;
+      audit: string;
+    };
+    runs: {
+      title: string;
+      description: string;
+      loadError: string;
+      unknownError: string;
+      loading: string;
+      loadMore: string;
+      emptyTitle: string;
+      emptyDescription: string;
+      columns: {
+        runId: string;
+        status: string;
+        model: string;
+        tokens: string;
+        user: string;
+        created: string;
+        error: string;
+      };
+    };
+    usage: {
+      title: string;
+      description: string;
+      loadError: string;
+      unknownError: string;
+      noCompletedRuns: string;
+      tooltipFormatter: (tokens: string, runs: number) => string;
+      kpi: {
+        totalTokens: string;
+        totalRuns: string;
+        avgTokens: string;
+        outputInputRatio: string;
+      };
+      charts: {
+        tokensByModel: string;
+        tokensByModelDescription: string;
+        tokensByCaller: string;
+        tokensByCallerDescription: string;
+      };
+      breakdown: {
+        leadAgent: string;
+        subagent: string;
+        middleware: string;
+      };
+    };
+    audit: {
+      title: string;
+      description: string;
+      failures24h: string;
+      failureRate: string;
+      totalRuns24h: string;
+      statsUnavailable: string;
+      emptyTitle: (status: string) => string;
+      emptyDescription: string;
+    };
+    filter: {
+      all: string;
+      status: string;
+      allStatuses: string;
+    };
+  };
+
+  // Studio (Agent artifact & release console)
+  studio: {
+    title: string;
+    backToWorkspace: string;
+    nav: {
+      packages: string;
+      import: string;
+    };
+    packages: {
+      title: string;
+      description: string;
+      importAgent: string;
+      loadError: string;
+      loadErrorFallback: string;
+      emptyTitle: string;
+      emptyDescription: string;
+      columns: {
+        name: string;
+        displayName: string;
+        status: string;
+        created: string;
+      };
+    };
+    detail: {
+      loadErrorPackage: string;
+      loadErrorVersions: string;
+      loadErrorChannels: string;
+      tabs: {
+        versions: string;
+        channels: string;
+        overview: string;
+      };
+      newVersion: string;
+      versionEmptyTitle: string;
+      versionEmptyDescription: string;
+      versionColumns: {
+        version: string;
+        digest: string;
+        status: string;
+        size: string;
+        created: string;
+        actions: string;
+      };
+      actions: {
+        reviewing: string;
+        review: string;
+        publishing: string;
+        publish: string;
+        revoking: string;
+        revoke: string;
+      };
+      currentLabel: string;
+      emptyPointer: string;
+      promoteLabel: string;
+      rollbackLabel: string;
+      selectVersionPlaceholder: string;
+      toLabel: string;
+      historyLabel: string;
+      byLabel: string;
+      systemActor: string;
+      promotePermTitle: (perm: string) => string;
+      promotePermTitleDev: (perm: string) => string;
+      rollbackPermTitle: (perm: string) => string;
+      metaTitle: string;
+      reconcile: string;
+      reconciling: string;
+      archive: string;
+      archiving: string;
+      meta: {
+        id: string;
+        name: string;
+        displayName: string;
+        description: string;
+        status: string;
+        workspace: string;
+        createdBy: string;
+        createdAt: string;
+        updatedAt: string;
+      };
+    };
+    importPage: {
+      title: string;
+      description: string;
+      methodTitle: string;
+      methodDescription: string;
+      permissionHint: string;
+      successImported: string;
+      successIdempotent: string;
+      successImportedDesc: string;
+      successIdempotentDesc: string;
+      labels: {
+        agentDirName: string;
+        agentDirNameTitle: string;
+        version: string;
+        displayName: string;
+        displayNamePlaceholder: string;
+        userId: string;
+        userIdPlaceholder: string;
+        description: string;
+        descriptionPlaceholder: string;
+      };
+      importing: string;
+      submit: string;
+      meta: {
+        package: string;
+        version: string;
+        status: string;
+        digest: string;
+      };
+    };
+    newVersion: {
+      title: string;
+      back: string;
+      permissionHint: string;
+      basics: string;
+      basicsDescription: string;
+      semverError: string;
+      contentLabel: string;
+      contentPlaceholder: string;
+      manifestCore: string;
+      manifestCoreDescription: string;
+      schemaVersion: string;
+      agentEntry: string;
+      agentEntryPlaceholder: string;
+      soulPrompt: string;
+      soulPromptPlaceholder: string;
+      modelRequirements: string;
+      skills: string;
+      skillsDescription: string;
+      tools: string;
+      mcpServers: string;
+      mcpServersDescription: string;
+      dependencies: string;
+      dependenciesDescription: string;
+      networkRequirements: string;
+      networkRequirementsDescription: string;
+      secretRequirements: string;
+      secretRequirementsDescription: string;
+      runtimeLimits: string;
+      maxSteps: string;
+      maxTokens: string;
+      timeout: string;
+      cancel: string;
+      creating: string;
+      submit: string;
+      addLabels: {
+        model: string;
+        skill: string;
+        tool: string;
+        mcp: string;
+        dependency: string;
+        network: string;
+        secret: string;
+      };
+    };
+    dynamicList: {
+      removeRow: string;
     };
   };
 }

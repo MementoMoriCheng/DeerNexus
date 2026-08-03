@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAdminUsage } from "@/core/admin";
+import { useI18n } from "@/core/i18n/hooks";
 import { formatTokenCount } from "@/core/messages/usage";
 
 // Tailwind design tokens (oklch) exposed in globals.css — recharts needs the
@@ -54,6 +55,7 @@ interface ModelRow {
  * tokens + run count.
  */
 export function UsageCharts({ since }: { since?: string }) {
+  const { t } = useI18n();
   const { data, isLoading, isError, error } = useAdminUsage({
     since: since,
   });
@@ -66,9 +68,9 @@ export function UsageCharts({ since }: { since?: string }) {
           <EmptyMedia>
             <AlertCircleIcon className="text-destructive size-8" />
           </EmptyMedia>
-          <EmptyTitle>Failed to load usage</EmptyTitle>
+          <EmptyTitle>{t.admin.usage.loadError}</EmptyTitle>
           <EmptyDescription>
-            {error instanceof Error ? error.message : "Unknown error"}
+            {error instanceof Error ? error.message : t.admin.usage.unknownError}
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -105,28 +107,34 @@ export function UsageCharts({ since }: { since?: string }) {
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
-          label="Total tokens"
+          label={t.admin.usage.kpi.totalTokens}
           value={formatTokenCount(data.total_tokens)}
         />
-        <KpiCard label="Total runs" value={data.total_runs.toLocaleString()} />
         <KpiCard
-          label="Avg tokens / run"
+          label={t.admin.usage.kpi.totalRuns}
+          value={data.total_runs.toLocaleString()}
+        />
+        <KpiCard
+          label={t.admin.usage.kpi.avgTokens}
           value={formatTokenCount(Math.round(avgPerRun))}
         />
-        <KpiCard label="Output : Input" value={`${ioRatio.toFixed(2)}×`} />
+        <KpiCard
+          label={t.admin.usage.kpi.outputInputRatio}
+          value={`${ioRatio.toFixed(2)}×`}
+        />
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Tokens by model</CardTitle>
+          <CardTitle>{t.admin.usage.charts.tokensByModel}</CardTitle>
           <CardDescription>
-            Top 5 models; remaining grouped as &quot;other&quot;.
+            {t.admin.usage.charts.tokensByModelDescription}
           </CardDescription>
         </CardHeader>
         <CardContent>
           {top.length === 0 ? (
             <p className="text-muted-foreground py-8 text-center text-sm">
-              No completed runs in this window.
+              {t.admin.usage.noCompletedRuns}
             </p>
           ) : (
             <div className="h-[320px] w-full">
@@ -165,7 +173,10 @@ export function UsageCharts({ since }: { since?: string }) {
                         runs: 0,
                       };
                       return [
-                        `${formatTokenCount(Number(value) || 0)} tokens · ${row.runs} runs`,
+                        t.admin.usage.tooltipFormatter(
+                          formatTokenCount(Number(value) || 0),
+                          row.runs,
+                        ),
                         row.model,
                       ];
                     }}
@@ -187,9 +198,9 @@ export function UsageCharts({ since }: { since?: string }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Tokens by caller</CardTitle>
+          <CardTitle>{t.admin.usage.charts.tokensByCaller}</CardTitle>
           <CardDescription>
-            Lead agent vs subagent vs middleware breakdown.
+            {t.admin.usage.charts.tokensByCallerDescription}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -224,11 +235,12 @@ function ByCallerBreakdown({
   subagent: number;
   middleware: number;
 }) {
+  const { t } = useI18n();
   const total = lead + subagent + middleware || 1;
   const rows = [
-    { label: "Lead agent", value: lead },
-    { label: "Subagent", value: subagent },
-    { label: "Middleware", value: middleware },
+    { label: t.admin.usage.breakdown.leadAgent, value: lead },
+    { label: t.admin.usage.breakdown.subagent, value: subagent },
+    { label: t.admin.usage.breakdown.middleware, value: middleware },
   ];
   return (
     <div className="space-y-3">
