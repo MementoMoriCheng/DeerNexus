@@ -8,8 +8,10 @@ import {
   type RunsFilter,
 } from "@/components/admin/runs-filter-bar";
 import { RunsTable } from "@/components/admin/runs-table";
+import { useI18n } from "@/core/i18n/hooks";
 
 export default function AdminRunsPage() {
+  const { t } = useI18n();
   const [filter, setFilter] = useState<RunsFilter>({
     status: undefined,
     window: "7d",
@@ -18,10 +20,9 @@ export default function AdminRunsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-xl font-semibold">Runs</h1>
+        <h1 className="text-xl font-semibold">{t.admin.runs.title}</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          All runs in your active Org. Use the filters to narrow by status or
-          time window.
+          {t.admin.runs.description}
         </p>
       </div>
       <RunsFilterBar filter={filter} onChange={setFilter} />

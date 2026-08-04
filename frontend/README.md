@@ -1,6 +1,6 @@
-# DeerFlow Frontend
+# DeerNexus Frontend
 
-Like the original DeerFlow 1.0, we would love to give the community a minimalistic and easy-to-use web interface with a more modern and flexible architecture.
+DeerNexus fork 自开源超级智能体框架 DeerFlow，在其执行层之上构建企业级多租户 Agent 操作系统的控制平面。前端沿用 DeerFlow 的现代化架构，提供组织隔离、操作审计与版本发布的生产级界面。
 
 ## Tech Stack
 

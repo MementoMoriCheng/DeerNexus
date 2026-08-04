@@ -20,9 +20,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useI18n } from "@/core/i18n/hooks";
 import { useStudioPackages } from "@/core/studio";
 
 export default function StudioPackagesPage() {
+  const { t } = useI18n();
   const { data: packages, isLoading, isError, error } = useStudioPackages();
 
   return (
@@ -30,14 +32,14 @@ export default function StudioPackagesPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            Agent Packages
+            {t.studio.packages.title}
           </h1>
           <p className="text-muted-foreground text-sm">
-            Manage agent artifacts, versions, and release channels.
+            {t.studio.packages.description}
           </p>
         </div>
         <Button asChild variant="outline" size="sm">
-          <Link href="/studio/import">Import agent</Link>
+          <Link href="/studio/import">{t.studio.packages.importAgent}</Link>
         </Button>
       </div>
 
@@ -45,14 +47,14 @@ export default function StudioPackagesPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-destructive text-base">
-              Failed to load packages
+              {t.studio.packages.loadError}
             </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-muted-foreground text-sm">
               {error instanceof Error
                 ? error.message
-                : "The gateway may be unreachable, or you may lack studio permission."}
+                : t.studio.packages.loadErrorFallback}
             </p>
           </CardContent>
         </Card>
@@ -61,10 +63,9 @@ export default function StudioPackagesPage() {
       ) : !packages || packages.length === 0 ? (
         <Empty>
           <EmptyHeader>
-            <EmptyTitle>No agent packages yet</EmptyTitle>
+            <EmptyTitle>{t.studio.packages.emptyTitle}</EmptyTitle>
             <EmptyDescription>
-              Import an agent from the file-state layout to create its first
-              package and version.
+              {t.studio.packages.emptyDescription}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -73,10 +74,10 @@ export default function StudioPackagesPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Display name</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created</TableHead>
+                <TableHead>{t.studio.packages.columns.name}</TableHead>
+                <TableHead>{t.studio.packages.columns.displayName}</TableHead>
+                <TableHead>{t.studio.packages.columns.status}</TableHead>
+                <TableHead>{t.studio.packages.columns.created}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

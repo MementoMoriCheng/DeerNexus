@@ -10,11 +10,12 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useI18n } from "@/core/i18n/hooks";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
   href: string;
-  label: string;
+  labelKey: "runs" | "usage" | "audit";
   icon: React.ComponentType<{ className?: string }>;
   /** Match prefix for active-state detection. */
   matchPrefix: string;
@@ -23,25 +24,26 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   {
     href: "/admin/runs",
-    label: "Runs",
+    labelKey: "runs",
     icon: ActivityIcon,
     matchPrefix: "/admin/runs",
   },
   {
     href: "/admin/usage",
-    label: "Usage",
+    labelKey: "usage",
     icon: BarChart3Icon,
     matchPrefix: "/admin/usage",
   },
   {
     href: "/admin/audit",
-    label: "Failure / Audit",
+    labelKey: "audit",
     icon: AlertTriangleIcon,
     matchPrefix: "/admin/audit",
   },
 ];
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
   const pathname = usePathname();
   return (
     <div className="bg-background text-foreground flex min-h-svh flex-col">
@@ -52,7 +54,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             className="flex items-center gap-2 font-semibold"
           >
             <ShieldCheckIcon className="text-primary size-5" />
-            <span>Admin Console</span>
+            <span>{t.admin.title}</span>
           </Link>
           <nav className="flex items-center gap-1">
             {NAV_ITEMS.map((item) => {
@@ -70,7 +72,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                   )}
                 >
                   <Icon className="size-4" />
-                  {item.label}
+                  {t.admin.nav[item.labelKey]}
                 </Link>
               );
             })}
@@ -81,7 +83,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
               className="text-muted-foreground hover:bg-accent hover:text-accent-foreground inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
             >
               <ArrowLeftIcon className="size-4" />
-              Back to Workspace
+              {t.admin.backToWorkspace}
             </Link>
           </div>
         </div>

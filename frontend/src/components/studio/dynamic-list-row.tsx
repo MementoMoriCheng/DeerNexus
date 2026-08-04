@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useI18n } from "@/core/i18n/hooks";
 
 /**
  * Reusable dynamic row editor for the Manifest editor's `list[dict]` fields
@@ -56,6 +57,7 @@ export function DynamicListRow<T>({
   addLabel,
   createRow,
 }: DynamicListRowProps<T>) {
+  const { t } = useI18n();
   function updateRow(index: number, key: string, raw: string) {
     const field = fields.find((f) => f.key === key);
     const coerced =
@@ -108,7 +110,7 @@ export function DynamicListRow<T>({
             size="sm"
             variant="outline"
             onClick={() => removeRow(index)}
-            aria-label="Remove row"
+            aria-label={t.studio.dynamicList.removeRow}
           >
             ✕
           </Button>

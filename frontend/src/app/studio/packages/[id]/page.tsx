@@ -27,6 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useI18n } from "@/core/i18n/hooks";
 import type { ReleaseChannelName, VersionStatus } from "@/core/studio";
 import {
   STUDIO_PERM,
@@ -53,15 +54,22 @@ export default function StudioPackageDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id: packageId } = use(params);
+  const { t } = useI18n();
 
   return (
     <div className="space-y-6">
       <PackageHeader packageId={packageId} />
       <Tabs defaultValue="versions">
         <TabsList>
-          <TabsTrigger value="versions">Versions</TabsTrigger>
-          <TabsTrigger value="channels">Channels</TabsTrigger>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="versions">
+            {t.studio.detail.tabs.versions}
+          </TabsTrigger>
+          <TabsTrigger value="channels">
+            {t.studio.detail.tabs.channels}
+          </TabsTrigger>
+          <TabsTrigger value="overview">
+            {t.studio.detail.tabs.overview}
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="versions" className="mt-4">
           <VersionsTab packageId={packageId} />
@@ -78,12 +86,15 @@ export default function StudioPackageDetailPage({
 }
 
 function PackageHeader({ packageId }: { packageId: string }) {
+  const { t } = useI18n();
   const { data: pkg, isLoading, isError, error } = useStudioPackage(packageId);
   if (isLoading) return <Skeleton className="h-10 w-full" />;
   if (isError || !pkg) {
     return (
       <p className="text-destructive text-sm">
-        {error instanceof Error ? error.message : "Failed to load package."}
+        {error instanceof Error
+          ? error.message
+          : t.studio.detail.loadErrorPackage}
       </p>
     );
   }
@@ -105,6 +116,7 @@ function PackageHeader({ packageId }: { packageId: string }) {
 // ── Versions tab ──────────────────────────────────────────────────────
 
 function VersionsTab({ packageId }: { packageId: string }) {
+  const { t } = useI18n();
   const {
     data: versions,
     isLoading,
@@ -116,7 +128,7 @@ function VersionsTab({ packageId }: { packageId: string }) {
   const newVersionButton = (
     <Link href={`/studio/packages/${packageId}/new-version`}>
       <Button size="sm" disabled={writePerm.disabled} title={writePerm.title}>
-        New version
+        {t.studio.detail.newVersion}
       </Button>
     </Link>
   );
@@ -125,7 +137,9 @@ function VersionsTab({ packageId }: { packageId: string }) {
   if (isError) {
     return (
       <p className="text-destructive text-sm">
-        {error instanceof Error ? error.message : "Failed to load versions."}
+        {error instanceof Error
+          ? error.message
+          : t.studio.detail.loadErrorVersions}
       </p>
     );
   }
@@ -135,10 +149,9 @@ function VersionsTab({ packageId }: { packageId: string }) {
         <div className="flex justify-end">{newVersionButton}</div>
         <Empty>
           <EmptyHeader>
-            <EmptyTitle>No versions</EmptyTitle>
+            <EmptyTitle>{t.studio.detail.versionEmptyTitle}</EmptyTitle>
             <EmptyDescription>
-              Import this agent from the file-state layout, or create a new
-              version manually with the full manifest editor.
+              {t.studio.detail.versionEmptyDescription}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -152,12 +165,14 @@ function VersionsTab({ packageId }: { packageId: string }) {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Version</TableHead>
-              <TableHead>Digest</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Size</TableHead>
-              <TableHead>Created</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              <TableHead>{t.studio.detail.versionColumns.version}</TableHead>
+              <TableHead>{t.studio.detail.versionColumns.digest}</TableHead>
+              <TableHead>{t.studio.detail.versionColumns.status}</TableHead>
+              <TableHead>{t.studio.detail.versionColumns.size}</TableHead>
+              <TableHead>{t.studio.detail.versionColumns.created}</TableHead>
+              <TableHead className="text-right">
+                {t.studio.detail.versionColumns.actions}
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -197,6 +212,7 @@ function VersionActions({
   versionId: string;
   status: VersionStatus;
 }) {
+  const { t } = useI18n();
   const review = useReviewVersion();
   const publish = usePublishVersion();
   const revoke = useRevokeVersion();
@@ -213,7 +229,9 @@ function VersionActions({
           title={perm.title}
           onClick={() => review.mutate(versionId)}
         >
-          {review.isPending ? "Reviewing…" : "Review"}
+          {review.isPending
+            ? t.studio.detail.actions.reviewing
+            : t.studio.detail.actions.review}
         </Button>
       )}
       {status === "reviewed" && (
@@ -224,7 +242,9 @@ function VersionActions({
           title={perm.title}
           onClick={() => publish.mutate(versionId)}
         >
-          {publish.isPending ? "Publishing…" : "Publish"}
+          {publish.isPending
+            ? t.studio.detail.actions.publishing
+            : t.studio.detail.actions.publish}
         </Button>
       )}
       {status === "published" && (
@@ -235,7 +255,9 @@ function VersionActions({
           title={perm.title}
           onClick={() => revoke.mutate(versionId)}
         >
-          {revoke.isPending ? "Revoking…" : "Revoke"}
+          {revoke.isPending
+            ? t.studio.detail.actions.revoking
+            : t.studio.detail.actions.revoke}
         </Button>
       )}
     </div>
@@ -245,6 +267,7 @@ function VersionActions({
 // ── Channels tab ──────────────────────────────────────────────────────
 
 function ChannelsTab({ packageId }: { packageId: string }) {
+  const { t } = useI18n();
   const {
     data: channels,
     isLoading,
@@ -257,7 +280,9 @@ function ChannelsTab({ packageId }: { packageId: string }) {
   if (isError) {
     return (
       <p className="text-destructive text-sm">
-        {error instanceof Error ? error.message : "Failed to load channels."}
+        {error instanceof Error
+          ? error.message
+          : t.studio.detail.loadErrorChannels}
       </p>
     );
   }
@@ -294,6 +319,7 @@ function ChannelCard({
 }) {
   // A channel row may not exist yet (NULL until first promote). Treat absent
   // as an empty pointer; the events query only runs once the channel row exists.
+  const { t } = useI18n();
   const currentVersionId = channel?.current_version_id ?? null;
   const rowVersion = channel?.row_version ?? 0;
   const { data: events } = useStudioChannelEvents(
@@ -311,9 +337,11 @@ function ChannelCard({
   const canRollback = useStudioPermission(STUDIO_PERM.rollback);
   const promotePermTitle =
     channelName === "dev"
-      ? `Requires ${STUDIO_PERM.promoteDev} permission`
-      : `Requires ${STUDIO_PERM.promote} permission (admin only)`;
-  const rollbackPermTitle = `Requires ${STUDIO_PERM.rollback} permission (admin only)`;
+      ? t.studio.detail.promotePermTitleDev(STUDIO_PERM.promoteDev)
+      : t.studio.detail.promotePermTitle(STUDIO_PERM.promote);
+  const rollbackPermTitle = t.studio.detail.rollbackPermTitle(
+    STUDIO_PERM.rollback,
+  );
 
   // Versions eligible to promote onto this channel (published for prod, broader for dev/staging).
   const promotableVersions = versions.filter(
@@ -335,16 +363,22 @@ function ChannelCard({
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm">
-          <span className="text-muted-foreground">Current: </span>
+          <span className="text-muted-foreground">
+            {t.studio.detail.currentLabel}
+          </span>
           {currentVersion ? (
             <span className="font-mono">{currentVersion.version}</span>
           ) : (
-            <span className="text-muted-foreground italic">empty</span>
+            <span className="text-muted-foreground italic">
+              {t.studio.detail.emptyPointer}
+            </span>
           )}
         </p>
         <div className="flex flex-wrap gap-2">
           <ChannelMoveSelect
-            label="Promote"
+            label={t.studio.detail.promoteLabel}
+            toLabel={t.studio.detail.toLabel}
+            selectPlaceholder={t.studio.detail.selectVersionPlaceholder}
             disabled={
               promote.isPending ||
               promotableVersions.length === 0 ||
@@ -365,7 +399,9 @@ function ChannelCard({
             }
           />
           <ChannelMoveSelect
-            label="Rollback"
+            label={t.studio.detail.rollbackLabel}
+            toLabel={t.studio.detail.toLabel}
+            selectPlaceholder={t.studio.detail.selectVersionPlaceholder}
             disabled={
               rollback.isPending ||
               promotableVersions.length === 0 ||
@@ -389,7 +425,7 @@ function ChannelCard({
         {events && events.length > 0 && (
           <div className="border-t pt-3">
             <p className="text-muted-foreground mb-2 text-xs font-medium tracking-wide uppercase">
-              History
+              {t.studio.detail.historyLabel}
             </p>
             <div className="space-y-1">
               {events.slice(0, 5).map((e) => (
@@ -398,7 +434,10 @@ function ChannelCard({
                   className="text-muted-foreground flex items-center gap-2 text-xs"
                 >
                   <span className="font-mono">{e.action}</span>
-                  <span>by {e.actor_id ?? "system"}</span>
+                  <span>
+                    {t.studio.detail.byLabel}{" "}
+                    {e.actor_id ?? t.studio.detail.systemActor}
+                  </span>
                   <span className="tabular-nums">
                     {new Date(e.created_at).toLocaleString()}
                   </span>
@@ -415,6 +454,8 @@ function ChannelCard({
 /** A small inline select+button to pick a target version and submit a CAS move. */
 function ChannelMoveSelect({
   label,
+  toLabel,
+  selectPlaceholder,
   disabled,
   disabledTitle,
   versions,
@@ -422,6 +463,8 @@ function ChannelMoveSelect({
   onSubmit,
 }: {
   label: string;
+  toLabel: string;
+  selectPlaceholder: string;
   disabled: boolean;
   disabledTitle?: string;
   versions: { id: string; version: string; status: string }[];
@@ -444,7 +487,8 @@ function ChannelMoveSelect({
       }}
     >
       <label className="text-muted-foreground flex flex-col gap-1 text-xs">
-        {label} to
+        {label}
+        {toLabel}
         <select
           name="target"
           disabled={disabled}
@@ -453,7 +497,7 @@ function ChannelMoveSelect({
           defaultValue=""
         >
           <option value="" disabled>
-            select version…
+            {selectPlaceholder}
           </option>
           {versions.map((v) => (
             <option key={v.id} value={v.id}>
@@ -478,6 +522,7 @@ function ChannelMoveSelect({
 // ── Overview tab ──────────────────────────────────────────────────────
 
 function OverviewTab({ packageId }: { packageId: string }) {
+  const { t } = useI18n();
   const { data: pkg, isLoading, isError, error } = useStudioPackage(packageId);
   const archive = useArchivePackage();
   const reconcile = useReconcileInventory();
@@ -488,29 +533,45 @@ function OverviewTab({ packageId }: { packageId: string }) {
   if (isError || !pkg) {
     return (
       <p className="text-destructive text-sm">
-        {error instanceof Error ? error.message : "Failed to load package."}
+        {error instanceof Error
+          ? error.message
+          : t.studio.detail.loadErrorPackage}
       </p>
     );
   }
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Package metadata</CardTitle>
+        <CardTitle className="text-base">{t.studio.detail.metaTitle}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        <MetaRow label="ID" value={pkg.id} mono />
-        <MetaRow label="Name" value={pkg.name} mono />
-        <MetaRow label="Display name" value={pkg.display_name} />
-        <MetaRow label="Description" value={pkg.description ?? "—"} />
-        <MetaRow label="Status" value={pkg.status} />
-        <MetaRow label="Workspace" value={pkg.workspace_id ?? "—"} mono />
-        <MetaRow label="Created by" value={pkg.created_by ?? "—"} mono />
+        <MetaRow label={t.studio.detail.meta.id} value={pkg.id} mono />
+        <MetaRow label={t.studio.detail.meta.name} value={pkg.name} mono />
         <MetaRow
-          label="Created at"
+          label={t.studio.detail.meta.displayName}
+          value={pkg.display_name}
+        />
+        <MetaRow
+          label={t.studio.detail.meta.description}
+          value={pkg.description ?? "—"}
+        />
+        <MetaRow label={t.studio.detail.meta.status} value={pkg.status} />
+        <MetaRow
+          label={t.studio.detail.meta.workspace}
+          value={pkg.workspace_id ?? "—"}
+          mono
+        />
+        <MetaRow
+          label={t.studio.detail.meta.createdBy}
+          value={pkg.created_by ?? "—"}
+          mono
+        />
+        <MetaRow
+          label={t.studio.detail.meta.createdAt}
           value={new Date(pkg.created_at).toLocaleString()}
         />
         <MetaRow
-          label="Updated at"
+          label={t.studio.detail.meta.updatedAt}
           value={new Date(pkg.updated_at).toLocaleString()}
         />
         <div className="flex flex-wrap gap-2 border-t pt-3">
@@ -521,7 +582,9 @@ function OverviewTab({ packageId }: { packageId: string }) {
             title={writePerm.title}
             onClick={() => reconcile.mutate()}
           >
-            {reconcile.isPending ? "Reconciling…" : "Reconcile inventory"}
+            {reconcile.isPending
+              ? t.studio.detail.reconciling
+              : t.studio.detail.reconcile}
           </Button>
           {pkg.status === "active" && (
             <Button
@@ -531,7 +594,9 @@ function OverviewTab({ packageId }: { packageId: string }) {
               title={writePerm.title}
               onClick={() => archive.mutate(packageId)}
             >
-              {archive.isPending ? "Archiving…" : "Archive package"}
+              {archive.isPending
+                ? t.studio.detail.archiving
+                : t.studio.detail.archive}
             </Button>
           )}
         </div>

@@ -32,7 +32,7 @@ export function Welcome({
     if (isUltra) {
       return ["#efefbb", "#e9c665", "#e3a812"];
     }
-    return ["var(--color-foreground)"];
+    return ["var(--brand-from)", "var(--brand-to)"];
   }, [isUltra]);
   useEffect(() => {
     waved = true;

@@ -1,67 +1,52 @@
 /**
- * About DeerFlow markdown content. Inlined to avoid raw-loader dependency
+ * About DeerNexus markdown content. Inlined to avoid raw-loader dependency
  * (Turbopack cannot resolve raw-loader for .md imports).
  */
-export const aboutMarkdown = `# 🦌 [About DeerFlow 2.0](https://github.com/bytedance/deer-flow)
+export const aboutMarkdown = `# 关于 DeerNexus
 
-> **From Open Source, Back to Open Source**
+> **企业级多租户 Agent 操作系统**
 
-DeerFlow (**D**eep **E**xploration and **E**fficient **R**esearch **Flow**) is an open-source **super agent harness** that orchestrates **sub-agents**, **memory**, and **sandboxes** to do almost anything — powered by **extensible skills**.
-
----
-
-## 🚀 Core Features
-
-* **Skills & Tools**: With built-in and extensible skills and tools, DeerFlow can do almost anything.
-* **Sub-Agents**: Sub-Agents help the main agent to do the tasks that are too complex to be done by the main agent.
-* **Sandbox & File System**: Safely execute code and manipulate files in the sandbox.
-* **Context Engineering**: Isolated sub-agent context, summarization to keep the context window sharp.
-* **Long-Term Memory**: Keep recording the user's profile, top of mind, and conversation history.
+DeerNexus 是面向企业的多租户 Agent 操作系统（Agent OS），在开源超级智能体能力之上，
+构建组织隔离、操作审计与版本发布的生产级控制平面，安全编排每一个 Agent 生产场景。
 
 ---
 
-## 🌟 GitHub Repository
+## 🛡️ 三大命脉
 
-![Star History Chart](https://api.star-history.com/svg?repos=bytedance/deer-flow&type=Date)
+* **组织隔离（Org Isolation）**：TenantContext 贯穿 HTTP、异步任务、Scheduler、IM 与 Worker，
+  跨 Org 资源在任何已知入口均不可见、不可操作。
+* **操作可审计（Auditable Operations）**：关键管理写入、权限变更、Agent 发布与回滚全部产生
+  AuditEvent，append-only、可查询、可导出，OrgA 查询不返回 OrgB。
+* **版本可发布（Versioned Releases）**：生产 Run 只执行不可变 ReleaseRef（digest 锁定），
+  v1 → v2 → rollback 全链路可重现，历史 Run 引用永不漂移。
 
-Explore DeerFlow on GitHub: [github.com/bytedance/deer-flow](https://github.com/bytedance/deer-flow)
+---
 
-## 🌐 Official Website
+## 🔧 核心能力
 
-Visit the official website of DeerFlow: [deerflow.tech](https://deerflow.tech/)
+* **Skills & Tools**：内置与可扩展的技能与工具，覆盖研究、编码、生成与部署。
+* **Sub-Agents**：子智能体分担复杂多步骤任务，并行编排。
+* **Sandbox & File System**：在安全 Docker 沙箱中执行代码与操作文件。
+* **RBAC & ServiceAccount**：角色矩阵、API Key 范围收窄、默认拒绝。
+* **Run Lease & Reconcile**：多副本 Run 所有权协调，Redis 非权威、PostgreSQL 终态优先。
 
-## 📧 Support
+---
 
-If you have any questions or need help, please contact us at [support@deerflow.tech](mailto:support@deerflow.tech).
+## 🌐 仓库
+
+探索 DeerNexus：[github.com/MementoMoriCheng/DeerNexus](https://github.com/MementoMoriCheng/DeerNexus)
 
 ---
 
 ## 📜 License
 
-DeerFlow is proudly open source and distributed under the **MIT License**.
+DeerNexus 基于 **MIT License** 开源。
 
 ---
 
-## 🙌 Acknowledgments
+## 🙌 致谢
 
-We extend our heartfelt gratitude to the open source projects and contributors who have made DeerFlow a reality. We truly stand on the shoulders of giants.
-
-### Core Frameworks
-- **[LangChain](https://github.com/langchain-ai/langchain)**: A phenomenal framework that powers our LLM interactions and chains.
-- **[LangGraph](https://github.com/langchain-ai/langgraph)**: Enabling sophisticated multi-agent orchestration.
-- **[Next.js](https://nextjs.org/)**: A cutting-edge framework for building web applications.
-
-### UI Libraries
-- **[Shadcn](https://ui.shadcn.com/)**: Minimalistic components that power our UI.
-- **[SToneX](https://github.com/stonexer)**: For his invaluable contribution to token-by-token visual effects.
-
-These outstanding projects form the backbone of DeerFlow and exemplify the transformative power of open source collaboration.
-
-### Special Thanks
-Finally, we want to express our heartfelt gratitude to the core authors of DeerFlow 1.0 and 2.0:
-
-- **[Daniel Walnut](https://github.com/hetaoBackend/)**
-- **[Henry Li](https://github.com/magiccube/)**
-
-Without their vision, passion and dedication, \`DeerFlow\` would not be what it is today.
+DeerNexus fork 自开源超级智能体框架 [DeerFlow](https://github.com/bytedance/deer-flow)
+（bytedance/deer-flow），感谢上游作者与开源社区的卓越贡献。我们站在巨人的肩膀上，
+将超级智能体能力推向企业级多租户生产场景。
 `;
