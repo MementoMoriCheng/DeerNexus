@@ -91,13 +91,9 @@ class TestModelProviderRepository:
     async def test_duplicate_name_raises_integrity_error(self, repo):
         from sqlalchemy.exc import IntegrityError
 
-        await repo.create(
-            owner_user_id="alice", name="dup", model="m", api_key="k1"
-        )
+        await repo.create(owner_user_id="alice", name="dup", model="m", api_key="k1")
         with pytest.raises(IntegrityError):
-            await repo.create(
-                owner_user_id="alice", name="dup", model="m2", api_key="k2"
-            )
+            await repo.create(owner_user_id="alice", name="dup", model="m2", api_key="k2")
 
     @pytest.mark.anyio
     async def test_same_name_allowed_for_different_owners(self, repo):
@@ -120,9 +116,7 @@ class TestModelProviderRepository:
 
     @pytest.mark.anyio
     async def test_update_without_api_key_keeps_existing_key(self, repo):
-        created = await repo.create(
-            owner_user_id="alice", name="p1", model="m", api_key="original-key"
-        )
+        created = await repo.create(owner_user_id="alice", name="p1", model="m", api_key="original-key")
         updated = await repo.update(
             owner_user_id="alice",
             provider_id=created.id,
@@ -138,9 +132,7 @@ class TestModelProviderRepository:
 
     @pytest.mark.anyio
     async def test_update_with_api_key_rotates_encrypted_value(self, repo):
-        created = await repo.create(
-            owner_user_id="alice", name="p1", model="m", api_key="old-key"
-        )
+        created = await repo.create(owner_user_id="alice", name="p1", model="m", api_key="old-key")
         updated = await repo.update(
             owner_user_id="alice",
             provider_id=created.id,
@@ -151,9 +143,7 @@ class TestModelProviderRepository:
 
     @pytest.mark.anyio
     async def test_update_returns_none_for_other_owner(self, repo):
-        created = await repo.create(
-            owner_user_id="alice", name="p1", model="m", api_key="k"
-        )
+        created = await repo.create(owner_user_id="alice", name="p1", model="m", api_key="k")
         result = await repo.update(
             owner_user_id="bob",
             provider_id=created.id,
@@ -175,9 +165,7 @@ class TestModelProviderRepository:
 
     @pytest.mark.anyio
     async def test_get_by_id_scoped_to_owner(self, repo):
-        created = await repo.create(
-            owner_user_id="alice", name="p1", model="m", api_key="k"
-        )
+        created = await repo.create(owner_user_id="alice", name="p1", model="m", api_key="k")
         assert (await repo.get_by_id("alice", created.id)) is not None
         assert (await repo.get_by_id("bob", created.id)) is None
 

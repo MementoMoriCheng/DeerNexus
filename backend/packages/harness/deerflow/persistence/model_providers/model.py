@@ -43,20 +43,10 @@ class ModelProviderRow(Base):
     use: Mapped[str] = mapped_column(String(200), nullable=False)
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
-    supports_thinking: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("0")
-    )
-    supports_reasoning_effort: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("0")
-    )
+    supports_thinking: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("0"))
+    supports_reasoning_effort: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("0"))
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utc_now
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
 
-    __table_args__ = (
-        UniqueConstraint("owner_user_id", "name", name="uq_model_providers_owner_name"),
-    )
+    __table_args__ = (UniqueConstraint("owner_user_id", "name", name="uq_model_providers_owner_name"),)

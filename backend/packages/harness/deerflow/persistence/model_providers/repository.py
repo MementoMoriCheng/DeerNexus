@@ -79,13 +79,7 @@ class ModelProviderRepository:
     async def list_by_user(self, owner_user_id: str) -> list[ModelProviderRecord]:
         """Return all providers owned by ``owner_user_id`` (decrypted)."""
         async with self.session_factory() as session:
-            rows = (
-                await session.scalars(
-                    select(ModelProviderRow)
-                    .where(ModelProviderRow.owner_user_id == owner_user_id)
-                    .order_by(ModelProviderRow.created_at)
-                )
-            ).all()
+            rows = (await session.scalars(select(ModelProviderRow).where(ModelProviderRow.owner_user_id == owner_user_id).order_by(ModelProviderRow.created_at))).all()
             return [_row_to_record(row, self._cipher) for row in rows]
 
     async def get(self, owner_user_id: str, name: str) -> ModelProviderRecord | None:
@@ -100,9 +94,7 @@ class ModelProviderRepository:
             ).first()
             return _row_to_record(row, self._cipher) if row else None
 
-    async def get_by_id(
-        self, owner_user_id: str, provider_id: str
-    ) -> ModelProviderRecord | None:
+    async def get_by_id(self, owner_user_id: str, provider_id: str) -> ModelProviderRecord | None:
         async with self.session_factory() as session:
             row = (
                 await session.scalars(

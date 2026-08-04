@@ -120,9 +120,7 @@ async def list_model_providers(request: Request) -> ModelProviderListResponse:
 
 
 @router.post("", response_model=ModelProviderResponse, status_code=201, summary="Create Model Provider")
-async def create_model_provider(
-    payload: CreateModelProviderRequest, request: Request
-) -> ModelProviderResponse:
+async def create_model_provider(payload: CreateModelProviderRequest, request: Request) -> ModelProviderResponse:
     """Register a new private model provider for the current user."""
     repo = _get_repository(request)
     try:
@@ -139,16 +137,12 @@ async def create_model_provider(
             supports_reasoning_effort=payload.supports_reasoning_effort,
         )
     except IntegrityError:
-        raise HTTPException(
-            status_code=409, detail=f"A model provider named '{payload.name}' already exists"
-        )
+        raise HTTPException(status_code=409, detail=f"A model provider named '{payload.name}' already exists")
     return _to_response(record)
 
 
 @router.put("/{provider_id}", response_model=ModelProviderResponse, summary="Update Model Provider")
-async def update_model_provider(
-    provider_id: str, payload: UpdateModelProviderRequest, request: Request
-) -> ModelProviderResponse:
+async def update_model_provider(provider_id: str, payload: UpdateModelProviderRequest, request: Request) -> ModelProviderResponse:
     """Update an editable field set of a provider owned by the current user."""
     repo = _get_repository(request)
     fields = payload.model_dump(exclude={"api_key"}, exclude_unset=True)

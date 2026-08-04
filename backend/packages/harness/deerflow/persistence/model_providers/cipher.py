@@ -43,8 +43,7 @@ def get_model_provider_cipher() -> ChannelCredentialCipher:
     # on a single-node dev setup. Logged at warning level so operators notice.
     if not getattr(get_model_provider_cipher, "_warned_dev_key", False):
         logger.warning(
-            "%s is not set — using a derived dev-only key for model-provider "
-            "API-key encryption. Set this env var in production.",
+            "%s is not set — using a derived dev-only key for model-provider API-key encryption. Set this env var in production.",
             _ENV_KEY,
         )
         get_model_provider_cipher._warned_dev_key = True  # type: ignore[attr-defined]
