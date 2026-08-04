@@ -61,11 +61,7 @@ export interface AgentVersion {
 
 /** Closed status set for an AgentVersion (ADR §4 state machine). */
 export type VersionStatus =
-  | "draft"
-  | "reviewed"
-  | "published"
-  | "revoked"
-  | "archived";
+  "draft" | "reviewed" | "published" | "revoked" | "archived";
 
 // ── Manifest (ADR-0004 §3.3) ─────────────────────────────────────────
 //

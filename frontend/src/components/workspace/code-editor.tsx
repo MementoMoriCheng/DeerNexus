@@ -6,7 +6,6 @@ import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
-import { languages } from "@codemirror/language-data";
 import { basicLightInit } from "@uiw/codemirror-theme-basic";
 import { monokaiInit } from "@uiw/codemirror-theme-monokai";
 import CodeMirror from "@uiw/react-codemirror";
@@ -64,7 +63,6 @@ export function CodeEditor({
       json(),
       markdown({
         base: markdownLanguage,
-        codeLanguages: languages,
       }),
       python(),
     ];
