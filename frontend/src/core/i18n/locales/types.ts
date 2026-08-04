@@ -318,7 +318,57 @@ export interface Translations {
       tools: string;
       skills: string;
       notification: string;
+      models: string;
       about: string;
+    };
+    models: {
+      title: string;
+      description: string;
+      addButton: string;
+      editButton: string;
+      deleteButton: string;
+      emptyTitle: string;
+      emptyDescription: string;
+      securityHint: string;
+      apiKeySet: string;
+      apiKeyUnset: string;
+      thinkingLabel: string;
+      reasoningEffortLabel: string;
+      dialog: {
+        createTitle: string;
+        editTitle: string;
+        description: string;
+        nameLabel: string;
+        namePlaceholder: string;
+        nameHint: string;
+        displayNameLabel: string;
+        displayNamePlaceholder: string;
+        descriptionLabel: string;
+        descriptionPlaceholder: string;
+        modelLabel: string;
+        modelPlaceholder: string;
+        baseUrlLabel: string;
+        baseUrlPlaceholder: string;
+        apiKeyLabel: string;
+        apiKeyPlaceholder: string;
+        apiKeyEditHint: string;
+        thinkingLabel: string;
+        reasoningEffortLabel: string;
+        cancelButton: string;
+        submitButton: string;
+        submitButtonEditing: string;
+      };
+      validation: {
+        nameRequired: string;
+        nameInvalid: string;
+        modelRequired: string;
+        baseUrlRequired: string;
+        apiKeyRequired: string;
+      };
+      deleteConfirm: string;
+      deleteSuccess: string;
+      createSuccess: string;
+      updateSuccess: string;
     };
     memory: {
       title: string;
