@@ -12,6 +12,7 @@ from app.gateway.config import DEFAULT_ORG_NAME, DEFAULT_ORG_SLUG, get_gateway_c
 from app.gateway.correlation_middleware import CorrelationMiddleware
 from app.gateway.csrf_middleware import CSRFMiddleware, get_configured_cors_origins
 from app.gateway.deps import langgraph_runtime
+from app.gateway.model_provider_middleware import ModelProviderConfigMiddleware
 from app.gateway.routers import admin as admin_router
 from app.gateway.routers import (
     agent_artifacts,
@@ -639,6 +640,17 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # BaseHTTPMiddleware runs in reverse add order inside call_next: the
     # middleware added LAST runs FIRST. To run tenant resolution AFTER auth,
     # register it BEFORE AuthMiddleware here.
+    # Per-user model-provider config injection (PR-B). Registered BEFORE
+    # TenantResolution & AuthMiddleware so it runs AFTER auth
+    # (BaseHTTPMiddleware runs in reverse add order inside call_next: the
+    # middleware added LAST runs FIRST / outermost; added FIRST runs LAST /
+    # innermost — i.e. inside AuthMiddleware's call_next where
+    # request.state.user is already populated). Reads request.state.user and
+    # pushes a merged AppConfig onto the request-scoped ContextVar so
+    # /api/models and the LLM call chain both see the user's private
+    # providers. Fail-open: any error falls back to the base config.
+    app.add_middleware(ModelProviderConfigMiddleware)
+
     app.add_middleware(TenantResolutionMiddleware)
 
     # Auth: reject unauthenticated requests to non-public paths (fail-closed safety net)
