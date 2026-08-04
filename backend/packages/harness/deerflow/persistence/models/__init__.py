@@ -34,6 +34,7 @@ from deerflow.persistence.iam.model import (
     RoleRow,
     ServiceAccountRow,
 )
+from deerflow.persistence.model_providers.model import ModelProviderRow
 from deerflow.persistence.models.run_event import RunEventRow
 from deerflow.persistence.orgs.model import (
     ExternalIdentityRow,
@@ -68,6 +69,7 @@ __all__ = [
     "ChannelOAuthStateRow",
     "ExternalIdentityRow",
     "FeedbackRow",
+    "ModelProviderRow",
     "OidcGroupMappingRow",
     "OrgMembershipRow",
     "OrganizationRow",
