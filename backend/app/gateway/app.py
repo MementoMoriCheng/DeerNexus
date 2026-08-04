@@ -26,6 +26,7 @@ from app.gateway.routers import (
     iam,
     mcp,
     memory,
+    model_providers,
     models,
     runs,
     skills,
@@ -669,6 +670,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
     # Include routers
     # Models API is mounted at /api/models
     app.include_router(models.router)
+
+    # User-owned custom model-provider CRUD is mounted at /api/model-providers
+    app.include_router(model_providers.router)
 
     # MCP API is mounted at /api/mcp
     app.include_router(mcp.router)
