@@ -536,6 +536,7 @@ export function useThreadStream({
         thread_id: meta.thread_id,
         created_at: now,
         updated_at: now,
+        state_updated_at: now,
         metadata: context.agent_name ? { agent_name: context.agent_name } : {},
         status: "busy",
         values: {
@@ -549,6 +550,7 @@ export function useThreadStream({
         thread_id: meta.thread_id,
         created_at: now,
         updated_at: now,
+        state_updated_at: now,
         metadata: context.agent_name ? { agent_name: context.agent_name } : {},
         status: "busy",
         values: {
@@ -636,18 +638,16 @@ export function useThreadStream({
               exact: false,
             },
             (oldData: InfiniteData<AgentThread[]> | undefined) =>
-              mapInfiniteThreadsCache(
-                oldData,
-                (t): AgentThread =>
-                  t.thread_id === threadIdRef.current
-                    ? {
-                        ...t,
-                        values: {
-                          ...t.values,
-                          title: nextTitle,
-                        },
-                      }
-                    : t,
+              mapInfiniteThreadsCache(oldData, (t): AgentThread =>
+                t.thread_id === threadIdRef.current
+                  ? {
+                      ...t,
+                      values: {
+                        ...t.values,
+                        title: nextTitle,
+                      },
+                    }
+                  : t,
               ),
           );
         }

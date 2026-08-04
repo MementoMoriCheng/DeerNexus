@@ -47,7 +47,7 @@ async function readErrorDetail(
     detail !== null &&
     typeof detail === "object" &&
     "message" in detail &&
-    typeof (detail as { message: unknown }).message === "string"
+    typeof detail.message === "string"
   ) {
     return (detail as { message: string }).message;
   }

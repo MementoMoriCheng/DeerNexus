@@ -64,7 +64,11 @@ export function CodeEditor({
       json(),
       markdown({
         base: markdownLanguage,
-        codeLanguages: languages,
+        // @codemirror/language-data and @codemirror/lang-markdown pull
+        // different @codemirror/language patch versions, so the
+        // LanguageDescription types clash on a private property. The runtime
+        // values are identical — cast bridges the version split.
+        codeLanguages: languages as unknown as never,
       }),
       python(),
     ];
