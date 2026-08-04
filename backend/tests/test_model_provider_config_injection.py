@@ -22,6 +22,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -33,10 +34,40 @@ from app.gateway.model_provider_middleware import (
     ModelProviderConfigMiddleware,
     merge_user_models,
 )
-from deerflow.config.app_config import peek_current_app_config
+from deerflow.config.app_config import AppConfig, peek_current_app_config, reset_app_config, set_app_config
 from deerflow.config.model_config import ModelConfig
+from deerflow.config.sandbox_config import SandboxConfig
 from deerflow.persistence.channel_connections.sql import ChannelCredentialCipher
 from deerflow.persistence.model_providers.repository import ModelProviderRepository
+
+# A deterministic base config so the integration tests don't depend on a
+# real config.yaml (which is absent in CI). ``set_app_config`` installs it as
+# the process-global AppConfig; the middleware merges user providers on top.
+_BASE_MODELS = [
+    ModelConfig(name="gpt-4o", use="langchain_openai:ChatOpenAI", model="gpt-4o"),
+    ModelConfig(name="claude", use="langchain_anthropic:ChatAnthropic", model="claude-3"),
+]
+
+
+def _base_app_config() -> AppConfig:
+    return AppConfig(sandbox=SandboxConfig(use="test"), models=list(_BASE_MODELS))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_app_config():
+    """Install a deterministic base AppConfig and clear any ContextVar override.
+
+    Without this, ``get_app_config()`` tries to load config.yaml, which does
+    not exist in CI → 503. We also reset afterwards so the override / global
+    never leaks into sibling tests.
+    """
+    reset_app_config()
+    set_app_config(_base_app_config())
+    try:
+        yield
+    finally:
+        reset_app_config()
+
 
 # ---------------------------------------------------------------------------
 # Pure unit tests for the merge helper
