@@ -46,8 +46,10 @@ beforeEach(() => {
 });
 
 describe("model-providers api", () => {
-  test("listModelProviders GETs the collection and returns parsed body", async () => {
-    mockedFetch.mockResolvedValueOnce(jsonResponse(200, [SAMPLE_PROVIDER]));
+  test("listModelProviders GETs the collection and unwraps { providers: [...] }", async () => {
+    mockedFetch.mockResolvedValueOnce(
+      jsonResponse(200, { providers: [SAMPLE_PROVIDER] }),
+    );
 
     const result = await listModelProviders();
 
@@ -55,8 +57,14 @@ describe("model-providers api", () => {
     expect(mockedFetch).toHaveBeenCalledWith("/backend/api/model-providers");
   });
 
-  test("listModelProviders returns empty list when backend responds []", async () => {
-    mockedFetch.mockResolvedValueOnce(jsonResponse(200, []));
+  test("listModelProviders returns empty list when backend responds { providers: [] }", async () => {
+    mockedFetch.mockResolvedValueOnce(jsonResponse(200, { providers: [] }));
+
+    await expect(listModelProviders()).resolves.toEqual([]);
+  });
+
+  test("listModelProviders tolerates a missing providers field", async () => {
+    mockedFetch.mockResolvedValueOnce(jsonResponse(200, {}));
 
     await expect(listModelProviders()).resolves.toEqual([]);
   });
