@@ -527,7 +527,14 @@ export function useThreadStream({
     client: getAPIClient(isMock),
     assistantId: "lead_agent",
     threadId: onStreamThreadId,
-    reconnectOnMount: true,
+    // Disabled: @langchain/langgraph-sdk 1.9.x's reconnectOnMount=true path
+    // re-derives `reconnectKey` on every render once sessionStorage holds a
+    // run id, and the effect that calls joinStream does not guard against
+    // re-entry cleanly — producing an infinite setState loop
+    // ("Maximum update depth exceeded") on the first submit. Setting this to
+    // false disables cross-refresh stream resumption (a minor UX loss: a page
+    // refresh no longer rejoins an in-flight run) but restores normal sending.
+    reconnectOnMount: false,
     fetchStateHistory: { limit: 1 },
     onCreated(meta) {
       handleStreamStart(meta.thread_id, meta.run_id);
