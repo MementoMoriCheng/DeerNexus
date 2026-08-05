@@ -42,7 +42,10 @@ export async function listModelProviders(): Promise<ModelProvider[]> {
       `Failed to load model providers: ${response.statusText}`,
     );
   }
-  return (await response.json()) as ModelProvider[];
+  // The backend wraps the list in { providers: [...] } (ModelProviderListResponse);
+  // unwrap so the hook always sees a flat array.
+  const data = (await response.json()) as { providers?: ModelProvider[] };
+  return data.providers ?? [];
 }
 
 export async function createModelProvider(
