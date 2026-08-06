@@ -63,6 +63,12 @@ _ENDED_SUFFIX = "ended"
 _FIELD_EVENT = "event"
 _FIELD_DATA = "data"
 
+#: TTL (seconds) applied to stream + ended keys so they self-expire even if
+#: the worker's delayed ``cleanup()`` task never runs (process crash / shutdown
+#: before the 60s delay). Generous beyond any realistic SSE replay window; the
+#: explicit ``cleanup()`` still deletes immediately when it can.
+_STREAM_KEY_TTL_SECONDS = 3600
+
 
 def _stream_key(run_id: str) -> str:
     return f"{STREAM_KEY_PREFIX}:{run_id}"
@@ -155,6 +161,12 @@ class RedisStreamBridge(StreamBridge):
                 maxlen=self._maxlen,
                 approximate=True,
             )
+            # Refresh a TTL on every publish so the stream key self-expires
+            # even if the worker's delayed cleanup task never runs (process
+            # crash / shutdown before the 60s delay elapses). The TTL is
+            # generous (well beyond any realistic SSE replay window) and the
+            # explicit cleanup() still deletes immediately when it can.
+            await self._client.expire(key, _STREAM_KEY_TTL_SECONDS)
         except Exception:  # noqa: BLE001
             from deerflow.observability.metrics import inc_stream_bridge_redis_error
 
@@ -171,7 +183,9 @@ class RedisStreamBridge(StreamBridge):
         observe it once the retained events have been drained.
         """
         try:
+            ended_key = _ended_key(run_id)
             await self._client.set(_ended_key(run_id), "1")
+            await self._client.expire(ended_key, _STREAM_KEY_TTL_SECONDS)
         except Exception:  # noqa: BLE001
             from deerflow.observability.metrics import inc_stream_bridge_redis_error
 

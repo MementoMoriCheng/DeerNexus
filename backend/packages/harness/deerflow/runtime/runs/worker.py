@@ -666,7 +666,21 @@ async def run_agent(
                 logger.debug("Failed to update thread_meta status for %s (non-fatal)", thread_id)
 
         await bridge.publish_end(run_id)
-        asyncio.create_task(bridge.cleanup(run_id, delay=60))
+        # Schedule a delayed cleanup to delete the Redis stream + ended keys
+        # ahead of their TTL. The keys now carry a TTL at write time (see
+        # RedisStreamBridge.publish / publish_end), so a missed cleanup (process
+        # exit before the 60s delay) is no longer a leak — the TTL reclaims them.
+        # The task is still logged on failure so a chronic Redis issue surfaces.
+        _cleanup_task = asyncio.create_task(bridge.cleanup(run_id, delay=60))
+
+        def _log_cleanup_failure(t: asyncio.Task) -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.debug("Stream bridge cleanup failed for run %s", run_id, exc_info=exc)
+
+        _cleanup_task.add_done_callback(_log_cleanup_failure)
 
         # PR-063: observe §4.3 run_duration_seconds by terminal status. The
         # label is the final RunStatus (success / error / interrupted), giving
