@@ -401,13 +401,23 @@ class RunManager:
         )
 
     async def update_run_completion(self, run_id: str, **kwargs) -> None:
-        """Persist token usage and completion data to the backing store."""
+        """Persist token usage and completion data to the backing store.
+
+        With ``expected_row_version`` (PR-070), the store write is a CAS: a
+        concurrent writer that already moved the row to a terminal state
+        (e.g. ``interrupted`` from cancel) causes this write to return ``False``
+        — the completion data is then dropped rather than clobbering the winner
+        (PR-077 §16.72: cancel-vs-completion single winner).
+        """
+        expected_row_version = kwargs.get("expected_row_version")
         row_recovery_payload: dict[str, Any] | None = None
         async with self._lock:
             record = self._runs.get(run_id)
             if record is not None:
                 for key, value in kwargs.items():
                     if key == "status":
+                        continue
+                    if key == "expected_row_version":
                         continue
                     if hasattr(record, key) and value is not None:
                         setattr(record, key, value)
@@ -422,6 +432,16 @@ class RunManager:
                 lambda: self._store.update_run_completion(run_id, **kwargs),
             )
             if updated is False:
+                # CAS mismatch (expected_row_version set) means a concurrent
+                # writer won the terminal state — do NOT recreate the row or
+                # retry; the winner's status stands.
+                if expected_row_version is not None:
+                    logger.info(
+                        "Run %s completion CAS mismatch (expected row_version=%s) — a concurrent writer (likely cancel) won; completion data dropped",
+                        run_id,
+                        expected_row_version,
+                    )
+                    return
                 if row_recovery_payload is None:
                     logger.warning("Failed to recreate missing run %s for completion persistence", run_id)
                     return

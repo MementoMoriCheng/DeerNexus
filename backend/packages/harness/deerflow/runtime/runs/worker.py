@@ -629,9 +629,18 @@ async def run_agent(
                 logger.warning("Failed to flush journal for run %s", run_id, exc_info=True)
 
             try:
-                # Persist token usage + convenience fields to RunStore
+                # Persist token usage + convenience fields to RunStore.
+                # Gate on expected_row_version so a concurrent cancel that won
+                # the terminal CAS (interrupted) is NOT clobbered by this
+                # completion write (PR-070 §16.65 / PR-077 §16.72: cancel-vs-
+                # completion is arbitrated by the terminal CAS, single winner).
                 completion = journal.get_completion_data()
-                await run_manager.update_run_completion(run_id, status=record.status.value, **completion)
+                await run_manager.update_run_completion(
+                    run_id,
+                    status=record.status.value,
+                    expected_row_version=record.row_version,
+                    **completion,
+                )
             except Exception:
                 logger.warning("Failed to persist run completion for %s (non-fatal)", run_id, exc_info=True)
 
