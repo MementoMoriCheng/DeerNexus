@@ -33,7 +33,7 @@ import json
 import logging
 import secrets
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
@@ -138,15 +138,20 @@ def is_expired(record: ClaimRecord, *, now: datetime | None = None) -> bool:
 
 
 # Lua: renew only if the stored lease_token matches. Returns 1 on success, 0
-# otherwise. The token is read out of the stored JSON value via a ``token``
-# field that we inject into the value at write time (see _value_with_token) so
-# Lua can compare without a full JSON parse.
+# otherwise. Updates BOTH the Redis key TTL AND the ``lease_expires_at`` field
+# in the stored JSON value — a bare ``SET key current EX ttl`` would leave the
+# embedded ``lease_expires_at`` frozen at the claim-time value, so a Reconciler
+# (PR-072) reading the stale field via ``is_expired`` would reclaim a lease
+# whose Redis key is still very much alive (Bug: long runs killed at ~TTL).
+# ARGV: [1]=lease_token, [2]=ttl_seconds, [3]=new lease_expires_at (ISO string).
 _RENEW_SCRIPT = """
 local current = redis.call('GET', KEYS[1])
 if not current then return 0 end
 local t = cjson.decode(current)
 if t['lease_token'] ~= ARGV[1] then return 0 end
-redis.call('SET', KEYS[1], current, 'EX', tonumber(ARGV[2]))
+t['lease_expires_at'] = ARGV[3]
+local updated = cjson.encode(t)
+redis.call('SET', KEYS[1], updated, 'EX', tonumber(ARGV[2]))
 return 1
 """
 
@@ -295,9 +300,15 @@ class RedisLeaseStore:
         return ClaimResult(record=None, current_holder=holder)
 
     async def renew(self, record: ClaimRecord, *, org_id: str, ttl_seconds: int = LEASE_TTL_SECONDS) -> bool:
-        """Extend the lease for ``record`` (which must carry the current token)."""
+        """Extend the lease for ``record`` (which must carry the current token).
+
+        Refreshes both the Redis key TTL and the ``lease_expires_at`` field in
+        the stored JSON so a Reconciler's ``is_expired`` check reflects the
+        renewed window, not the claim-time snapshot.
+        """
         key = ownership_key(org_id=org_id, run_id=record.run_id)
-        result = await self._client.eval(_RENEW_SCRIPT, 1, key, record.lease_token, ttl_seconds)
+        new_expires = _now() + timedelta(seconds=ttl_seconds)
+        result = await self._client.eval(_RENEW_SCRIPT, 1, key, record.lease_token, ttl_seconds, new_expires.isoformat())
         return bool(result)
 
     async def release(self, record: ClaimRecord, *, org_id: str) -> bool:
