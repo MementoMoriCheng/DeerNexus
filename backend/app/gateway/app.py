@@ -431,18 +431,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
             run_manager = getattr(app.state, "run_manager", None)
             if run_manager is not None:
-                # Build the lease store from the production Redis URL (Null when
-                # unset — single-worker reconcile falls back to the local-task
-                # check). The run event store feeds run.reconcile.result events.
-                from deerflow.runtime.runs.ownership import make_lease_store
-
-                _cfg = get_app_config()
-                _redis_url = getattr(getattr(_cfg.production, "redis", None), "url", None)
+                # Reuse the process-wide lease store singleton (built at lifespan
+                # startup on app.state). The run event store feeds
+                # run.reconcile.result events.
                 reconcile_stop = asyncio.Event()
                 reconcile_task = asyncio.create_task(
                     run_reconcile_worker(
                         run_manager,
-                        lease_store=make_lease_store(_redis_url),
+                        lease_store=getattr(app.state, "lease_store", None),
                         run_event_store=getattr(app.state, "run_event_store", None),
                         stop_event=reconcile_stop,
                     ),

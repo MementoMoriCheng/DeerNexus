@@ -141,6 +141,21 @@ def get_config() -> AppConfig:
         raise HTTPException(status_code=503, detail="Configuration not available") from exc
 
 
+def _null_lease_store():
+    """Return a cached :class:`NullLeaseStore` for dev / no-Redis fallback.
+
+    Built once and memoised so callers that miss the ``app.state.lease_store``
+    singleton (e.g. some test harnesses) still don't pay a per-request cost.
+    """
+    from deerflow.runtime.runs.ownership import NullLeaseStore
+
+    store = getattr(_null_lease_store, "_instance", None)
+    if store is None:
+        store = NullLeaseStore()
+        _null_lease_store._instance = store  # type: ignore[attr-defined]
+    return store
+
+
 def _make_cancel_notifier(redis_url: str | None):
     """Build a Redis cancel-notify publisher (PR-077, ADR-0006 §5.4 bullet 2).
 
@@ -258,13 +273,19 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
         _prod = getattr(config, "production", None)
         _redis_cfg = getattr(_prod, "redis", None) if _prod is not None else None
         _redis_url = getattr(_redis_cfg, "url", None) if _redis_cfg is not None else None
+        # Build the lease store ONCE as a process singleton on app.state so
+        # per-request callers (get_run_context) and background workers
+        # (reconciler) share one Redis connection pool instead of opening a
+        # new pool on every request (connection exhaustion under load).
+        lease_store = make_lease_store(_redis_url)
+        app.state.lease_store = lease_store
         # PR-077: wire the cancel-notify publisher now that the Redis URL is
         # resolved. Best-effort acceleration on top of the durable PG intent.
         app.state.run_manager._cancel_notifier = _make_cancel_notifier(_redis_url)  # noqa: SLF001
         recovered_runs = await app.state.run_manager.reconcile_orphaned_inflight_runs(
             error="Gateway restarted before this run reached a durable final state.",
             before=now_iso(),
-            lease_store=make_lease_store(_redis_url),
+            lease_store=lease_store,
             run_event_store=app.state.run_event_store,
         )
         await _mark_latest_recovered_threads_error(app.state.run_manager, app.state.thread_store, recovered_runs)
@@ -280,6 +301,14 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
             run_manager = getattr(app.state, "run_manager", None)
             if run_manager is not None:
                 await _drain_inflight_runs(run_manager)
+            # Close the shared lease store's Redis connection pool (no-op for
+            # NullLeaseStore).
+            _lease_store = getattr(app.state, "lease_store", None)
+            if _lease_store is not None:
+                try:
+                    await _lease_store.close()
+                except Exception:
+                    logger.warning("Failed to close lease store on shutdown", exc_info=True)
             await close_engine()
 
 
@@ -361,11 +390,9 @@ def get_run_context(request: Request) -> RunContext:
     ContextVar inheritance.
     """
     from deerflow.contracts import get_tenant_context
-    from deerflow.runtime.runs.ownership import make_lease_store
     from deerflow.runtime.runs.worker import WORKER_ID
 
     app_config = get_config()
-    redis_url = getattr(getattr(app_config.production, "redis", None), "url", None)
 
     return RunContext(
         checkpointer=get_checkpointer(request),
@@ -375,10 +402,12 @@ def get_run_context(request: Request) -> RunContext:
         thread_store=get_thread_store(request),
         app_config=app_config,
         tenant=get_tenant_context(),
-        # PR-071: ownership/lease. NullLeaseStore when no Redis is configured
-        # (dev / single replica) — claim is a no-op success there.
+        # PR-071: ownership/lease. Reuse the process-wide singleton built at
+        # lifespan startup (app.state.lease_store) so we don't open a new Redis
+        # connection pool on every request. Falls back to NullLeaseStore if the
+        # singleton isn't present (e.g. some test harnesses).
         worker_id=WORKER_ID,
-        lease_store=make_lease_store(redis_url),
+        lease_store=getattr(request.app.state, "lease_store", None) or _null_lease_store(),
     )
 
 
