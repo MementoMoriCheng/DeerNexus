@@ -51,6 +51,18 @@ def _get_repository(request: Request) -> ModelProviderRepository:
     return repo
 
 
+def _invalidate_cache(request: Request, user_id: str) -> None:
+    """Flush the per-user provider cache so the next request sees the write.
+
+    The config-injection middleware publishes its ``invalidate`` callback on
+    ``app.state.model_provider_cache_invalidate``; if absent (middleware not
+    registered or ASGI wrapper hides state) the TTL-only expiry still applies.
+    """
+    invalidate = getattr(request.app.state, "model_provider_cache_invalidate", None)
+    if callable(invalidate):
+        invalidate(user_id)
+
+
 class ModelProviderResponse(BaseModel):
     """Public view of a model provider — never exposes the API key."""
 
@@ -138,6 +150,7 @@ async def create_model_provider(payload: CreateModelProviderRequest, request: Re
         )
     except IntegrityError:
         raise HTTPException(status_code=409, detail=f"A model provider named '{payload.name}' already exists")
+    _invalidate_cache(request, str(record.owner_user_id))
     return _to_response(record)
 
 
@@ -157,6 +170,7 @@ async def update_model_provider(provider_id: str, payload: UpdateModelProviderRe
         raise HTTPException(status_code=409, detail="A model provider with that name already exists")
     if record is None:
         raise HTTPException(status_code=404, detail="Model provider not found")
+    _invalidate_cache(request, str(record.owner_user_id))
     return _to_response(record)
 
 
@@ -167,4 +181,5 @@ async def delete_model_provider(provider_id: str, request: Request) -> None:
     deleted = await repo.delete(_get_user_id(request), provider_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Model provider not found")
+    _invalidate_cache(request, _get_user_id(request))
     return None

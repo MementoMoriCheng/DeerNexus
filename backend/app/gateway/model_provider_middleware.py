@@ -134,6 +134,15 @@ class ModelProviderConfigMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         # user_id -> (fetched_at_monotonic, [ModelProviderRecord])
         self._cache: dict[str, tuple[float, list[ModelProviderRecord]]] = {}
+        # Publish the invalidate callback on app.state so the CRUD router can
+        # flush a user's cached providers immediately after a write (otherwise
+        # the TTL keeps serving stale data for up to 30s).
+        try:
+            app.state.model_provider_cache_invalidate = self.invalidate
+        except AttributeError:
+            # Some ASGI wrappers don't expose ``.state``; the router will fall
+            # back to the TTL-only expiry in that case.
+            pass
 
     async def dispatch(
         self,
