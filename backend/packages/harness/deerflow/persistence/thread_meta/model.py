@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from deerflow.persistence.base import Base
@@ -13,10 +13,6 @@ from deerflow.persistence.base import Base
 class ThreadMetaRow(Base):
     __tablename__ = "threads_meta"
     __table_args__ = (
-        # Compatible (temporary) org_id-prefixed listing index for org-scoped
-        # thread queries (data-model.md §1 #9, §7.1). Cleaned up at the
-        # Contract phase (§13.4). workspace_id intentionally omitted (PR-024).
-        Index("ix_threads_meta_org_updated", "org_id", "updated_at"),
         # Enforce (PR-025A): UNIQUE(org_id, thread_id) per §7.1. thread_id is
         # already the global PK, so this is declaratively satisfied today and
         # codifies the §1 #9 org-prefix-unique convention for future org-scoped

@@ -152,13 +152,16 @@ class TestRunRepository:
         await _cleanup()
 
     @pytest.mark.anyio
-    async def test_list_by_thread_owner_filter(self, tmp_path):
+    async def test_list_by_thread_no_user_filter_after_contract(self, tmp_path):
+        """Contract (PR-025D): store no longer filters by user_id — same thread
+        runs by different users are all visible at the store layer."""
         repo = await _make_repo(tmp_path)
         await repo.put("r1", thread_id="t1", user_id="alice")
         await repo.put("r2", thread_id="t1", user_id="bob")
-        rows = await repo.list_by_thread("t1", user_id="alice")
-        assert len(rows) == 1
-        assert rows[0]["user_id"] == "alice"
+        rows = await repo.list_by_thread("t1")
+        assert len(rows) == 2  # both visible (user filter removed)
+        user_ids = {r["user_id"] for r in rows}
+        assert user_ids == {"alice", "bob"}
         await _cleanup()
 
     @pytest.mark.anyio
@@ -429,11 +432,12 @@ class TestRunRepository:
         await _cleanup()
 
     @pytest.mark.anyio
-    async def test_owner_none_returns_all(self, tmp_path):
+    async def test_list_by_thread_all_visible_after_contract(self, tmp_path):
+        """Contract (PR-025D): user_id parameter no longer exists on list_by_thread."""
         repo = await _make_repo(tmp_path)
         await repo.put("r1", thread_id="t1", user_id="alice")
         await repo.put("r2", thread_id="t1", user_id="bob")
-        rows = await repo.list_by_thread("t1", user_id=None)
+        rows = await repo.list_by_thread("t1")
         assert len(rows) == 2
         await _cleanup()
 

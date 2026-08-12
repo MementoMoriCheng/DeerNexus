@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.gateway.deps import get_checkpointer, get_current_user, get_feedback_repo, get_run_event_store, get_run_manager, get_run_store, get_stream_bridge
+from app.gateway.deps import get_checkpointer, get_feedback_repo, get_run_event_store, get_run_manager, get_run_store, get_stream_bridge
 from app.gateway.errors import contract_error_response
 from app.gateway.pagination import trim_run_message_page
 from app.gateway.rbac import require_rbac
@@ -232,8 +232,7 @@ async def wait_run(thread_id: str, body: RunCreateRequest, request: Request) -> 
 async def list_runs(thread_id: str, request: Request) -> list[RunResponse]:
     """List all runs for a thread."""
     run_mgr = get_run_manager(request)
-    user_id = await get_current_user(request)
-    records = await run_mgr.list_by_thread(thread_id, user_id=user_id)
+    records = await run_mgr.list_by_thread(thread_id)
     return [_record_to_response(r) for r in records]
 
 
@@ -242,8 +241,7 @@ async def list_runs(thread_id: str, request: Request) -> list[RunResponse]:
 async def get_run(thread_id: str, run_id: str, request: Request) -> RunResponse:
     """Get details of a specific run."""
     run_mgr = get_run_manager(request)
-    user_id = await get_current_user(request)
-    record = await run_mgr.get(run_id, user_id=user_id)
+    record = await run_mgr.get(run_id)
     if record is None or record.thread_id != thread_id:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return _record_to_response(record)
@@ -397,8 +395,7 @@ async def list_thread_messages(
 
     # Attach feedback to the last AI message of each run
     feedback_repo = get_feedback_repo(request)
-    user_id = await get_current_user(request)
-    feedback_map = await feedback_repo.list_by_thread_grouped(thread_id, user_id=user_id)
+    feedback_map = await feedback_repo.list_by_thread_grouped(thread_id)
 
     # Find the last ai_message per run_id
     last_ai_per_run: dict[str, int] = {}  # run_id -> index in messages list

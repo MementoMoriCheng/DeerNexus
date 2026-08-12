@@ -143,15 +143,13 @@ class TestThreadMetaRepository:
     @pytest.mark.anyio
     async def test_update_owner_with_bypass_moves_row(self, repo):
         await repo.create("t1", user_id="default", metadata={"source": "channel"})
-        await repo.update_owner("t1", "owner-1", user_id=None)
+        await repo.update_owner("t1", "owner-1")
 
-        owner_row = await repo.get("t1", user_id="owner-1")
-        default_row = await repo.get("t1", user_id="default")
-
-        assert owner_row is not None
-        assert owner_row["user_id"] == "owner-1"
-        assert owner_row["metadata"] == {"source": "channel"}
-        assert default_row is None
+        # Contract: store reads are user-agnostic; check_access is the owner gate.
+        row = await repo.get("t1")
+        assert row is not None
+        assert row["user_id"] == "owner-1"
+        assert row["metadata"] == {"source": "channel"}
 
     # --- search with metadata filter (SQL push-down) ---
 

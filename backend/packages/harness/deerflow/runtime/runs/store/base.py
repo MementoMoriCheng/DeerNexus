@@ -4,10 +4,12 @@ RunManager depends on this interface. Implementations:
 - MemoryRunStore: in-memory dict (development, tests)
 - RunRepository: SQLAlchemy ORM (sqlite / postgres)
 
-All methods accept an optional ``user_id`` for user isolation, and since
-PR-024 an optional ``org_id`` for the hard tenant boundary
-(runtime-contracts §5.2, data-model §11.2). When either is ``None``, no
-filter on that dimension is applied (single-user / migration / CLI mode).
+Since PR-025D (Contract), ``org_id`` is the sole tenant boundary at the
+storage layer. The former ``user_id`` defense-in-depth filter has been
+removed — cross-user isolation within an org is enforced by
+``check_access`` / RBAC ``owner_check`` at the HTTP layer. ``user_id`` is
+still stamped on writes (for attribution / audit) but read methods no
+longer accept or filter on it.
 """
 
 from __future__ import annotations
@@ -55,7 +57,6 @@ class RunStore(abc.ABC):
         self,
         run_id: str,
         *,
-        user_id: str | None = None,
         org_id: str | None = None,
     ) -> dict[str, Any] | None:
         pass
@@ -65,7 +66,6 @@ class RunStore(abc.ABC):
         self,
         thread_id: str,
         *,
-        user_id: str | None = None,
         org_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
@@ -94,7 +94,7 @@ class RunStore(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def delete(self, run_id: str, *, user_id: str | None = None, org_id: str | None = None) -> None:
+    async def delete(self, run_id: str, *, org_id: str | None = None) -> None:
         pass
 
     @abc.abstractmethod

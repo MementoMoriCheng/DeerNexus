@@ -67,18 +67,15 @@ class FeedbackRepository:
         self,
         feedback_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> dict | None:
-        resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.get")
         resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.get")
         async with self._sf() as session:
             row = await session.get(FeedbackRow, feedback_id)
             if row is None:
                 return None
+            # org_id is the sole tenant boundary (PR-025D Contract).
             if resolved_org_id is not None and row.org_id != resolved_org_id:
-                return None
-            if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return None
             return self._row_to_dict(row)
 
@@ -88,16 +85,12 @@ class FeedbackRepository:
         run_id: str,
         *,
         limit: int = 100,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> list[dict]:
-        resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.list_by_run")
         resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.list_by_run")
         stmt = select(FeedbackRow).where(FeedbackRow.thread_id == thread_id, FeedbackRow.run_id == run_id)
         if resolved_org_id is not None:
             stmt = stmt.where(FeedbackRow.org_id == resolved_org_id)
-        if resolved_user_id is not None:
-            stmt = stmt.where(FeedbackRow.user_id == resolved_user_id)
         stmt = stmt.order_by(FeedbackRow.created_at.asc()).limit(limit)
         async with self._sf() as session:
             result = await session.execute(stmt)
@@ -108,16 +101,12 @@ class FeedbackRepository:
         thread_id: str,
         *,
         limit: int = 100,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> list[dict]:
-        resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.list_by_thread")
         resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.list_by_thread")
         stmt = select(FeedbackRow).where(FeedbackRow.thread_id == thread_id)
         if resolved_org_id is not None:
             stmt = stmt.where(FeedbackRow.org_id == resolved_org_id)
-        if resolved_user_id is not None:
-            stmt = stmt.where(FeedbackRow.user_id == resolved_user_id)
         stmt = stmt.order_by(FeedbackRow.created_at.asc()).limit(limit)
         async with self._sf() as session:
             result = await session.execute(stmt)
@@ -127,18 +116,14 @@ class FeedbackRepository:
         self,
         feedback_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> bool:
-        resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.delete")
         resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.delete")
         async with self._sf() as session:
             row = await session.get(FeedbackRow, feedback_id)
             if row is None:
                 return False
             if resolved_org_id is not None and row.org_id != resolved_org_id:
-                return False
-            if resolved_user_id is not None and row.user_id != resolved_user_id:
                 return False
             await session.delete(row)
             await session.commit()
@@ -154,10 +139,15 @@ class FeedbackRepository:
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
         comment: str | None = None,
     ) -> dict:
-        """Create or update feedback for (thread_id, run_id, user_id). rating must be +1 or -1.
+        """Create or update feedback for (org_id, thread_id, run_id, user_id). rating must be +1 or -1.
 
         ``org_id`` is stamped only on insert; the tenant boundary is immutable
         for an existing row, so the update branch does not overwrite it.
+
+        ``user_id`` is still resolved and stamped (for attribution / audit /
+        the org-scoped unique constraint), but it is no longer used as a
+        read filter on the other methods — those rely on ``org_id`` as the
+        sole tenant boundary (PR-025D Contract).
         """
         if rating not in (1, -1):
             raise ValueError(f"rating must be +1 or -1, got {rating}")
@@ -165,6 +155,7 @@ class FeedbackRepository:
         resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.upsert")
         async with self._sf() as session:
             stmt = select(FeedbackRow).where(
+                FeedbackRow.org_id == resolved_org_id,
                 FeedbackRow.thread_id == thread_id,
                 FeedbackRow.run_id == run_id,
                 FeedbackRow.user_id == resolved_user_id,
@@ -196,17 +187,22 @@ class FeedbackRepository:
         *,
         thread_id: str,
         run_id: str,
-        user_id: str | None | _AutoSentinel = AUTO,
+        user_id: str,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> bool:
-        """Delete the current user's feedback for a run. Returns True if a record was deleted."""
-        resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.delete_by_run")
+        """Delete a specific user's feedback for a run. Returns True if a record was deleted.
+
+        ``user_id`` is a *business key* here (which user's feedback to delete),
+        not a tenant filter — it matches the org-scoped unique constraint
+        ``(org_id, thread_id, run_id, user_id)``. The HTTP-layer ``owner_check``
+        ensures only the feedback author can reach this endpoint.
+        """
         resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.delete_by_run")
         async with self._sf() as session:
             conditions = [
                 FeedbackRow.thread_id == thread_id,
                 FeedbackRow.run_id == run_id,
-                FeedbackRow.user_id == resolved_user_id,
+                FeedbackRow.user_id == user_id,
             ]
             if resolved_org_id is not None:
                 conditions.append(FeedbackRow.org_id == resolved_org_id)
@@ -223,17 +219,13 @@ class FeedbackRepository:
         self,
         thread_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> dict[str, dict]:
         """Return feedback grouped by run_id for a thread: {run_id: feedback_dict}."""
-        resolved_user_id = resolve_user_id(user_id, method_name="FeedbackRepository.list_by_thread_grouped")
         resolved_org_id = resolve_org_id(org_id, method_name="FeedbackRepository.list_by_thread_grouped")
         stmt = select(FeedbackRow).where(FeedbackRow.thread_id == thread_id)
         if resolved_org_id is not None:
             stmt = stmt.where(FeedbackRow.org_id == resolved_org_id)
-        if resolved_user_id is not None:
-            stmt = stmt.where(FeedbackRow.user_id == resolved_user_id)
         async with self._sf() as session:
             result = await session.execute(stmt)
             return {row.run_id: self._row_to_dict(row) for row in result.scalars()}

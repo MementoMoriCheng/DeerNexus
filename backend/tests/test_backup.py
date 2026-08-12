@@ -207,7 +207,7 @@ class TestSnapshot:
     async def test_snapshot_records_alembic_head(self, sf):
         manifest = await take_snapshot(sf, backend="sqlite", declared_rpo_hours=24)
         # The test engine stamps head on bootstrap; the snapshot must record it.
-        assert manifest.schema_version == "0019_model_providers"
+        assert manifest.schema_version == "0020_contract_org_scope"
 
     def test_normalise_value_handles_datetime_bytes_uuid(self):
         from uuid import UUID

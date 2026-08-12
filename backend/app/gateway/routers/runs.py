@@ -98,7 +98,7 @@ async def stateless_wait(body: RunCreateRequest, request: Request) -> dict:
 async def _resolve_run(run_id: str, request: Request) -> dict:
     """Fetch run by run_id with user ownership check. Raises 404 if not found."""
     run_store = get_run_store(request)
-    record = await run_store.get(run_id)  # user_id=AUTO filters by contextvar
+    record = await run_store.get(run_id)  # org_id=AUTO_ORG filters by contextvar
     if record is None:
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     return record

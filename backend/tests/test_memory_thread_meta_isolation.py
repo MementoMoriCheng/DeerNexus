@@ -1,7 +1,9 @@
-"""Owner isolation tests for MemoryThreadMetaStore.
+"""MemoryThreadMetaStore visibility tests — Contract semantics (PR-025D).
 
-Mirrors the SQL-backed tests in test_owner_isolation.py but exercises
-the in-memory LangGraph Store backend used when database.backend=memory.
+After PR-025D (Contract), the storage layer no longer filters on ``user_id``
+— ``org_id`` is the sole tenant boundary. These tests verify the Contract
+property for the in-memory backend: within a single org, threads written
+by one user are visible to another user at the store layer.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ USER_B = SimpleNamespace(id="user-b", email="b@test.local")
 
 
 def _as_user(user):
-    """Bind the user + a default-org tenant (PR-024: writes resolve org_id)."""
+    """Bind the user + a default-org tenant."""
 
     class _Ctx:
         def __enter__(self):
@@ -56,121 +58,75 @@ def store():
 
 @pytest.mark.anyio
 @pytest.mark.no_auto_user
-async def test_search_isolation(store):
-    """search() returns only threads owned by the current user."""
+async def test_same_org_cross_user_visible(store):
+    """Contract: same-org threads are visible across users at the store layer."""
     with _as_user(USER_A):
         await store.create("t-alpha", display_name="A's thread")
     with _as_user(USER_B):
         await store.create("t-beta", display_name="B's thread")
 
+    # Both users see both threads (same org, no user filter).
     with _as_user(USER_A):
         results = await store.search()
-        assert [r["thread_id"] for r in results] == ["t-alpha"]
+        ids = {r["thread_id"] for r in results}
+        assert ids == {"t-alpha", "t-beta"}
 
     with _as_user(USER_B):
-        results = await store.search()
-        assert [r["thread_id"] for r in results] == ["t-beta"]
+        row = await store.get("t-alpha")
+        assert row is not None
+        assert row["display_name"] == "A's thread"
 
 
 @pytest.mark.anyio
 @pytest.mark.no_auto_user
-async def test_get_isolation(store):
-    """get() returns None for threads owned by another user."""
+async def test_check_access_still_enforces_owner(store):
+    """check_access is the HTTP-layer owner gate — it still distinguishes users."""
     with _as_user(USER_A):
         await store.create("t-alpha", display_name="A's thread")
 
     with _as_user(USER_B):
-        assert await store.get("t-alpha") is None
+        assert await store.check_access("t-alpha", "user-b") is False
 
     with _as_user(USER_A):
-        result = await store.get("t-alpha")
-        assert result is not None
-        assert result["display_name"] == "A's thread"
+        assert await store.check_access("t-alpha", "user-a") is True
 
 
 @pytest.mark.anyio
 @pytest.mark.no_auto_user
-async def test_update_display_name_denied(store):
-    """User B cannot rename User A's thread."""
+async def test_same_org_mutation_visible(store):
+    """Contract: mutations within the same org are visible to all org members."""
     with _as_user(USER_A):
         await store.create("t-alpha", display_name="original")
 
     with _as_user(USER_B):
-        await store.update_display_name("t-alpha", "hacked")
+        # Same org — mutation succeeds (store no longer filters by user).
+        await store.update_display_name("t-alpha", "updated by B")
 
     with _as_user(USER_A):
         row = await store.get("t-alpha")
         assert row is not None
-        assert row["display_name"] == "original"
+        assert row["display_name"] == "updated by B"
 
 
 @pytest.mark.anyio
 @pytest.mark.no_auto_user
-async def test_update_status_denied(store):
-    """User B cannot change status of User A's thread."""
-    with _as_user(USER_A):
-        await store.create("t-alpha")
-
-    with _as_user(USER_B):
-        await store.update_status("t-alpha", "error")
-
-    with _as_user(USER_A):
-        row = await store.get("t-alpha")
-        assert row is not None
-        assert row["status"] == "idle"
-
-
-@pytest.mark.anyio
-@pytest.mark.no_auto_user
-async def test_update_metadata_denied(store):
-    """User B cannot modify metadata of User A's thread."""
-    with _as_user(USER_A):
-        await store.create("t-alpha", metadata={"key": "original"})
-
-    with _as_user(USER_B):
-        await store.update_metadata("t-alpha", {"key": "hacked"})
-
-    with _as_user(USER_A):
-        row = await store.get("t-alpha")
-        assert row is not None
-        assert row["metadata"]["key"] == "original"
-
-
-@pytest.mark.anyio
-@pytest.mark.no_auto_user
-async def test_delete_denied(store):
-    """User B cannot delete User A's thread."""
-    with _as_user(USER_A):
-        await store.create("t-alpha")
-
-    with _as_user(USER_B):
-        await store.delete("t-alpha")
-
-    with _as_user(USER_A):
-        row = await store.get("t-alpha")
-        assert row is not None
-
-
-@pytest.mark.anyio
-@pytest.mark.no_auto_user
-async def test_no_context_raises(store):
-    """Calling methods without user/tenant context raises RuntimeError."""
-    # Bypass the user filter so the tenant resolver is the failing gate.
+async def test_no_tenant_context_raises(store):
+    """Calling methods without tenant context raises RuntimeError (fail-closed)."""
     with pytest.raises(RuntimeError):
-        await store.search(user_id=None)
+        await store.search()
 
 
 @pytest.mark.anyio
 @pytest.mark.no_auto_user
-async def test_explicit_none_bypasses_filter(store):
-    """user_id=None / org_id=None bypasses isolation (migration/CLI escape hatch)."""
+async def test_org_none_bypasses_filter(store):
+    """org_id=None bypasses the org filter (migration/CLI escape hatch)."""
     with _as_user(USER_A):
         await store.create("t-alpha")
     with _as_user(USER_B):
         await store.create("t-beta")
 
-    all_rows = await store.search(user_id=None, org_id=None)
+    all_rows = await store.search(org_id=None)
     assert {r["thread_id"] for r in all_rows} == {"t-alpha", "t-beta"}
 
-    row = await store.get("t-alpha", user_id=None, org_id=None)
+    row = await store.get("t-alpha", org_id=None)
     assert row is not None

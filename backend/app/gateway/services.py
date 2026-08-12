@@ -425,11 +425,11 @@ async def start_run(
             if existing is None and owner_user_id:
                 # Legacy-row repair: a thread exists with a different owner
                 # (pre-ownership data). This is a trusted internal repair path,
-                # so both user and org filters are bypassed.
-                unscoped_existing = await run_ctx.thread_store.get(thread_id, user_id=None, org_id=None)
+                # so the org filter is bypassed.
+                unscoped_existing = await run_ctx.thread_store.get(thread_id, org_id=None)
                 if unscoped_existing is not None:
                     if unscoped_existing.get("user_id") != owner_user_id:
-                        await run_ctx.thread_store.update_owner(thread_id, owner_user_id, user_id=None, org_id=None)
+                        await run_ctx.thread_store.update_owner(thread_id, owner_user_id, org_id=None)
                     existing = await run_ctx.thread_store.get(thread_id)
             if existing is None:
                 await run_ctx.thread_store.create(

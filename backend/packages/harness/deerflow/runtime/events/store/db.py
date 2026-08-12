@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from deerflow.contracts import AUTO_ORG, _OrgIdSentinel, get_tenant_context, resolve_org_id
 from deerflow.persistence.models.run_event import RunEventRow
 from deerflow.runtime.events.store.base import RunEventStore
-from deerflow.runtime.user_context import AUTO, _AutoSentinel, get_current_user, resolve_user_id
+from deerflow.runtime.user_context import get_current_user
 from deerflow.utils.time import coerce_iso
 
 logger = logging.getLogger(__name__)
@@ -203,16 +203,12 @@ class DbRunEventStore(RunEventStore):
         limit=50,
         before_seq=None,
         after_seq=None,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
-        resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.list_messages")
         resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.list_messages")
         stmt = select(RunEventRow).where(RunEventRow.thread_id == thread_id, RunEventRow.category == "message")
         if resolved_org_id is not None:
             stmt = stmt.where(RunEventRow.org_id == resolved_org_id)
-        if resolved_user_id is not None:
-            stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         if before_seq is not None:
             stmt = stmt.where(RunEventRow.seq < before_seq)
         if after_seq is not None:
@@ -239,16 +235,12 @@ class DbRunEventStore(RunEventStore):
         *,
         event_types=None,
         limit=500,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
-        resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.list_events")
         resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.list_events")
         stmt = select(RunEventRow).where(RunEventRow.thread_id == thread_id, RunEventRow.run_id == run_id)
         if resolved_org_id is not None:
             stmt = stmt.where(RunEventRow.org_id == resolved_org_id)
-        if resolved_user_id is not None:
-            stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         if event_types:
             stmt = stmt.where(RunEventRow.event_type.in_(event_types))
         stmt = stmt.order_by(RunEventRow.seq.asc()).limit(limit)
@@ -264,10 +256,8 @@ class DbRunEventStore(RunEventStore):
         limit=50,
         before_seq=None,
         after_seq=None,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
-        resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.list_messages_by_run")
         resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.list_messages_by_run")
         stmt = select(RunEventRow).where(
             RunEventRow.thread_id == thread_id,
@@ -276,8 +266,6 @@ class DbRunEventStore(RunEventStore):
         )
         if resolved_org_id is not None:
             stmt = stmt.where(RunEventRow.org_id == resolved_org_id)
-        if resolved_user_id is not None:
-            stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         if before_seq is not None:
             stmt = stmt.where(RunEventRow.seq < before_seq)
         if after_seq is not None:
@@ -299,16 +287,12 @@ class DbRunEventStore(RunEventStore):
         self,
         thread_id,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
-        resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.count_messages")
         resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.count_messages")
         stmt = select(func.count()).select_from(RunEventRow).where(RunEventRow.thread_id == thread_id, RunEventRow.category == "message")
         if resolved_org_id is not None:
             stmt = stmt.where(RunEventRow.org_id == resolved_org_id)
-        if resolved_user_id is not None:
-            stmt = stmt.where(RunEventRow.user_id == resolved_user_id)
         async with self._sf() as session:
             return await session.scalar(stmt) or 0
 
@@ -316,17 +300,13 @@ class DbRunEventStore(RunEventStore):
         self,
         thread_id,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
-        resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.delete_by_thread")
         resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.delete_by_thread")
         async with self._sf() as session:
             count_conditions = [RunEventRow.thread_id == thread_id]
             if resolved_org_id is not None:
                 count_conditions.append(RunEventRow.org_id == resolved_org_id)
-            if resolved_user_id is not None:
-                count_conditions.append(RunEventRow.user_id == resolved_user_id)
             count_stmt = select(func.count()).select_from(RunEventRow).where(*count_conditions)
             count = await session.scalar(count_stmt) or 0
             if count > 0:
@@ -339,17 +319,13 @@ class DbRunEventStore(RunEventStore):
         thread_id,
         run_id,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ):
-        resolved_user_id = resolve_user_id(user_id, method_name="DbRunEventStore.delete_by_run")
         resolved_org_id = resolve_org_id(org_id, method_name="DbRunEventStore.delete_by_run")
         async with self._sf() as session:
             count_conditions = [RunEventRow.thread_id == thread_id, RunEventRow.run_id == run_id]
             if resolved_org_id is not None:
                 count_conditions.append(RunEventRow.org_id == resolved_org_id)
-            if resolved_user_id is not None:
-                count_conditions.append(RunEventRow.user_id == resolved_user_id)
             count_stmt = select(func.count()).select_from(RunEventRow).where(*count_conditions)
             count = await session.scalar(count_stmt) or 0
             if count > 0:
