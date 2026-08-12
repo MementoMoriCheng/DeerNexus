@@ -522,13 +522,8 @@ class RunManager:
         logger.info("Run created: run_id=%s thread_id=%s", run_id, thread_id)
         return record
 
-    async def get(self, run_id: str, *, user_id: str | None = None) -> RunRecord | None:
-        """Return a run record by ID, or ``None``.
-
-        Args:
-            run_id: The run ID to look up.
-            user_id: Optional user ID for permission filtering when hydrating from store.
-        """
+    async def get(self, run_id: str) -> RunRecord | None:
+        """Return a run record by ID, or ``None``."""
         async with self._lock:
             record = self._runs.get(run_id)
         if record is not None:
@@ -536,7 +531,7 @@ class RunManager:
         if self._store is None:
             return None
         try:
-            row = await self._store.get(run_id, user_id=user_id)
+            row = await self._store.get(run_id)
         except Exception:
             logger.warning("Failed to hydrate run %s from store", run_id, exc_info=True)
             return None
@@ -554,18 +549,17 @@ class RunManager:
             logger.warning("Failed to map store row for run %s", run_id, exc_info=True)
             return None
 
-    async def aget(self, run_id: str, *, user_id: str | None = None) -> RunRecord | None:
+    async def aget(self, run_id: str) -> RunRecord | None:
         """Return a run record by ID, checking the persistent store as fallback.
 
         Alias for :meth:`get` for backward compatibility.
         """
-        return await self.get(run_id, user_id=user_id)
+        return await self.get(run_id)
 
     async def list_by_thread(
         self,
         thread_id: str,
         *,
-        user_id: str | None = None,
         org_id: str | None = None,
         limit: int = 100,
     ) -> list[RunRecord]:
@@ -577,7 +571,6 @@ class RunManager:
 
         Args:
             thread_id: The thread ID to filter by.
-            user_id: Optional user ID for permission filtering when hydrating from store.
             org_id: Optional org ID for tenant filtering when hydrating from store
                 (``None`` bypasses the org filter, used by startup recovery).
             limit: Maximum number of runs to return.
@@ -589,7 +582,7 @@ class RunManager:
         records_by_id = {record.run_id: record for record in memory_records}
         store_limit = max(0, limit - len(memory_records))
         try:
-            rows = await self._store.list_by_thread(thread_id, user_id=user_id, org_id=org_id, limit=store_limit)
+            rows = await self._store.list_by_thread(thread_id, org_id=org_id, limit=store_limit)
         except Exception:
             logger.warning("Failed to hydrate runs for thread %s from store", thread_id, exc_info=True)
             return sorted(memory_records, key=lambda r: r.created_at, reverse=True)[:limit]

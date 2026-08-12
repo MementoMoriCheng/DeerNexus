@@ -47,7 +47,7 @@ from deerflow.persistence.migrations._helpers import _normalize_default
 asyncio_test = pytest.mark.asyncio
 
 
-HEAD = "0019_model_providers"
+HEAD = "0020_contract_org_scope"
 BASELINE = "0001_baseline"
 
 

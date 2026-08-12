@@ -51,11 +51,11 @@ async def test_thread_meta_emits_tz_aware_timestamps(tmp_path):
 
         # Second read from DB exercises the same _row_to_dict path on a
         # value that SQLite has round-tripped (where tzinfo is lost).
-        fetched = await repo.get("t-tz", user_id="u1")
+        fetched = await repo.get("t-tz")
         _assert_tz_aware(fetched["created_at"], context="thread_meta.get.created_at")
         _assert_tz_aware(fetched["updated_at"], context="thread_meta.get.updated_at")
 
-        listed = await repo.search(user_id="u1")
+        listed = await repo.search()
         assert listed, "search must return the created row"
         _assert_tz_aware(listed[0]["created_at"], context="thread_meta.search.created_at")
         _assert_tz_aware(listed[0]["updated_at"], context="thread_meta.search.updated_at")
@@ -70,7 +70,7 @@ async def test_run_repository_emits_tz_aware_timestamps(tmp_path):
     repo = RunRepository(await _init_sqlite(tmp_path))
     try:
         await repo.put("r-tz", thread_id="t-tz", user_id="u1")
-        row = await repo.get("r-tz", user_id="u1")
+        row = await repo.get("r-tz")
         _assert_tz_aware(row["created_at"], context="run.get.created_at")
         _assert_tz_aware(row["updated_at"], context="run.get.updated_at")
     finally:
@@ -102,7 +102,7 @@ async def test_run_event_store_emits_tz_aware_timestamps(tmp_path):
             category="log",
             content="hello",
         )
-        events = await store.list_events("t-tz", "r-tz", user_id=None)
+        events = await store.list_events("t-tz", "r-tz")
         assert events, "expected at least one event"
         _assert_tz_aware(events[0]["created_at"], context="run_event.list.created_at")
     finally:

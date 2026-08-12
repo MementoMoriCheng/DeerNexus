@@ -4,20 +4,23 @@ Implementations:
 - ThreadMetaRepository: SQL-backed (sqlite / postgres via SQLAlchemy)
 - MemoryThreadMetaStore: wraps LangGraph BaseStore (memory mode)
 
-All mutating and querying methods accept a ``user_id`` parameter with
-three-state semantics (see :mod:`deerflow.runtime.user_context`):
+All mutating and querying methods accept an ``org_id`` parameter with
+three-state semantics (see :data:`deerflow.contracts.AUTO_ORG`):
 
-- ``AUTO`` (default): resolve from the request-scoped contextvar.
+- ``AUTO_ORG`` (default): resolve from the request-scoped tenant contextvar.
 - Explicit ``str``: use the provided value verbatim.
-- Explicit ``None``: bypass owner filtering (migration/CLI only).
+- Explicit ``None``: bypass the org filter (migration/CLI only).
 
-Since PR-024, methods additionally accept an ``org_id`` parameter with the
-same three-state semantics (see :data:`deerflow.contracts.AUTO_ORG`).
-``org_id`` is the hard tenant boundary (runtime-contracts §5.2,
-data-model §11.2): when resolved it is stamped on new rows and applied as a
-``WHERE`` predicate on reads/mutations alongside the existing ``user_id``
-filter (defense in depth; removing the ``user_id`` branch is the Contract
-phase, PR-025D).
+Since PR-025D (Contract), ``org_id`` is the sole tenant boundary at the
+storage layer. The former ``user_id`` defense-in-depth WHERE filter has been
+removed — cross-user isolation within an org is enforced by
+:meth:`check_access` / RBAC ``owner_check`` at the HTTP layer.
+``user_id`` is still stamped on writes (for attribution / audit /
+``check_access``), but read methods no longer accept or filter on it.
+
+:func:`check_access` retains its ``user_id: str`` parameter because it is
+the RBAC owner-gate carrier (called from ``@require_rbac(owner_check=True)``),
+not a storage-layer filter.
 """
 
 from __future__ import annotations
@@ -52,7 +55,6 @@ class ThreadMetaStore(abc.ABC):
         self,
         thread_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> dict | None:
         pass
@@ -65,7 +67,6 @@ class ThreadMetaStore(abc.ABC):
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> list[dict[str, Any]]:
         pass
@@ -76,7 +77,6 @@ class ThreadMetaStore(abc.ABC):
         thread_id: str,
         display_name: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         pass
@@ -87,7 +87,6 @@ class ThreadMetaStore(abc.ABC):
         thread_id: str,
         status: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         pass
@@ -98,14 +97,13 @@ class ThreadMetaStore(abc.ABC):
         thread_id: str,
         metadata: dict,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         """Merge ``metadata`` into the thread's metadata field.
 
         Existing keys are overwritten by the new values; keys absent from
         ``metadata`` are preserved. No-op if the thread does not exist
-        or the owner check fails.
+        or the org check fails.
         """
         pass
 
@@ -115,13 +113,12 @@ class ThreadMetaStore(abc.ABC):
         thread_id: str,
         owner_user_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         """Move a thread metadata row to a new owner.
 
         Intended for trusted internal repair/migration paths. No-op if the
-        row does not exist or the caller fails the owner check.
+        row does not exist or the org check fails.
         """
         pass
 
@@ -142,7 +139,6 @@ class ThreadMetaStore(abc.ABC):
         self,
         thread_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
         pass

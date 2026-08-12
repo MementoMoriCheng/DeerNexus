@@ -316,7 +316,7 @@ async def test_feedback_cross_org_delete_denied(tmp_path):
             # Cross-org get returns None; cross-org delete is a no-op.
             assert await repo.get(fb_id) is None
             assert await repo.delete(fb_id) is False
-            assert await repo.delete_by_run(thread_id="t-alpha", run_id="r-a") is False
+            assert await repo.delete_by_run(thread_id="t-alpha", run_id="r-a", user_id="user-shared") is False
 
         with _as_org(ORG_A):
             assert await repo.get(fb_id) is not None
@@ -340,7 +340,7 @@ async def test_repository_without_tenant_context_raises(tmp_path):
         # Bypass the user filter so the org resolver is the failing gate.
         # Neither contextvar is set under @pytest.mark.no_auto_user.
         with pytest.raises(RuntimeError, match="no tenant context is bound"):
-            await repo.get("anything", user_id=None)
+            await repo.get("anything")
     finally:
         await cleanup()
 
@@ -364,8 +364,8 @@ async def test_explicit_org_none_bypasses_filter(tmp_path):
         with _as_org(ORG_B):
             await repo.create("t-beta")
 
-        # No tenant bound; explicit None bypasses both user and org filters.
-        all_rows = await repo.search(user_id=None, org_id=None)
+        # No tenant bound; explicit None bypasses the org filter.
+        all_rows = await repo.search(org_id=None)
         assert {r["thread_id"] for r in all_rows} == {"t-alpha", "t-beta"}
     finally:
         await cleanup()

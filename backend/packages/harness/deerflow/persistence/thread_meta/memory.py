@@ -26,21 +26,17 @@ class MemoryThreadMetaStore(ThreadMetaStore):
     async def _get_owned_record(
         self,
         thread_id: str,
-        user_id: str | None | _AutoSentinel,
         org_id: str | None | _OrgIdSentinel,
         method_name: str,
     ) -> dict | None:
-        """Fetch a record and verify org + ownership. Returns a mutable copy, or None."""
-        resolved_user = resolve_user_id(user_id, method_name=method_name)
+        """Fetch a record and verify org scope. Returns a mutable copy, or None."""
         resolved_org = resolve_org_id(org_id, method_name=method_name)
         item = await self._store.aget(THREADS_NS, thread_id)
         if item is None:
             return None
         record = dict(item.value)
-        # Hard tenant boundary first, then owner filter.
+        # org_id is the sole tenant boundary (PR-025D Contract).
         if resolved_org is not None and record.get("org_id") != resolved_org:
-            return None
-        if resolved_user is not None and record.get("user_id") != resolved_user:
             return None
         return record
 
@@ -76,10 +72,9 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         self,
         thread_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> dict | None:
-        return await self._get_owned_record(thread_id, user_id, org_id, "MemoryThreadMetaStore.get")
+        return await self._get_owned_record(thread_id, org_id, "MemoryThreadMetaStore.get")
 
     async def search(
         self,
@@ -88,10 +83,8 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> list[dict[str, Any]]:
-        resolved_user_id = resolve_user_id(user_id, method_name="MemoryThreadMetaStore.search")
         resolved_org_id = resolve_org_id(org_id, method_name="MemoryThreadMetaStore.search")
         filter_dict: dict[str, Any] = {}
         if metadata:
@@ -100,8 +93,6 @@ class MemoryThreadMetaStore(ThreadMetaStore):
             filter_dict["status"] = status
         if resolved_org_id is not None:
             filter_dict["org_id"] = resolved_org_id
-        if resolved_user_id is not None:
-            filter_dict["user_id"] = resolved_user_id
 
         items = await self._store.asearch(
             THREADS_NS,
@@ -137,10 +128,9 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         thread_id: str,
         display_name: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
-        record = await self._get_owned_record(thread_id, user_id, org_id, "MemoryThreadMetaStore.update_display_name")
+        record = await self._get_owned_record(thread_id, org_id, "MemoryThreadMetaStore.update_display_name")
         if record is None:
             return
         record["display_name"] = display_name
@@ -152,10 +142,9 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         thread_id: str,
         status: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
-        record = await self._get_owned_record(thread_id, user_id, org_id, "MemoryThreadMetaStore.update_status")
+        record = await self._get_owned_record(thread_id, org_id, "MemoryThreadMetaStore.update_status")
         if record is None:
             return
         record["status"] = status
@@ -167,10 +156,9 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         thread_id: str,
         metadata: dict,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
-        record = await self._get_owned_record(thread_id, user_id, org_id, "MemoryThreadMetaStore.update_metadata")
+        record = await self._get_owned_record(thread_id, org_id, "MemoryThreadMetaStore.update_metadata")
         if record is None:
             return
         merged = dict(record.get("metadata") or {})
@@ -184,10 +172,9 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         thread_id: str,
         owner_user_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
-        record = await self._get_owned_record(thread_id, user_id, org_id, "MemoryThreadMetaStore.update_owner")
+        record = await self._get_owned_record(thread_id, org_id, "MemoryThreadMetaStore.update_owner")
         if record is None:
             return
         record["user_id"] = owner_user_id
@@ -198,10 +185,9 @@ class MemoryThreadMetaStore(ThreadMetaStore):
         self,
         thread_id: str,
         *,
-        user_id: str | None | _AutoSentinel = AUTO,
         org_id: str | None | _OrgIdSentinel = AUTO_ORG,
     ) -> None:
-        record = await self._get_owned_record(thread_id, user_id, org_id, "MemoryThreadMetaStore.delete")
+        record = await self._get_owned_record(thread_id, org_id, "MemoryThreadMetaStore.delete")
         if record is None:
             return
         await self._store.adelete(THREADS_NS, thread_id)

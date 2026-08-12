@@ -107,18 +107,18 @@ class TestMemoryRunStore:
         assert all(r["thread_id"] == "t1" for r in rows)
 
     @pytest.mark.anyio
-    async def test_list_by_thread_owner_filter(self, store):
+    async def test_list_by_thread_no_user_filter_after_contract(self, store):
+        """Contract (PR-025D): store no longer filters by user_id."""
         await store.put("r1", thread_id="t1", user_id="alice")
         await store.put("r2", thread_id="t1", user_id="bob")
-        rows = await store.list_by_thread("t1", user_id="alice")
-        assert len(rows) == 1
-        assert rows[0]["user_id"] == "alice"
+        rows = await store.list_by_thread("t1")
+        assert len(rows) == 2  # both visible
 
     @pytest.mark.anyio
-    async def test_owner_none_returns_all(self, store):
+    async def test_list_by_thread_all_visible(self, store):
         await store.put("r1", thread_id="t1", user_id="alice")
         await store.put("r2", thread_id="t1", user_id="bob")
-        rows = await store.list_by_thread("t1", user_id=None)
+        rows = await store.list_by_thread("t1")
         assert len(rows) == 2
 
     @pytest.mark.anyio

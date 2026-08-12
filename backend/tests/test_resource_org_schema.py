@@ -39,7 +39,9 @@ from deerflow.persistence.run.model import RunRow
 from deerflow.persistence.thread_meta.model import ThreadMetaRow
 
 RESOURCE_TABLES = ("threads_meta", "runs", "run_events", "feedback")
-COMPATIBLE_INDEXES = (
+# PR-025D (Contract): the five temporary compatible indexes were dropped in
+# revision 0020. This constant lists them for the "indexes are gone" assertion.
+DROPPED_COMPATIBLE_INDEXES = (
     "ix_threads_meta_org_updated",
     "ix_runs_org_status_created",
     "ix_runs_org_thread_created",
@@ -280,20 +282,39 @@ class TestForeignKeyEnforcement:
 
 
 # ===========================================================================
-# Compatible indexes
+# Contract (PR-025D): compatible indexes removed + org-scoped uniques
 # ===========================================================================
 
 
-class TestCompatibleIndexes:
+class TestContractCleanup:
     @pytest.mark.anyio
-    async def test_all_five_compatible_indexes_created(self, engine):
+    async def test_compatible_indexes_are_gone(self, engine):
+        """The five temporary compatible indexes were dropped in revision 0020."""
         async with engine.connect() as conn:
             found: set[str] = set()
             for table in RESOURCE_TABLES:
                 idxs = await conn.run_sync(lambda c, t=table: {i["name"] for i in sa.inspect(c).get_indexes(t)})
                 found |= idxs
-        missing = set(COMPATIBLE_INDEXES) - found
-        assert not missing, f"missing compatible indexes: {missing}"
+        leftover = set(DROPPED_COMPATIBLE_INDEXES) & found
+        assert not leftover, f"compatible indexes should be gone after Contract: {leftover}"
+
+    @pytest.mark.anyio
+    async def test_org_scoped_unique_constraints_exist(self, engine):
+        """The two global uniques were org-scoped in revision 0020."""
+        async with engine.connect() as conn:
+            events_uqs = await conn.run_sync(lambda c: {u["name"] for u in sa.inspect(c).get_unique_constraints("run_events")})
+            feedback_uqs = await conn.run_sync(lambda c: {u["name"] for u in sa.inspect(c).get_unique_constraints("feedback")})
+        assert "uq_events_org_thread_seq" in events_uqs, "org-scoped run_events unique missing"
+        assert "uq_feedback_org_thread_run_user" in feedback_uqs, "org-scoped feedback unique missing"
+
+    @pytest.mark.anyio
+    async def test_old_global_uniques_are_gone(self, engine):
+        """The pre-Contract global unique names should no longer exist."""
+        async with engine.connect() as conn:
+            events_uqs = await conn.run_sync(lambda c: {u["name"] for u in sa.inspect(c).get_unique_constraints("run_events")})
+            feedback_uqs = await conn.run_sync(lambda c: {u["name"] for u in sa.inspect(c).get_unique_constraints("feedback")})
+        assert "uq_events_thread_seq" not in events_uqs
+        assert "uq_feedback_thread_run_user" not in feedback_uqs
 
 
 # ===========================================================================

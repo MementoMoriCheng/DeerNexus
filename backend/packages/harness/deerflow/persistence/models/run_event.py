@@ -34,11 +34,8 @@ class RunEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
     __table_args__ = (
-        UniqueConstraint("thread_id", "seq", name="uq_events_thread_seq"),
+        # Contract (PR-025D): org-scoped unique per data-model §13.4.
+        UniqueConstraint("org_id", "thread_id", "seq", name="uq_events_org_thread_seq"),
         Index("ix_events_thread_cat_seq", "thread_id", "category", "seq"),
         Index("ix_events_run", "thread_id", "run_id", "seq"),
-        # Compatible (temporary) org_id-prefixed index for org-scoped event
-        # queries (data-model.md §1 #9). Cleaned up at the Contract phase
-        # (§13.4). Mirrors ix_events_run with an org_id prefix.
-        Index("ix_events_org_thread_run", "org_id", "thread_id", "run_id"),
     )

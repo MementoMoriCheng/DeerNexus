@@ -663,6 +663,8 @@ cancelling → cancelled | failed
 - 清理临时双写列和兼容索引；
 - 不允许旧版本应用连接已完成 contract 的数据库。
 
+> **进度**：已落地（PR-025D / 迁移 `0020_contract_org_scope`）。移除 store 层 `user_id` WHERE 过滤分支（`org_id` 成为唯一硬隔离边界，cross-user 隔离由 `check_access`/RBAC `owner_check` 在 HTTP 层承担）；清理 5 个临时兼容索引；org-scope 两个全局唯一约束（`uq_events_thread_seq`→`uq_events_org_thread_seq`、`uq_feedback_thread_run_user`→`uq_feedback_org_thread_run_user`）；保留 `user_id` 列用于 stamp + 审计归因 + `check_access`/`upsert`/`delete_by_run` 业务键。详见 runtime-contracts §16.23。
+
 ---
 
 ## 14. 数据完整性验收

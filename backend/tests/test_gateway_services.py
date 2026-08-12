@@ -708,21 +708,22 @@ def test_start_run_uses_internal_owner_header_for_persistence(_stub_app_config):
             if record.task is not None:
                 await record.task
 
-        owner_run = await run_store.get(record.run_id, user_id="owner-1")
-        default_run = await run_store.get(record.run_id, user_id="default")
-        owner_thread = await thread_store.get("channel-thread", user_id="owner-1")
-        default_thread = await thread_store.get("channel-thread", user_id="default")
-        return owner_run, default_run, owner_thread, default_thread, task_context
+        # Contract (PR-025D): store reads are user-agnostic; the row is visible
+        # to any same-org caller. user_id is stamped for attribution.
+        run = await run_store.get(record.run_id)
+        thread = await thread_store.get("channel-thread")
+        return run, thread, task_context
 
-    owner_run, default_run, owner_thread, default_thread, task_context = asyncio.run(_scenario())
+    run, thread, task_context = asyncio.run(_scenario())
 
-    assert owner_run is not None
-    assert owner_run["user_id"] == "owner-1"
-    assert default_run is None
-    assert owner_thread is not None
-    assert owner_thread["user_id"] == "owner-1"
-    assert owner_thread["metadata"] == {"legacy": True}
-    assert default_thread is None
+    assert run is not None
+    assert run["user_id"] == "owner-1"
+    assert thread is not None
+    # Contract (PR-025D): the legacy-row owner-repair path only triggers when
+    # get() returns None (cross-org or missing). Since the thread exists in
+    # the same org, it is visible and its original user_id stamp is preserved.
+    assert thread["user_id"] == "default"
+    assert thread["metadata"] == {"legacy": True}
     assert task_context["user_id"] == "owner-1"
 
 

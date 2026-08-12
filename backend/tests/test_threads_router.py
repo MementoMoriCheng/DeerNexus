@@ -29,7 +29,7 @@ class _PermissiveThreadMetaStore(MemoryThreadMetaStore):
     timestamp wire format.
     """
 
-    async def _get_owned_record(self, thread_id, user_id, org_id, method_name):  # type: ignore[override]
+    async def _get_owned_record(self, thread_id, org_id, method_name):  # type: ignore[override]
         item = await self._store.aget(THREADS_NS, thread_id)
         return dict(item.value) if item is not None else None
 
@@ -42,8 +42,8 @@ class _PermissiveThreadMetaStore(MemoryThreadMetaStore):
     async def create(self, thread_id, *, assistant_id=None, user_id=None, org_id=None, display_name=None, metadata=None):  # type: ignore[override]
         return await super().create(thread_id, assistant_id=assistant_id, user_id=None, org_id=None, display_name=display_name, metadata=metadata)
 
-    async def search(self, *, metadata=None, status=None, limit=100, offset=0, user_id=None, org_id=None):  # type: ignore[override]
-        return await super().search(metadata=metadata, status=status, limit=limit, offset=offset, user_id=None, org_id=None)
+    async def search(self, *, metadata=None, status=None, limit=100, offset=0, org_id=None):  # type: ignore[override]
+        return await super().search(metadata=metadata, status=status, limit=limit, offset=offset, org_id=None)
 
 
 def _build_thread_app() -> tuple[FastAPI, InMemoryStore, InMemorySaver]:
@@ -238,16 +238,16 @@ def test_internal_owner_header_assigns_thread_to_owner() -> None:
             threads.ThreadCreateRequest(thread_id="channel-thread", metadata={}),
             request,
         )
-        owner_row = await thread_store.get("channel-thread", user_id="owner-1")
-        internal_row = await thread_store.get("channel-thread", user_id="default")
-        return response, owner_row, internal_row
+        # Contract (PR-025D): store reads are user-agnostic; the row is visible
+        # to any same-org caller. user_id is stamped for attribution.
+        row = await thread_store.get("channel-thread")
+        return response, row
 
-    response, owner_row, internal_row = asyncio.run(_scenario())
+    response, row = asyncio.run(_scenario())
 
     assert response.thread_id == "channel-thread"
-    assert owner_row is not None
-    assert owner_row["user_id"] == "owner-1"
-    assert internal_row is None
+    assert row is not None
+    assert row["user_id"] == "owner-1"
 
 
 def test_get_thread_returns_iso_for_legacy_unix_record() -> None:

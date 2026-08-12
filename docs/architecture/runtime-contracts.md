@@ -2196,3 +2196,35 @@ Track G 的 cancel 控制路径。今天 cancel 是**纯进程内**:`RunManager.
 **回滚边界**:`git revert` + `alembic downgrade 0017`。**3 列 expand-only**(server_default 保证既有行不崩);cancel 本地 fast-path 是 PR-070 既有行为(不变);跨副本 intent 是新增能力(删除零破坏);RunStore 2 新方法是 additive;心跳轮询是 `run_store=None` 时的 no-op。RunManager.cancel 退化到 PR-070 既有行为(record 不在本进程 → return False)。
 
 
+### 16.74 Track B PR-025D:Contract 清理（org_id 成为唯一硬隔离边界）
+
+data-model.md §13.4 **Contract** 阶段。Track B Schema 迁移（Expand → Backfill → Enforce → Contract）的收尾刀。把 `org_id` 从「与 `user_id` 并存的纵深防御层」升级为「store 层唯一硬隔离边界」，移除全部 `user_id` WHERE 过滤分支。
+
+**Schema 迁移 `0020_contract_org_scope`**（链自 `0019_model_providers`）：
+1. **删除 5 个临时兼容索引**（`ix_threads_meta_org_updated` / `ix_runs_org_status_created` / `ix_runs_org_thread_created` / `ix_events_org_thread_run` / `ix_feedback_org_thread`）——revision 0005 创建，docstring 标注「temporary, Contract phase cleans up」。
+2. **org-scope 两个全局唯一约束**：`uq_events_thread_seq(thread_id, seq)` → `uq_events_org_thread_seq(org_id, thread_id, seq)`；`uq_feedback_thread_run_user(thread_id, run_id, user_id)` → `uq_feedback_org_thread_run_user(org_id, thread_id, run_id, user_id)`。
+3. ORM 模型同步（parity guard 绿）：4 个 model 文件 `__table_args__` 删 Index 声明 + 改 UniqueConstraint 名/列。
+
+**应用层：移除 store 层 `user_id` WHERE 过滤分支**：
+- **4 个 SQL repository**（`thread_meta/sql.py`、`run/sql.py`、`feedback/sql.py`、`runtime/events/store/db.py`）：所有读方法的 `WHERE user_id == resolved_user_id` 分支删除；`resolve_user_id` 仅保留给 stamp 路径（`create`/`put`/`upsert`）。
+- **2 个 memory 实现**（`thread_meta/memory.py`、`runtime/runs/store/memory.py`）：`_get_owned_record` 改纯 org gate；`search`/`get`/`list_by_thread`/`delete` 删 user 过滤。
+- **2 个 ABC**（`ThreadMetaStore`、`RunStore`）：filter 方法的 `user_id` 形参移除；module docstring 重写。
+- **上游调用链清理**：`RunManager.get`/`aget`/`list_by_thread` 删 `user_id` 形参；gateway `thread_runs.py`（list_runs / get_run / list_messages feedback attach）、`threads.py`（thread_owner_kwargs 拆分）、`services.py`（旧行修复路径）、`deps.py`（启动恢复）的 `user_id` 透传移除。
+
+**保留的 `user_id` 使用**（非过滤，是业务键/stamp）：
+- `create()`/`put()`/`upsert()` 的 `user_id` stamp（写入行用于归因/审计/check_access）。
+- `check_access(thread_id, user_id)` 必填参数——RBAC `@require_rbac(owner_check=True)` 的 HTTP 层 owner 门控载体（404 existence-hiding）。
+- `feedback.upsert()` / `feedback.delete_by_run()` 的 `user_id`——匹配 org-scoped 唯一约束的业务键（哪个用户的 feedback）。
+
+**测试重写**：
+- `test_owner_isolation.py` 重写：从「证明 store 层 cross-user 隔离」改为「证明 store 层 same-org cross-user **可见**（Contract 语义）」+ `check_access` 仍区分 user。HTTP 层 cross-user 404 由 `test_rbac_runtime_routers.py` 矩阵覆盖。
+- `test_memory_thread_meta_isolation.py` 同步重写。
+- `test_org_isolation.py` 保持全绿（设计上用同一 SHARED_USER 消除 user 维度）。
+- `test_resource_org_schema.py`：`COMPATIBLE_INDEXES` → `DROPPED_COMPATIBLE_INDEXES`（验证已删除）+ 新增 org-scoped 唯一约束存在性断言。
+- `test_persistence_bootstrap.py` / `_concurrency.py`：HEAD 常量 `0019` → `0020`。
+- repository 单测（`test_thread_meta_repo.py`/`test_run_repository.py`/`test_feedback.py`/`test_persistence_scaffold.py`/`test_run_manager.py`）：user 过滤用例改为验证 Contract 语义。
+
+**严格不在本 PR 范围**：删除 `user_id` 列（保留用于 stamp + check_access + 审计）；移除 `MULTI_ORG_FLAG`（`expires_at=2026-10-31`，本 PR + 稳定窗口后才可移除）；`RunEventStore` ABC 加 org_id/user_id 形参（memory store 是 dev/test stub）；`MemoryRunEventStore` org 过滤（同上）。
+
+**回滚边界**：`git revert` + `alembic downgrade 0019`。Schema 变更与应用层变更在同一 PR；migration 0020 独立可逆（downgrade 重建旧约束名 + 5 个兼容索引）；应用层变更（移除 user_id 过滤）在旧约束下也安全（filter 移除不依赖 schema 变更）。
+

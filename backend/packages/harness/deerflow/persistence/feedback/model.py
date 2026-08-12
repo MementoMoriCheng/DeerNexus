@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from deerflow.persistence.base import Base
@@ -14,11 +14,8 @@ class FeedbackRow(Base):
     __tablename__ = "feedback"
 
     __table_args__ = (
-        UniqueConstraint("thread_id", "run_id", "user_id", name="uq_feedback_thread_run_user"),
-        # Compatible (temporary) org_id-prefixed index for org-scoped feedback
-        # queries (data-model.md §1 #9). Cleaned up at the Contract phase
-        # (§13.4).
-        Index("ix_feedback_org_thread", "org_id", "thread_id"),
+        # Contract (PR-025D): org-scoped unique per data-model §13.4.
+        UniqueConstraint("org_id", "thread_id", "run_id", "user_id", name="uq_feedback_org_thread_run_user"),
     )
 
     feedback_id: Mapped[str] = mapped_column(String(64), primary_key=True)

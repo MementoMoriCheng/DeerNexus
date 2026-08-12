@@ -84,11 +84,4 @@ class RunRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
-    __table_args__ = (
-        Index("ix_runs_thread_status", "thread_id", "status"),
-        # Compatible (temporary) org_id-prefixed indexes for org-scoped run
-        # queries (data-model.md §1 #9, §7.2). Cleaned up at the Contract
-        # phase (§13.4).
-        Index("ix_runs_org_status_created", "org_id", "status", "created_at"),
-        Index("ix_runs_org_thread_created", "org_id", "thread_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_runs_thread_status", "thread_id", "status"),)

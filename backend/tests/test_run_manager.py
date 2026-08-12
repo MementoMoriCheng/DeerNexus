@@ -814,16 +814,15 @@ async def test_aget_falls_back_to_store(manager_with_store: RunManager):
 
 
 @pytest.mark.anyio
-async def test_aget_falls_back_to_store_with_user_filter():
-    """aget should honor user_id when reading store-only records."""
+async def test_aget_falls_back_to_store_no_user_filter():
+    """Contract (PR-025D): aget no longer filters by user_id at the store layer."""
     store = MemoryRunStore()
     await store.put("run-1", thread_id="thread-1", user_id="user-1", status="success")
     mgr = RunManager(store=store)
 
-    allowed = await mgr.aget("run-1", user_id="user-1")
-    denied = await mgr.aget("run-1", user_id="user-2")
-    assert allowed is not None
-    assert denied is None
+    record = await mgr.aget("run-1")
+    assert record is not None
+    assert record.run_id == "run-1"
 
 
 @pytest.mark.anyio
@@ -862,15 +861,17 @@ async def test_list_by_thread_store_failure_is_graceful():
 
 
 @pytest.mark.anyio
-async def test_list_by_thread_falls_back_to_store_with_user_filter():
-    """list_by_thread should return only the requesting user's store records."""
+async def test_list_by_thread_falls_back_to_store_no_user_filter():
+    """Contract (PR-025D): list_by_thread returns all same-thread store records
+    regardless of user_id (store no longer filters on user)."""
     store = MemoryRunStore()
     await store.put("run-1", thread_id="thread-1", user_id="user-1", status="success")
     await store.put("run-2", thread_id="thread-1", user_id="user-2", status="success")
     mgr = RunManager(store=store)
 
-    runs = await mgr.list_by_thread("thread-1", user_id="user-1")
-    assert [r.run_id for r in runs] == ["run-1"]
+    runs = await mgr.list_by_thread("thread-1")
+    run_ids = {r.run_id for r in runs}
+    assert run_ids == {"run-1", "run-2"}
 
 
 # ---------------------------------------------------------------------------
