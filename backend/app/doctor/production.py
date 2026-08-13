@@ -334,7 +334,8 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     # generic "Implement in PR-064" placeholder) so an operator knows exactly
     # what to wait for. PR-071 promoted redis.connectivity to live; T1A
     # promoted oidc.jwks_validation to live once the JWKS bearer-JWT
-    # verification path landed; they no longer appear here.
+    # verification path landed; T1B promoted object_storage.security to live
+    # once the S3 backend + its probe landed; they no longer appear here.
     (
         "sandbox.provisioner_create",
         "sandbox",
@@ -352,19 +353,6 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
         "Controlled Secret Store access validation is not implemented.",
         "config.yaml:production.secret_store",
         "Blocked on Secret Store provider PR: only env_dev_only + reference parsing exist; a real Kubernetes/Vault/Cloud-Secret-Manager provider impl is required before access can be probed.",
-    ),
-    (
-        "object_storage.security",
-        "storage",
-        "Object storage privacy, encryption, and read/write validation is not implemented.",
-        "planned production object-storage declaration",
-        (
-            "Blocked on object-storage backend PR: PR-052 landed the ObjectStore abstraction + the "
-            "InlineObjectStore default (content_inline is the source of truth, no external infra) + "
-            "production.artifact config, but a real S3/MinIO backend (private/encrypted guarantees, "
-            "ADR §11.2) is not implemented. The check_id is retained so the runbook §5.1 'object "
-            "storage private/read-write/encrypted' line stays visible until that backend + its probe land."
-        ),
     ),
 )
 
@@ -395,6 +383,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         probe_deployment_evidence,
         probe_gateway_security,
         probe_metrics_presence,
+        probe_object_storage_security,
         probe_oidc_jwks,
         probe_postgres_connectivity,
         probe_profile_h_readiness,
@@ -425,6 +414,10 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         # verification path landed. WARN-skips when OIDC is not configured
         # (dev); fetches + validates the JWKS document when it is.
         (probe_oidc_jwks, "oidc.jwks_validation", "identity", "config.yaml:production.oidc"),
+        # T1B: promoted from DEFERRED_LIVE_CHECKS once the S3/MinIO backend +
+        # its probe landed. WARN-skips for inline backend (dev); does a real
+        # put/get/delete round-trip for s3 backend.
+        (probe_object_storage_security, "object_storage.security", "storage", "config.yaml:production.artifact"),
     )
 
 

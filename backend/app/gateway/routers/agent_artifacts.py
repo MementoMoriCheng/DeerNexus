@@ -37,6 +37,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy.exc import IntegrityError
 
+from app.gateway.deps import get_object_store
 from app.gateway.errors import contract_error_response as _shared_contract_error_response
 from app.gateway.errors import request_id as _shared_request_id
 from app.gateway.rbac import require_rbac
@@ -366,6 +367,7 @@ async def create_version(request: Request, package_id: str, body: AgentVersionCr
                 workspace_id=pkg.workspace_id,
                 created_by=_actor_id(request),
                 inline_size_threshold=threshold,
+                object_store=get_object_store(request),
                 session=session,
             )
             await _emit_class_a_audit(
@@ -475,7 +477,7 @@ async def reconcile_inventory(request: Request) -> dict:
     probe consume a real reconciliation.
     """
     org_id = _require_org_id(request)
-    report = await reconcile_versions(_sf(request), org_id=org_id)
+    report = await reconcile_versions(_sf(request), org_id=org_id, object_store=get_object_store(request))
     return {
         "org_id": report.org_id,
         "checked_count": report.checked_count,
@@ -543,6 +545,7 @@ async def import_file(request: Request, body: ImportFileRequest) -> ImportReport
                 workspace_id=body.workspace_id,
                 created_by=actor_id,
                 inline_size_threshold=threshold,
+                object_store=get_object_store(request),
                 session=session,
             )
             # Always record the package-side import attempt; emit the version

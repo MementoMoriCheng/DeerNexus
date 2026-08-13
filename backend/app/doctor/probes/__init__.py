@@ -30,6 +30,7 @@ from app.doctor.probes.backup_probe import probe_backup_freshness
 from app.doctor.probes.deployment_evidence_probe import probe_deployment_evidence
 from app.doctor.probes.gateway_security_probe import probe_gateway_security
 from app.doctor.probes.metrics_probe import probe_metrics_presence
+from app.doctor.probes.object_storage_probe import probe_object_storage_security
 from app.doctor.probes.oidc_probe import probe_oidc_jwks
 from app.doctor.probes.postgres_probe import probe_postgres_connectivity
 from app.doctor.probes.profile_h_probe import probe_profile_h_readiness
@@ -43,6 +44,7 @@ __all__ = [
     "probe_deployment_evidence",
     "probe_gateway_security",
     "probe_metrics_presence",
+    "probe_object_storage_security",
     "probe_oidc_jwks",
     "probe_postgres_connectivity",
     "probe_profile_h_readiness",

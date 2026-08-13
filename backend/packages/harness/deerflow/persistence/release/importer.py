@@ -68,6 +68,7 @@ from deerflow.persistence.release.repository import (
     get_agent_package_by_name,
     get_agent_version_by_digest,
 )
+from deerflow.persistence.release.storage import ObjectStore
 
 #: Sentinel entry-point identifier for a file-imported agent whose runtime
 #: entry is the inlined SOUL prompt (no separate script). Distinct from a
@@ -286,6 +287,7 @@ async def import_agent_from_file(
     created_by: str | None = None,
     base_dir: Path | str | None = None,
     inline_size_threshold: int = _DEFAULT_INLINE_THRESHOLD,
+    object_store: ObjectStore | None = None,
     session: AsyncSession | None = None,
 ) -> tuple[AgentPackageRow, AgentVersionRow, str, bool, dict]:
     """Import one file-state agent into the artifact store (ADR-0004 §10).
@@ -374,6 +376,7 @@ async def import_agent_from_file(
         workspace_id=workspace_id if workspace_id is not None else pkg.workspace_id,
         created_by=created_by,
         inline_size_threshold=inline_size_threshold,
+        object_store=object_store,
         session=session,
     )
     return pkg, new_version, digest, True, manifest.source_metadata or {}

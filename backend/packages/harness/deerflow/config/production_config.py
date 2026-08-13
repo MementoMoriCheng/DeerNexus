@@ -98,15 +98,36 @@ class ProductionArtifactConfig(BaseModel):
     operator declaration that enters the capacity plan (ADR §11.1 "阈值由
     生产配置定义并进入压测").
 
-    ``object_store_backend`` selects the storage backend. Only ``inline`` is
-    shipped in the MVP (the InlineObjectStore — content_inline is the source of
-    truth, no external infra). ``s3`` is a declared future value: a real
-    S3/MinIO backend + its doctor probe (private/encrypted guarantees,
-    ADR §11.2) land in a follow-up PR, at which point this literal widens.
+    ``object_store_backend`` selects the storage backend:
+
+    * ``inline`` (default) — the InlineObjectStore (content_inline is the
+      source of truth, no external infra). Safe for dev / single-node.
+    * ``s3`` (T1B) — a real S3/MinIO backend backed by ``boto3``. Requires
+      the ``s3`` optional dependency and the connection fields below.
+      Objects are written with SSE-S3 encryption (ADR §11.2 "静态加密").
+
+    When ``object_store_backend == "s3"`` the ``s3_*`` fields below are
+    required; ``build_object_store`` (storage.py) validates them and fails
+    fast if any is missing.
     """
 
     inline_size_threshold: int = Field(default=65536, ge=0, description="Bytes; ≤ threshold → inline column, > → object_key.")
     object_store_backend: Literal["inline", "s3"] = "inline"
+    #: S3/MinIO endpoint URL. ``None`` → AWS default endpoint. Set to a
+    #: MinIO URL (e.g. ``http://minio:9000``) for on-prem deployments.
+    s3_endpoint_url: str | None = None
+    #: Pre-created bucket name. The operator must create the bucket before
+    #: starting the gateway; ``S3ObjectStore.__init__`` validates accessibility.
+    s3_bucket: str | None = None
+    #: AWS region. Required by boto3 even with a custom ``endpoint_url``.
+    s3_region: str | None = None
+    #: Access key (supports ``$ENV_VAR`` reference pattern per SecretStore).
+    s3_access_key: str | None = None
+    #: Secret key (supports ``$ENV_VAR`` reference pattern per SecretStore).
+    s3_secret_key: str | None = None
+    #: TLS certificate verification. Set to ``False`` for self-signed MinIO
+    #: certs in dev (NEVER in production — the doctor probe FAILs on this).
+    s3_verify_tls: bool = True
 
     model_config = ConfigDict(extra="forbid")
 

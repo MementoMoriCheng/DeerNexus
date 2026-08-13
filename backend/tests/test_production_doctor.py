@@ -164,6 +164,17 @@ def test_live_probe_registry_includes_oidc_jwks():
     assert "oidc.jwks_validation" not in deferred_ids
 
 
+def test_live_probe_registry_includes_object_storage():
+    """T1B: object_storage.security must be a registered live probe (promoted
+    from DEFERRED_LIVE_CHECKS once the S3 backend + its probe landed).
+    """
+    registry = _live_probe_registry()
+    check_ids = {entry[1] for entry in registry}
+    assert "object_storage.security" in check_ids
+    deferred_ids = {row[0] for row in DEFERRED_LIVE_CHECKS}
+    assert "object_storage.security" not in deferred_ids
+
+
 def test_deployment_profile_h_tightened_admission():
     """PR-074 (ADR-0006 §3.5/§11): Profile H PASS now requires soak_hours>=24
     AND fault-injection evidence, not just profile_h_evidence. Each missing
@@ -324,13 +335,14 @@ def test_all_runbook_placeholders_remain_fail_closed():
     # it is tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
     # T1A promoted oidc.jwks_validation to a live probe (probe_oidc_jwks); it is
     # tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
+    # T1B promoted object_storage.security to a live probe (probe_object_storage_security);
+    # it is tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
     # What remains here are the checks whose code paths do not exist yet;
     # they MUST stay FAIL until their owning Track lands, so an operator
     # never sees a misleading green on an unverified invariant.
     expected = {
         "sandbox.provisioner_create",
         "secret_store.access",
-        "object_storage.security",
     }
 
     report = _run_checks(_config())

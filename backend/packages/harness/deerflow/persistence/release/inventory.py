@@ -110,12 +110,12 @@ async def reconcile_versions(
     missing: list[MissingVersion] = []
     for row in rows:
         assert row.object_key is not None  # narrowed by the query
-        if not store.exists(row.object_key):
+        if not await store.exists(row.object_key):
             missing.append(MissingVersion(row.id, row.package_id, row.object_key, "missing_object"))
             continue
         if verify_digest:
             try:
-                stored = store.get(row.object_key)
+                stored = await store.get(row.object_key)
             except Exception:  # noqa: BLE001 — a corrupt read is a mismatch, not an abort
                 missing.append(MissingVersion(row.id, row.package_id, row.object_key, "digest_mismatch"))
                 continue
