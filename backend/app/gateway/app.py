@@ -450,6 +450,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Failed to start run reconciler worker")
 
+        # T1C: Audit archive worker (ADR-0005 §10.2). Daily JSONL export of
+        # closed-window audit events to object storage + manifest + watermark.
+        # Best-effort like the other background workers; a failing pass is logged.
+        archive_task: asyncio.Task[None] | None = None
+        archive_stop: asyncio.Event | None = None
+        try:
+            from app.gateway.audit_archive_worker import run_audit_archive_worker
+            from deerflow.persistence.release.storage import InlineObjectStore
+
+            if sf is not None:
+                object_store = getattr(app.state, "object_store", None) or InlineObjectStore()
+                archive_stop = asyncio.Event()
+                archive_task = asyncio.create_task(
+                    run_audit_archive_worker(sf, object_store=object_store, stop_event=archive_stop),
+                    name="audit-archive",
+                )
+                logger.info("Audit archive worker started")
+            else:
+                logger.warning("No session factory; audit archive worker not started")
+        except Exception:
+            logger.exception("Failed to start audit archive worker")
+
         yield
 
         # Stop the audit outbox worker first (bounded) so it does not race the
@@ -507,6 +529,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
             except Exception:
                 logger.exception("Run reconciler shutdown raised")
+
+        # Stop the audit archive worker (bounded), so it does not race the
+        # engine teardown alongside the other background workers.
+        if archive_task is not None:
+            if archive_stop is not None:
+                archive_stop.set()
+            try:
+                await asyncio.wait_for(archive_task, timeout=_SHUTDOWN_HOOK_TIMEOUT_SECONDS)
+            except TimeoutError:
+                archive_task.cancel()
+                logger.warning(
+                    "Audit archive worker shutdown exceeded %.1fs; cancelling.",
+                    _SHUTDOWN_HOOK_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                logger.exception("Audit archive worker shutdown raised")
 
         # Stop channel service on shutdown (bounded to prevent worker hang)
         try:

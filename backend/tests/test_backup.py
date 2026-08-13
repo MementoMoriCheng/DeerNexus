@@ -207,7 +207,7 @@ class TestSnapshot:
     async def test_snapshot_records_alembic_head(self, sf):
         manifest = await take_snapshot(sf, backend="sqlite", declared_rpo_hours=24)
         # The test engine stamps head on bootstrap; the snapshot must record it.
-        assert manifest.schema_version == "0020_contract_org_scope"
+        assert manifest.schema_version == "0021_audit_archive_watermarks"
 
     def test_normalise_value_handles_datetime_bytes_uuid(self):
         from uuid import UUID
@@ -344,11 +344,12 @@ class TestVerifyGates:
         # and legacy_unpinned_count_zero from SKIP to LIVE).
         assert report.passed == 8
         # Every infra-blocked gate is a SKIP, never a silent PASS.
-        assert report.skipped == 6
+        # T1C removed audit_archive_watermark_consistent from the deferred gates
+        # (the archive job + watermark table now exist), so skipped count is 5.
+        assert report.skipped == 5
         skip_names = {g.name for g in report.gates if g.status == "SKIP"}
         assert "release_channel_points_at_valid_version" in skip_names
         assert "deletion_ledger_replayed" in skip_names
-        assert "audit_archive_watermark_consistent" in skip_names
         # PR-056 gates must now PASS (not SKIP) on a clean restore.
         pass_names = {g.name for g in report.gates if g.status == "PASS"}
         assert "new_run_pinned_to_release_ref" in pass_names
