@@ -99,11 +99,6 @@ _DEFERRED_GATES: tuple[tuple[str, str, str], ...] = (
         "Deletion ledger / tombstone replayed after restore",
         "Blocked on data-governance §9: deletion_ledger table does not exist.",
     ),
-    (
-        "audit_archive_watermark_consistent",
-        "Audit archive watermark matches object-summary sample",
-        "Blocked on object_storage + ADR-0005 §10.2: archive job does not exist.",
-    ),
 )
 
 GateStatus = Literal["PASS", "FAIL", "SKIP"]
