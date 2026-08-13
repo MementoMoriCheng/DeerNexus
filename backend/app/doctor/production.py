@@ -332,15 +332,9 @@ DEFERRED_LIVE_CHECKS: tuple[tuple[str, str, str, str, str], ...] = (
     # What remains here are checks whose code paths do not exist yet — they
     # stay FAIL with a **Track-specific** remediation (replacing the pre-PR-064
     # generic "Implement in PR-064" placeholder) so an operator knows exactly
-    # what to wait for. PR-071 promoted redis.connectivity to live; it no
-    # longer appears here.
-    (
-        "oidc.jwks_validation",
-        "identity",
-        "OIDC issuer, audience, and JWKS live validation is not implemented.",
-        "config.yaml:production.oidc",
-        "Blocked on Track C (PR-036 OIDC): only local email/password login exists today. JWKS validation needs a real OIDC issuer integration to probe.",
-    ),
+    # what to wait for. PR-071 promoted redis.connectivity to live; T1A
+    # promoted oidc.jwks_validation to live once the JWKS bearer-JWT
+    # verification path landed; they no longer appear here.
     (
         "sandbox.provisioner_create",
         "sandbox",
@@ -401,6 +395,7 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         probe_deployment_evidence,
         probe_gateway_security,
         probe_metrics_presence,
+        probe_oidc_jwks,
         probe_postgres_connectivity,
         probe_profile_h_readiness,
         probe_rate_limit_retry_after,
@@ -426,6 +421,10 @@ def _live_probe_registry() -> tuple[tuple[LiveProbe, str, str, str], ...]:
         # ownership/lease + SSE-recovery + reconciler hard dependency) and
         # the soak + fault-injection evidence declarations are complete.
         (probe_profile_h_readiness, "profile_h.ha_readiness", "deployment", "config.yaml:production.deployment"),
+        # T1A: promoted from DEFERRED_LIVE_CHECKS once the JWKS bearer-JWT
+        # verification path landed. WARN-skips when OIDC is not configured
+        # (dev); fetches + validates the JWKS document when it is.
+        (probe_oidc_jwks, "oidc.jwks_validation", "identity", "config.yaml:production.oidc"),
     )
 
 

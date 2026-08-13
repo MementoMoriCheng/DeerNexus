@@ -36,6 +36,18 @@ class ProductionOidcConfig(BaseModel):
     issuer: str
     audience: str
     jwks_uri: str | None = None
+    #: Claim name carrying the IdP group/role assertion. Different IdPs use
+    #: different names: Keycloak/AD → ``groups``, Auth0 custom → ``permissions``,
+    #: Keycloak realm → ``realm_access.roles``. The group-mapping engine
+    #: (``oidc_group_mapping.apply_group_mapping``) reads this list.
+    group_claim: str = "groups"
+    #: Clock-skew tolerance (seconds) for ``exp``/``iat``/``nbf`` checks.
+    #: Prevents false rejections when the gateway and IdP clocks drift.
+    clock_skew_seconds: int = 30
+    #: Allow-list of acceptable signing algorithms. RS256 is the OIDC
+    #: default; restrict to asymmetric algorithms so a compromised symmetric
+    #: secret can never be used to forge tokens.
+    algorithms: list[str] = ["RS256"]
 
     model_config = ConfigDict(extra="forbid")
 

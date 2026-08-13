@@ -200,6 +200,98 @@ class TestRedisProbe:
 
 
 # ===========================================================================
+# oidc_probe (T1A)
+# ===========================================================================
+
+
+from app.doctor.probes.oidc_probe import probe_oidc_jwks  # noqa: E402
+
+
+class TestOidcProbe:
+    @pytest.mark.anyio
+    async def test_no_oidc_configured_warns_skip(self):
+        """No production.oidc → WARN skip (dev mode is valid)."""
+        config = _base_config()
+        result = await probe_oidc_jwks(config)
+        assert result.status is DoctorStatus.WARN
+        assert result.check_id == "oidc.jwks_validation"
+        assert "not configured" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_oidc_without_jwks_uri_fails(self):
+        """OIDC configured but no jwks_uri → FAIL."""
+        config = _base_config(
+            production={
+                "oidc": {
+                    "issuer": "https://idp.example.com",
+                    "audience": "test",
+                },
+            }
+        )
+        result = await probe_oidc_jwks(config)
+        assert result.status is DoctorStatus.FAIL
+        assert "jwks_uri is missing" in result.message
+
+    @pytest.mark.anyio
+    async def test_unreachable_jwks_fails_without_raising(self):
+        """JWKS endpoint unreachable → FAIL, never raise."""
+        config = _base_config(
+            production={
+                "oidc": {
+                    "issuer": "https://idp.example.com",
+                    "audience": "test",
+                    "jwks_uri": "https://127.0.0.1:1/jwks",
+                },
+            }
+        )
+        result = await probe_oidc_jwks(config)
+        assert result.status is DoctorStatus.FAIL
+
+    @pytest.mark.anyio
+    async def test_valid_jwks_passes(self):
+        """Reachable JWKS with keys array → PASS."""
+        import json
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from threading import Thread
+
+        jwks_doc = {"keys": [{"kid": "k1", "kty": "RSA", "use": "sig", "alg": "RS256", "n": "x", "e": "AQAB"}]}
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = json.dumps(jwks_doc).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            config = _base_config(
+                production={
+                    "oidc": {
+                        "issuer": "https://idp.example.com",
+                        "audience": "test",
+                        "jwks_uri": f"http://127.0.0.1:{port}/jwks",
+                    },
+                }
+            )
+            result = await probe_oidc_jwks(config)
+            assert result.status is DoctorStatus.PASS
+            assert "1 key(s)" in result.message
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+# ===========================================================================
 # metrics_probe
 # ===========================================================================
 
