@@ -53,6 +53,7 @@ postgres = [
     "psycopg-pool>=3.3.0",
 ]
 pymupdf = ["pymupdf4llm>=0.0.17"]
+s3 = ["boto3>=1.34.0"]
 
 [build-system]
 requires = ["hatchling"]

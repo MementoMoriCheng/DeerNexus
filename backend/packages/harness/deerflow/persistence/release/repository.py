@@ -356,7 +356,7 @@ async def create_agent_version(
         # (ADR §11.2 "上传完成后再使 Version 可用"); a put failure aborts
         # the caller's transaction.
         object_key = compute_object_key(org_id=org_id, workspace_id=workspace_id, version_id=version_id)
-        store.put(object_key=object_key, content=content.encode("utf-8"))
+        await store.put(object_key=object_key, content=content.encode("utf-8"))
 
     row = AgentVersionRow(
         id=version_id,
@@ -484,7 +484,7 @@ async def update_agent_version(
                 row.object_key = None
             else:
                 object_key = compute_object_key(org_id=org_id, workspace_id=None, version_id=version_id)
-                store.put(object_key=object_key, content=content.encode("utf-8"))
+                await store.put(object_key=object_key, content=content.encode("utf-8"))
                 row.content_inline = None
                 row.object_key = object_key
             row.digest = digest

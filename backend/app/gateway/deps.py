@@ -245,6 +245,19 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
 
         app.state.thread_store = make_thread_store(sf, app.state.store)
 
+        # T1B: Object store singleton — frozen at startup (like lease_store
+        # / engine) because a real S3 client holds a connection pool.
+        # InlineObjectStore (default) has no resources to close.
+        from deerflow.persistence.release.storage import InlineObjectStore, build_object_store
+
+        _prod = getattr(config, "production", None)
+        _artifact_cfg = getattr(_prod, "artifact", None)
+        try:
+            app.state.object_store = build_object_store(_artifact_cfg) if _artifact_cfg is not None else InlineObjectStore()
+        except Exception:
+            logger.warning("Failed to initialize object store; falling back to inline", exc_info=True)
+            app.state.object_store = InlineObjectStore()
+
         # Run event store. The store and the matching ``run_events_config`` are
         # both frozen at startup so ``get_run_context`` does not combine a
         # freshly-reloaded ``AppConfig.run_events`` with a store still bound to
@@ -364,6 +377,21 @@ def get_release_resolver(request: Request):
 def get_store(request: Request):
     """Return the global store (may be ``None`` if not configured)."""
     return getattr(request.app.state, "store", None)
+
+
+def get_object_store(request: Request):
+    """Return the object store for agent artifacts (ADR §11.2).
+
+    Falls back to ``InlineObjectStore`` when no store is on ``app.state``
+    (dev / test without lifespan). This keeps the artifact router working
+    in tests that don't wire the full lifespan.
+    """
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        return store
+    from deerflow.persistence.release.storage import InlineObjectStore
+
+    return InlineObjectStore()
 
 
 def get_thread_store(request: Request) -> ThreadMetaStore:

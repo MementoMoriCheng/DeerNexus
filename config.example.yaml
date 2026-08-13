@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 24
+config_version: 25
 
 # ============================================================================
 # Logging
@@ -1299,11 +1299,20 @@ production:
     # threshold is an operator declaration — tune it against your DB capacity
     # plan and load profile (ADR §11.1 "阈值由生产配置定义并进入压测").
     inline_size_threshold: 65536
-    # Only `inline` ships in the MVP (InlineObjectStore — content_inline is
-    # the source of truth, no external infra). `s3` is a declared future
-    # value; a real S3/MinIO backend + its doctor probe (private/encrypted,
-    # ADR §11.2) land in a follow-up PR.
+    # T1B: `inline` = InlineObjectStore (content_inline is source of truth,
+    # no external infra, safe for dev). `s3` = real S3/MinIO backend backed
+    # by boto3 (requires the `s3` optional dependency + the s3_* fields below).
+    # Objects written with SSE-S3 encryption (ADR §11.2 "静态加密").
     object_store_backend: inline
+    # S3/MinIO backend fields — required when object_store_backend='s3'.
+    # The operator must pre-create the bucket; the doctor probe validates
+    # accessibility and does a put/get/delete round-trip at startup.
+    # s3_endpoint_url: null  # null → AWS default; http://minio:9000 for MinIO
+    # s3_bucket: my-deernexus-artifacts
+    # s3_region: us-east-1
+    # s3_access_key: $S3_ACCESS_KEY
+    # s3_secret_key: $S3_SECRET_KEY
+    # s3_verify_tls: true  # false for self-signed MinIO certs in dev only
   agent_release:
     # Run admission release-gate (PR-056, ADR-0004 §6/§12). ``enforce`` defaults
     # false so deploying this code is a pure no-op: the resolver is never

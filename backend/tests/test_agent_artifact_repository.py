@@ -100,12 +100,12 @@ class TestObjectStore:
         key = compute_object_key(org_id="org-1", workspace_id=None, version_id="v-1")
         assert "/workspace/_default/" in key
 
-    def test_inline_store_is_noop_durable(self):
+    async def test_inline_store_is_noop_durable(self):
         store = InlineObjectStore()
-        store.put(object_key="k", content=b"data")  # must not raise
-        assert store.exists("k") is True  # inline artifact always present
-        assert store.get("k") == b""  # content lives in the row, not here
-        store.delete("k")  # idempotent no-op
+        await store.put(object_key="k", content=b"data")  # must not raise
+        assert await store.exists("k") is True  # inline artifact always present
+        assert await store.get("k") == b""  # content lives in the row, not here
+        await store.delete("k")  # idempotent no-op
 
 
 # ---------------------------------------------------------------------------

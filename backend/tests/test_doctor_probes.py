@@ -292,8 +292,41 @@ class TestOidcProbe:
 
 
 # ===========================================================================
-# metrics_probe
+# object_storage_probe (T1B)
 # ===========================================================================
+
+
+from app.doctor.probes.object_storage_probe import probe_object_storage_security  # noqa: E402
+
+
+class TestObjectStorageProbe:
+    @pytest.mark.anyio
+    async def test_inline_backend_warns_skip(self):
+        """inline backend → WARN skip (dev mode is valid)."""
+        config = _base_config()
+        result = await probe_object_storage_security(config)
+        assert result.status is DoctorStatus.WARN
+        assert result.check_id == "object_storage.security"
+        assert "inline" in result.message.lower()
+
+    @pytest.mark.anyio
+    async def test_s3_backend_unreachable_fails_without_raising(self):
+        """s3 backend with unreachable bucket → FAIL, never raise."""
+        config = _base_config(
+            production={
+                "artifact": {
+                    "object_store_backend": "s3",
+                    "s3_endpoint_url": "http://127.0.0.1:1",
+                    "s3_bucket": "test-bucket",
+                    "s3_region": "us-east-1",
+                    "s3_access_key": "test",
+                    "s3_secret_key": "test",
+                    "s3_verify_tls": False,
+                },
+            }
+        )
+        result = await probe_object_storage_security(config)
+        assert result.status is DoctorStatus.FAIL
 
 
 class TestMetricsProbe:
