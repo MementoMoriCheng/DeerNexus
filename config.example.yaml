@@ -15,7 +15,7 @@
 # ============================================================================
 # Bump this number when the config schema changes.
 # Run `make config-upgrade` to merge new fields into your local config.yaml.
-config_version: 23
+config_version: 24
 
 # ============================================================================
 # Logging
@@ -1265,6 +1265,15 @@ production:
   #   issuer: $OIDC_ISSUER
   #   audience: $OIDC_AUDIENCE
   #   jwks_uri: $OIDC_JWKS_URI
+  #   # T1A: OIDC bearer JWT (RS256) verification via JWKS. The claim name
+  #   # carrying the IdP group assertion (Keycloak → groups, Auth0 custom →
+  #   # permissions, etc.). The group-mapping engine reads this list.
+  #   group_claim: groups
+  #   # Clock-skew tolerance (seconds) for exp/iat/nbf checks.
+  #   clock_skew_seconds: 30
+  #   # Allow-list of acceptable signing algorithms (RS256 is the OIDC default).
+  #   algorithms:
+  #     - RS256
   redis:
     url: null
     # url: $REDIS_URL

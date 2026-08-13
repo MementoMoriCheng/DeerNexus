@@ -6,16 +6,23 @@ request passes the cookie check, resolves the JWT payload to a real
 ``deerflow.runtime.user_context`` contextvar so that repository-layer
 owner filtering works automatically via the sentinel pattern.
 
-Three credential sources are supported (tried in this order):
+Four credential sources are supported (tried in this order):
 
 1. **API Key** (PR-035) — ``X-Api-Key: <plaintext>`` or
-   ``Authorization: Bearer <plaintext>``. Looks up by ``key_prefix``
+   ``Authorization: Bearer <plaintext>`` (plaintext starts with
+   ``dk_live_``). Looks up by ``key_prefix``
    via the ``uq_api_keys_key_prefix`` unique index, constant-time
    verifies the HMAC hash, and rejects expired / revoked keys with 401.
    On success stamps a SA-backed stub user + ``AUTH_SOURCE_API_KEY`` +
    four ``request.state.api_key_*`` fields the tenant resolver reads.
-2. **Internal token** — ``X-DeerFlow-Internal-Token`` (IM channel worker).
-3. **Session cookie** — ``access_token`` JWT. Strict validation rejects
+2. **OIDC Bearer JWT** — ``Authorization: Bearer <JWT>`` where the token
+   is a dot-separated JWT (not a ``dk_live_`` API key). Verifies the
+   RS256 signature via the IdP JWKS endpoint, resolves the ``sub`` to a
+   local user via ``external_identities``, and runs the group-mapping
+   engine. Only active when ``production.oidc`` is configured; otherwise
+   a non-API-key bearer token falls through to the session/internal paths.
+3. **Internal token** — ``X-DeerFlow-Internal-Token`` (IM channel worker).
+4. **Session cookie** — ``access_token`` JWT. Strict validation rejects
    junk/expired/stale tokens with 401.
 
 Fine-grained permission checks live in the ``@require_rbac`` decorator
@@ -25,6 +32,7 @@ is fully handled here.
 """
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 from fastapi import HTTPException, Request, Response
@@ -34,10 +42,12 @@ from starlette.types import ASGIApp
 
 from app.gateway.auth.api_key import verify_api_key
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
+from app.gateway.auth.oidc import OidcTokenError
 from app.gateway.auth_disabled import (
     AUTH_SOURCE_API_KEY,
     AUTH_SOURCE_AUTH_DISABLED,
     AUTH_SOURCE_INTERNAL,
+    AUTH_SOURCE_OIDC,
     AUTH_SOURCE_SESSION,
     get_auth_disabled_user,
     is_auth_disabled,
@@ -45,6 +55,8 @@ from app.gateway.auth_disabled import (
 from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, get_internal_user, is_valid_internal_auth_token
 from deerflow.contracts import ErrorCode
 from deerflow.runtime.user_context import reset_current_user, set_current_user
+
+logger = logging.getLogger(__name__)
 
 # Paths that never require authentication.
 _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
@@ -154,6 +166,15 @@ async def _resolve_api_key(request: Request) -> tuple[object, str] | None:
     if not raw:
         return None
 
+    # A bearer token that does NOT start with the API-key prefix is a
+    # candidate OIDC JWT (dot-separated) — do not consume it here. When
+    # OIDC is configured the dispatch() method routes it to the JWKS
+    # path; when OIDC is not configured it falls through to the
+    # session/internal paths (which ignore non-cookie bearer tokens).
+    # The ``X-Api-Key`` header is always treated as an API key.
+    if not request.headers.get("X-Api-Key") and not raw.startswith(_API_KEY_BEARER_PREFIX):
+        return None
+
     from deerflow.persistence.engine import get_session_factory
     from deerflow.persistence.iam import get_api_key_by_prefix, get_service_account, touch_api_key_last_used
 
@@ -245,10 +266,137 @@ async def _resolve_api_key(request: Request) -> tuple[object, str] | None:
     return request.state.user, AUTH_SOURCE_API_KEY
 
 
+#: API-key plaintext always starts with ``dk_live_``. A bearer token that
+#: does NOT start with this prefix is a candidate JWT (dot-separated), and
+#: when OIDC is configured it is verified via the JWKS path.
+_API_KEY_BEARER_PREFIX = "dk_live_"
+
+
+async def _resolve_oidc_bearer(request: Request, token: str) -> tuple[object, str] | JSONResponse | None:
+    """Try the OIDC Bearer-JWT credential path.
+
+    Returns ``None`` when OIDC is not configured (the token falls through
+    to the session/internal paths), ``JSONResponse`` on a verification
+    failure, or ``(user, AUTH_SOURCE_OIDC)`` on success.
+
+    Only invoked for bearer tokens that are NOT API keys (i.e. do not
+    start with ``dk_live_``). When ``production.oidc`` is ``None`` this
+    function immediately returns ``None`` so the token is handled by the
+    downstream session cookie logic (a JWT in the Authorization header
+    is simply ignored when OIDC is not configured — the session path
+    only reads the ``access_token`` cookie).
+    """
+    from deerflow.config.app_config import get_app_config
+
+    oidc_config = getattr(get_app_config().production, "oidc", None)
+    if oidc_config is None:
+        # OIDC not configured — bearer token is not an API key and OIDC
+        # is off; let the session/internal paths handle (or reject) it.
+        return None
+
+    from app.gateway.auth.oidc import verify_oidc_token
+
+    claims = await asyncio.to_thread(verify_oidc_token, token, oidc_config)
+
+    # Import here to avoid circular import at module level.
+    from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
+
+    if isinstance(claims, OidcTokenError):
+        # All OIDC failure modes map to the same token_invalid body
+        # (anti-enumeration: a caller cannot distinguish "bad issuer"
+        # from "bad signature" by comparing error messages).
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": AuthErrorResponse(
+                    code=AuthErrorCode.TOKEN_INVALID,
+                    message="Invalid OIDC token",
+                ).model_dump()
+            },
+        )
+
+    # Resolve (issuer, sub) → local user via external_identities.
+    from deerflow.persistence.engine import get_session_factory
+    from deerflow.persistence.orgs.model import ExternalIdentityRow
+
+    sf = get_session_factory()
+    if sf is None:
+        # No persistence wired (backend=memory dev) — OIDC requires the
+        # DB for external-identity resolution. Fail closed.
+        return _authentication_invalid_response()  # type: ignore[return-value]
+
+    from sqlalchemy import select
+
+    async with sf() as session:
+        stmt = select(ExternalIdentityRow).where(
+            ExternalIdentityRow.issuer == claims.iss,
+            ExternalIdentityRow.subject == claims.sub,
+        )
+        ext_row = (await session.execute(stmt)).scalar_one_or_none()
+
+    if ext_row is None:
+        # The IdP authenticated a subject we have no binding for.
+        # This is expected during onboarding (admin must pre-link the
+        # external identity); fail closed rather than auto-provision.
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": AuthErrorResponse(
+                    code=AuthErrorCode.USER_NOT_FOUND,
+                    message="OIDC subject not linked to a local user",
+                ).model_dump()
+            },
+        )
+
+    # Load the local user.
+    from app.gateway.deps import get_local_provider
+
+    provider = get_local_provider()
+    user = await provider.get_user(ext_row.user_id)
+    if user is None:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": AuthErrorResponse(
+                    code=AuthErrorCode.USER_NOT_FOUND,
+                    message="User not found",
+                ).model_dump()
+            },
+        )
+
+    # Run the additive group-mapping engine (idempotent — ensures
+    # role_bindings match the IdP's latest group assertion).
+    from deerflow.tenancy.oidc_group_mapping import apply_group_mapping
+
+    try:
+        await apply_group_mapping(
+            sf,
+            user_id=str(user.id),
+            issuer=claims.iss,
+            groups=claims.groups,
+            subject=claims.sub,
+            provider="oidc",
+        )
+    except Exception:  # noqa: BLE001 — group mapping failure must not block auth
+        logger.warning("OIDC group mapping failed for user %s; auth proceeds", user.id, exc_info=True)
+
+    from types import SimpleNamespace
+
+    # Stamp a user stub compatible with the tenant resolver + RBAC
+    # decorator patterns (same shape as the API-key stub user).
+    request.state.user = SimpleNamespace(
+        id=str(user.id),
+        email=str(user.email) if user.email else None,
+        system_role=user.system_role,
+    )
+    request.state.auth_source = AUTH_SOURCE_OIDC
+    return request.state.user, AUTH_SOURCE_OIDC
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """Strict auth gate: reject requests without a valid session.
 
-    Three credential paths tried in order (see module docstring). On
+    Four credential paths tried in order (see module docstring). On
     success stamps ``request.state.user`` and the
     ``deerflow.runtime.user_context`` contextvar so repository-layer
     owner filters work downstream without every route needing its own
@@ -278,6 +426,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
             finally:
                 reset_current_user(token)
+
+        # OIDC Bearer-JWT path — tried after API key (which already
+        # consumed ``dk_live_`` tokens) and before the internal/session
+        # paths. Returns None when OIDC is not configured (the bearer
+        # token is ignored by the session path, which only reads the
+        # ``access_token`` cookie). Returns JSONResponse on verification
+        # failure (401). On success stamps ``request.state`` + contextvar.
+        bearer_token = _strip_bearer(request.headers.get("Authorization", ""))
+        if bearer_token and not bearer_token.startswith(_API_KEY_BEARER_PREFIX):
+            oidc_result = await _resolve_oidc_bearer(request, bearer_token)
+            if isinstance(oidc_result, JSONResponse):
+                return oidc_result
+            if oidc_result is not None:
+                user, auth_source = oidc_result
+                token = set_current_user(user)
+                try:
+                    return await call_next(request)
+                finally:
+                    reset_current_user(token)
 
         internal_user = None
         if is_valid_internal_auth_token(request.headers.get(INTERNAL_AUTH_HEADER_NAME)):

@@ -152,6 +152,18 @@ def test_live_probe_registry_includes_profile_h_readiness():
     assert "redis.connectivity" in check_ids
 
 
+def test_live_probe_registry_includes_oidc_jwks():
+    """T1A: oidc.jwks_validation must be a registered live probe (promoted
+    from DEFERRED_LIVE_CHECKS once the JWKS bearer-JWT path landed).
+    """
+    registry = _live_probe_registry()
+    check_ids = {entry[1] for entry in registry}
+    assert "oidc.jwks_validation" in check_ids
+    # The deferred stub must have been removed (no duplicate FAIL + live probe).
+    deferred_ids = {row[0] for row in DEFERRED_LIVE_CHECKS}
+    assert "oidc.jwks_validation" not in deferred_ids
+
+
 def test_deployment_profile_h_tightened_admission():
     """PR-074 (ADR-0006 §3.5/§11): Profile H PASS now requires soak_hours>=24
     AND fault-injection evidence, not just profile_h_evidence. Each missing
@@ -310,11 +322,12 @@ def test_all_runbook_placeholders_remain_fail_closed():
     # no longer in DEFERRED_LIVE_CHECKS.
     # PR-071 promoted redis.connectivity to a live probe (probe_redis_connectivity);
     # it is tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
+    # T1A promoted oidc.jwks_validation to a live probe (probe_oidc_jwks); it is
+    # tested in test_doctor_probes.py and no longer in DEFERRED_LIVE_CHECKS.
     # What remains here are the checks whose code paths do not exist yet;
     # they MUST stay FAIL until their owning Track lands, so an operator
     # never sees a misleading green on an unverified invariant.
     expected = {
-        "oidc.jwks_validation",
         "sandbox.provisioner_create",
         "secret_store.access",
         "object_storage.security",
